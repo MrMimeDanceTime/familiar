@@ -56,6 +56,17 @@ function App() {
     clearDeck()
   }, [reset, clearDeck])
 
+  const handleDeleteConversation = useCallback(
+    async (id: number) => {
+      await api.deleteConversation(id).catch(() => {})
+      if (id === activeConversationId) {
+        handleNewConversation()
+      }
+      refreshConversations()
+    },
+    [activeConversationId, handleNewConversation, refreshConversations],
+  )
+
   const handleSend = useCallback(
     (text: string) => {
       sendMessage(activeConversationId ?? 'new', text)
@@ -70,6 +81,7 @@ function App() {
         activeId={activeConversationId}
         onSelect={handleSelectConversation}
         onNew={handleNewConversation}
+        onDelete={handleDeleteConversation}
       />
       <ChatView
         messages={messages}

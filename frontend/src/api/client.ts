@@ -15,6 +15,9 @@ export const api = {
   getConversation: (id: number): Promise<ConversationDetail> =>
     fetch(`/api/conversations/${id}`).then((r) => asJson<ConversationDetail>(r)),
 
+  deleteConversation: (id: number): Promise<{ ok: boolean }> =>
+    fetch(`/api/conversations/${id}`, { method: 'DELETE' }).then((r) => asJson<{ ok: boolean }>(r)),
+
   listDecks: (): Promise<Deck[]> => fetch('/api/decks').then((r) => asJson<Deck[]>(r)),
 
   getDeck: (id: number): Promise<Deck> =>
