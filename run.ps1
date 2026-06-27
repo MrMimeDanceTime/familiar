@@ -3,7 +3,7 @@
 # both the API and the built frontend on a single port.
 
 param(
-    [int]$Port = 8000
+    [int]$Port = 8420
 )
 
 $ErrorActionPreference = "Stop"
