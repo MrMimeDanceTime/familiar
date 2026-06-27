@@ -44,6 +44,8 @@ def run_chat_turn(
     history = provider.append_user_message(history, user_text)
 
     sequence = repo.next_sequence(session, conversation_id)
+    if sequence == 0:
+        repo.set_conversation_title(session, conversation_id, _derive_title(user_text))
     repo.add_message(
         session,
         conversation_id,
@@ -131,3 +133,10 @@ def _serialize(value: Any) -> str:
     import json
 
     return json.dumps(value)
+
+
+def _derive_title(user_text: str, max_length: int = 60) -> str:
+    title = " ".join(user_text.split())
+    if len(title) <= max_length:
+        return title
+    return title[: max_length - 1].rstrip() + "…"
