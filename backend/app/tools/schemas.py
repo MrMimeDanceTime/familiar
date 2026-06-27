@@ -5,9 +5,15 @@ TOOL_SPECS: list[ToolSpec] = [
         name="scryfall_search",
         description=(
             "Search Magic: The Gathering cards using Scryfall's query syntax "
-            "(e.g. 'c:red t:creature', 'o:\"draw a card\"'). Returns up to `limit` "
-            "matching cards with name, mana cost, type, oracle text, and color identity. "
-            "Use this to explore options, not to verify a single known card name."
+            "(e.g. 'c:red t:creature', 'o:\"draw a card\"', 'legal:commander'). "
+            "To restrict to Commander-legal cards use 'legal:commander' (not "
+            "'commander legal'). Do not add 'game:paper' unless specifically asked "
+            "about paper-only availability — it excludes many legal cards and is "
+            "almost never what you want. If a query returns no results, broaden it "
+            "(fewer o: clauses, less specific wording) rather than retrying narrow "
+            "variations. Returns up to `limit` matching cards with name, mana cost, "
+            "type, oracle text, and color identity. Use this to explore options, not "
+            "to verify a single known card name."
         ),
         parameters={
             "type": "object",
