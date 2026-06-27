@@ -8,6 +8,7 @@ ideas — grounding every suggestion in real card data from Scryfall and EDHREC.
 
 - `backend/` — FastAPI app, SQLite persistence, LLM tool-calling loop (Claude or DeepSeek)
 - `frontend/` — React + TypeScript + Vite chat UI with a live deck side panel
+- `docs/` — architecture, product philosophy, and provider-specific gotchas for anyone (or any coding assistant) working on this codebase
 
 ## Running locally
 
