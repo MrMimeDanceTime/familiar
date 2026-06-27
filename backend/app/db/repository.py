@@ -37,6 +37,14 @@ def touch_conversation(session: Session, conversation_id: int) -> None:
         session.commit()
 
 
+def set_conversation_title(session: Session, conversation_id: int, title: str) -> None:
+    conversation = session.get(Conversation, conversation_id)
+    if conversation:
+        conversation.title = title
+        session.add(conversation)
+        session.commit()
+
+
 def set_conversation_deck(session: Session, conversation_id: int, deck_id: int) -> Conversation:
     conversation = session.get(Conversation, conversation_id)
     if not conversation:

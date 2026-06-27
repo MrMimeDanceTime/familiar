@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.chat.engine import run_chat_turn
+from app.chat.engine import _derive_title, run_chat_turn
 from app.db import repository as repo
 from app.llm.base import AssistantTurn, ToolCallRequest
 
@@ -168,6 +168,49 @@ def test_max_iterations_safety_valve_emits_error(session):
 
     assert any(e.startswith("event: error") for e in events)
     assert any("max tool-call iterations" in e for e in events)
+
+
+def test_derive_title_truncates_long_text():
+    long_text = "x" * 100
+    title = _derive_title(long_text, max_length=60)
+    assert len(title) == 60
+    assert title.endswith("…")
+
+
+def test_derive_title_collapses_whitespace():
+    assert _derive_title("hello   \n  world") == "hello world"
+
+
+def test_first_message_sets_conversation_title(session):
+    provider = FakeProvider([AssistantTurn(text="Sure thing!", tool_calls=[])])
+    convo = repo.create_conversation(session)
+
+    _collect(
+        run_chat_turn(
+            session, provider, convo.id,
+            "Help me build a weird Korvold blink deck please",
+            deck_id=None,
+        )
+    )
+
+    refreshed = repo.get_conversation(session, convo.id)
+    assert refreshed.title == "Help me build a weird Korvold blink deck please"
+
+
+def test_second_message_does_not_overwrite_title(session):
+    provider = FakeProvider(
+        [
+            AssistantTurn(text="first reply", tool_calls=[]),
+            AssistantTurn(text="second reply", tool_calls=[]),
+        ]
+    )
+    convo = repo.create_conversation(session)
+
+    _collect(run_chat_turn(session, provider, convo.id, "first message", deck_id=None))
+    _collect(run_chat_turn(session, provider, convo.id, "second message", deck_id=None))
+
+    refreshed = repo.get_conversation(session, convo.id)
+    assert refreshed.title == "first message"
 
 
 def test_history_replay_reconstructs_provider_native_messages(session):
