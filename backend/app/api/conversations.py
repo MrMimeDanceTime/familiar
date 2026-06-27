@@ -42,6 +42,13 @@ def list_conversations():
         return [_conversation_out(c) for c in repo.list_conversations(session)]
 
 
+@router.delete("/{conversation_id}")
+def delete_conversation(conversation_id: int):
+    with Session(get_engine()) as session:
+        repo.delete_conversation(session, conversation_id)
+        return {"ok": True}
+
+
 @router.get("/{conversation_id}")
 def get_conversation(conversation_id: int):
     with Session(get_engine()) as session:

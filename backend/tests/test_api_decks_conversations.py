@@ -1,14 +1,20 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.api import chat, conversations, decks
+from app.db import repository as repo
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    test_engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
-    SQLModel.metadata.create_all(test_engine)
+def test_engine(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+@pytest.fixture
+def client(test_engine, monkeypatch):
     monkeypatch.setattr(chat, "get_engine", lambda: test_engine)
     monkeypatch.setattr(decks, "get_engine", lambda: test_engine)
     monkeypatch.setattr(conversations, "get_engine", lambda: test_engine)
@@ -71,3 +77,20 @@ def test_list_conversations_empty(client):
 def test_get_conversation_404(client):
     resp = client.get("/api/conversations/999")
     assert resp.status_code == 404
+
+
+def test_delete_conversation(client, test_engine):
+    with Session(test_engine) as session:
+        convo = repo.create_conversation(session, title="ToDelete")
+        repo.add_message(session, convo.id, role="user", sequence=0, text_content="hi")
+        convo_id = convo.id
+
+    resp = client.delete(f"/api/conversations/{convo_id}")
+    assert resp.status_code == 200
+    assert client.get(f"/api/conversations/{convo_id}").status_code == 404
+    assert client.get("/api/conversations").json() == []
+
+
+def test_delete_conversation_missing_is_a_noop(client):
+    resp = client.delete("/api/conversations/999")
+    assert resp.status_code == 200
