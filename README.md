@@ -11,23 +11,32 @@ ideas — grounding every suggestion in real card data from Scryfall and EDHREC.
 
 ## Running locally
 
-### Backend
+The simplest way to run Familiar day-to-day is the bundled launcher, which
+builds the frontend once and serves it together with the API on a single port:
+
+```
+.\run.ps1
+```
+
+Then open `http://localhost:8000`. First run will create a venv, install
+dependencies, and prompt you to fill in `.env` if it doesn't exist yet.
+Subsequent runs skip the frontend rebuild unless `frontend/src` has changed.
+Pass `-Port` to use a different port, e.g. `.\run.ps1 -Port 8080`.
+
+### Frontend development (hot reload)
+
+If you're actively editing the frontend, run the backend and the Vite dev
+server separately instead, so changes show up without a rebuild:
 
 ```
 cd backend
-python -m venv .venv
 .venv\Scripts\activate
-pip install -e .
-cp ../.env.example ../.env   # fill in your API key(s)
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend
-
 ```
 cd frontend
-npm install
 npm run dev
 ```
 
-Frontend dev server runs on `:5173` and proxies `/api` to the backend on `:8000`.
+The Vite dev server runs on `:5173` and proxies `/api` to the backend on `:8000`.
