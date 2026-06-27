@@ -96,12 +96,15 @@ def run_chat_turn(
                     yield deck_updated_event(result.content)
 
             new_history = provider.append_tool_results(history, turn, results)
-            # provider.append_tool_results appends exactly two new entries to
-            # history: the assistant's tool-call message, then the tool-result
-            # message. Persist them in that same native shape so replay can
-            # feed this conversation back into the same provider exactly.
+            # provider.append_tool_results appends the assistant's tool-call
+            # message followed by one or more tool-result-bearing messages
+            # (Anthropic bundles all results into a single user message;
+            # OpenAI-style providers emit one tool message per call). Persist
+            # the assistant entry and all result entries in that same native
+            # shape so replay can feed this conversation back into the same
+            # provider exactly.
             appended = new_history[len(history) :]
-            assistant_native, tool_result_native = appended[0], appended[1]
+            assistant_native, tool_result_natives = appended[0], appended[1:]
 
             repo.add_message(
                 session,
@@ -118,7 +121,7 @@ def run_chat_turn(
                 role="tool",
                 sequence=sequence,
                 tool_results=tool_results_log,
-                provider_native=[tool_result_native],
+                provider_native=tool_result_natives,
             )
             sequence += 1
 
