@@ -29,10 +29,14 @@ class FakeProvider:
         return self._turns.pop(0)
 
     def append_tool_results(self, history, assistant_turn, results):
+        # Mirrors DeepSeek/OpenAI-style shape: one assistant entry, then one
+        # tool-result entry per call (not bundled into a single message, as
+        # Anthropic does) - this is what previously exposed the engine's
+        # hardcoded appended[0]/appended[1] persistence bug.
         return [
             *history,
             {"role": "assistant", "fake_tool_call": True},
-            {"role": "tool", "fake_tool_result": [r.content for r in results]},
+            *[{"role": "tool", "tool_call_id": r.call_id, "fake_tool_result": r.content} for r in results],
         ]
 
     def append_user_message(self, history, text):
@@ -85,6 +89,54 @@ def test_tool_call_then_final_response(session):
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
     assert messages[1].tool_calls[0]["name"] == "deck_get_current"
+
+
+def test_multiple_tool_calls_in_one_turn_all_persisted(session):
+    """Regression test: the engine used to assume append_tool_results always
+    returns exactly [assistant, tool] (Anthropic's bundled shape) and hardcoded
+    appended[0]/appended[1], silently dropping every tool-result entry past the
+    first whenever a turn made more than one tool call (DeepSeek/OpenAI-style
+    providers emit one tool message per call). That produced a persisted
+    history missing tool results for some tool_call_ids, which the provider
+    then rejected on the next turn with a 400 (mismatched tool_calls/tool
+    messages)."""
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCallRequest(id="call_1", name="deck_get_current", arguments={}),
+                    ToolCallRequest(id="call_2", name="deck_get_current", arguments={}),
+                ],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["call_1", "call_2"]},
+            ),
+            AssistantTurn(
+                text="Got both results.",
+                tool_calls=[],
+                raw_assistant_message={"role": "assistant", "content": "Got both results."},
+            ),
+        ]
+    )
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "check twice", deck_id=deck.id))
+
+    messages = repo.list_messages(session, convo.id)
+    tool_message = [m for m in messages if m.role == "tool"][0]
+    assert len(tool_message.provider_native) == 2
+    assert {pn["tool_call_id"] for pn in tool_message.provider_native} == {"call_1", "call_2"}
+
+    history = _load_history_for_test(session, convo.id)
+    tool_native_entries = [h for h in history if h.get("role") == "tool"]
+    assert len(tool_native_entries) == 2
+
+
+def _load_history_for_test(session, conversation_id):
+    from app.chat.engine import _load_history
+
+    return _load_history(session, conversation_id)
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
