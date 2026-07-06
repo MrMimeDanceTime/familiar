@@ -25,6 +25,25 @@ class Settings(BaseSettings):
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24
 
+    # Automatic DB backup on app startup. Modes:
+    #   "off"    — disabled
+    #   "folder" — write the snapshot into backup_dir (default). Point that at
+    #              a synced folder (Google Drive / OneDrive / Dropbox / pCloud
+    #              Drive) and that client uploads it off-machine. No API/token.
+    #   "pcloud" — upload via the pCloud API (needs pcloud_auth_token).
+    backup_mode: str = "folder"
+    backup_keep: int = 10
+
+    # folder mode: destination directory for snapshots (a synced folder).
+    # Empty disables folder mode even if selected.
+    backup_dir: str = ""
+
+    # pcloud mode: host differs by data region — US accounts use
+    # api.pcloud.com, EU accounts use eapi.pcloud.com.
+    pcloud_auth_token: str = ""
+    pcloud_folder_id: int = 0  # 0 = root; set to a folder id to nest backups
+    pcloud_api_host: str = "eapi.pcloud.com"
+
     @property
     def db_path(self) -> Path:
         path = Path(self.familiar_db_path)

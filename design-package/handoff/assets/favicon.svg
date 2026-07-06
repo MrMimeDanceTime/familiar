@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Familiar">
+  <defs>
+    <linearGradient id="familiarTileGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#863bff"></stop>
+      <stop offset="1" stop-color="#47bfff"></stop>
+    </linearGradient>
+    <clipPath id="familiarTileClip">
+      <rect width="100" height="100" rx="24" ry="24"></rect>
+    </clipPath>
+  </defs>
+  
+  <g clip-path="url(#familiarTileClip)">
+    <rect width="100" height="100" fill="url(#familiarTileGradient)"></rect>
+    <g transform="translate(11,11) scale(0.78)">
+      <polygon points="12,34 24,4 42,30 58,30 76,4 88,34 82,62 64,88 50,96 36,88 18,62" fill="#ffffff"></polygon>
+      <ellipse cx="36" cy="55" rx="5.5" ry="8.5" fill="url(#familiarTileGradient)" transform="rotate(20 36 55)"></ellipse>
+      <ellipse cx="64" cy="55" rx="5.5" ry="8.5" fill="url(#familiarTileGradient)" transform="rotate(-20 64 55)"></ellipse>
+    </g>
+  </g>
+</svg>

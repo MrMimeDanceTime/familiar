@@ -91,6 +91,51 @@ def test_tool_call_then_final_response(session):
     assert messages[1].tool_calls[0]["name"] == "deck_get_current"
 
 
+def test_engine_overrides_model_supplied_deck_id(session):
+    """The model must not decide which deck a deck-scoped tool touches. deck_id
+    is a required tool param so the model always supplies one; the engine forces
+    it to the conversation's deck. Without this, a wrong guess read the wrong
+    deck (or none)."""
+    right_deck = repo.create_deck(session, name="Sakashima and Krark")
+    wrong_deck = repo.create_deck(session, name="Korlash Swamptron")
+    provider = FakeProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_1",
+                        name="deck_get_current",
+                        arguments={"deck_id": wrong_deck.id},
+                    )
+                ],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+            ),
+            AssistantTurn(text="Here's your deck.", tool_calls=[]),
+        ]
+    )
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, right_deck.id)
+
+    captured: list[dict] = []
+
+    import app.chat.engine as engine_mod
+
+    original = engine_mod.dispatch
+
+    def spy(name, arguments, sess):
+        captured.append({"name": name, "arguments": dict(arguments)})
+        return original(name, arguments, sess)
+
+    with patch.object(engine_mod, "dispatch", spy):
+        _collect(
+            run_chat_turn(session, provider, convo.id, "show my deck", deck_id=right_deck.id)
+        )
+
+    deck_call = next(c for c in captured if c["name"] == "deck_get_current")
+    assert deck_call["arguments"]["deck_id"] == right_deck.id
+
+
 def test_multiple_tool_calls_in_one_turn_all_persisted(session):
     """Regression test: the engine used to assume append_tool_results always
     returns exactly [assistant, tool] (Anthropic's bundled shape) and hardcoded
@@ -176,6 +221,58 @@ def test_deck_mutation_emits_deck_updated_event(mock_get_client, session):
     assert payload["cards"][0]["name"] == "Sol Ring"
 
 
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_proposals_anchored_to_final_text_message(mock_get_client, session):
+    """Proposals must anchor to the turn's *final* assistant text message — the
+    bubble the player actually sees ("Proposed Risen Reef.") — not the internal
+    text-less tool-call message, which the UI hides. Anchoring to the hidden
+    message left every batch with no visible anchor, so they all pooled at the
+    bottom of the transcript instead of rendering inline."""
+    mock_get_client.return_value.named.return_value = {
+        "name": "Risen Reef",
+        "cmc": 3.0,
+        "color_identity": ["G", "U"],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_1",
+                        name="propose_deck_changes",
+                        arguments={
+                            "summary": "A value elemental",
+                            "changes": [{"action": "add", "card_name": "Risen Reef"}],
+                        },
+                    )
+                ],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+            ),
+            AssistantTurn(text="Proposed Risen Reef.", tool_calls=[]),
+        ]
+    )
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(
+        run_chat_turn(session, provider, convo.id, "propose a value creature", deck_id=deck.id)
+    )
+
+    messages = repo.list_messages(session, convo.id)
+    final_text_msg = next(
+        m for m in messages
+        if m.role == "assistant" and m.text_content == "Proposed Risen Reef."
+    )
+    tool_call_msg = next(m for m in messages if m.role == "assistant" and m.tool_calls)
+    proposals = repo.list_proposals(session, convo.id)
+    assert len(proposals) == 1
+    # Anchored to the visible final-text bubble, not the hidden tool-call message.
+    assert proposals[0].message_id == final_text_msg.id
+    assert proposals[0].message_id != tool_call_msg.id
+
+
 def test_tool_failure_does_not_crash_loop_and_model_sees_error(session):
     provider = FakeProvider(
         [
@@ -210,7 +307,7 @@ def test_max_iterations_safety_valve_emits_error(session):
         raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
     )
     deck = repo.create_deck(session)
-    provider = FakeProvider([looping_turn] * 8)
+    provider = FakeProvider([looping_turn] * 12)
     convo = repo.create_conversation(session)
     repo.set_conversation_deck(session, convo.id, deck.id)
 

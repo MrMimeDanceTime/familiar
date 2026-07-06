@@ -35,21 +35,33 @@ class DeepSeekProvider:
 
         messages = [{"role": "system", "content": system_prompt}, *history]
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            tools=openai_tools,
-        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=openai_tools,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"DeepSeek API call failed (provider may have returned "
+                f"malformed JSON or timed out). The engine will retry on "
+                f"the next user message. Detail: {exc}"
+            ) from exc
 
         message = response.choices[0].message
-        tool_calls = [
-            ToolCallRequest(
-                id=tc.id,
-                name=tc.function.name,
-                arguments=json.loads(tc.function.arguments),
+        tool_calls: list[ToolCallRequest] = []
+        for tc in message.tool_calls or []:
+            try:
+                args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                args = {"_parse_error": True, "_raw": tc.function.arguments}
+            tool_calls.append(
+                ToolCallRequest(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=args,
+                )
             )
-            for tc in (message.tool_calls or [])
-        ]
 
         return AssistantTurn(
             text=message.content,

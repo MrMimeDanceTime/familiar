@@ -1,21 +1,94 @@
-:root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --bg-soft: #f7f6fa;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --user-bubble-bg: #ece9f5;
+/* =========================================================================
+   Familiar — "Parchment" design tokens.
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+   Warm parchment surfaces, teal primary accent, brass / garnet / verdant
+   secondaries, Spectral + Public Sans + IBM Plex Mono type.
+
+   Theming: light is the :root default. Dark applies two ways —
+   (1) automatically via prefers-color-scheme when the user hasn't chosen
+   (:root:not([data-theme])), and (2) explicitly when the sidebar toggle
+   stamps data-theme="dark" on <html>. data-theme="light" forces light even
+   on a dark OS. See useTheme.ts.
+
+   global.css is written against the legacy token names (--bg-soft, --text-h,
+   --border, --ok, --danger, --bracket, …); those are kept as aliases of the
+   parchment tokens below so both the raw and aliased names resolve.
+   ========================================================================= */
+
+:root {
+  /* Parchment surfaces */
+  --bg: #fbf8f1;
+  --panel: #f5efe2;
+  --panel-2: #ede4d3;
+  --well: #fbf8f1;
+  --line: #d8cdb8;
+  --line-soft: #ede4d3;
+  --scroll: #d8cdb8;
+  --desk: #e4d9c3;
+
+  /* Ink */
+  --ink: #221e1a;
+  --ink-2: #4a423a;
+  --ink-3: #7a6f62;
+  --label: #8c8069;
+
+  /* Accents */
+  --brass: #b08a3e;
+  --accent: #2c8c83;
+  --accent-bg: #dcede9;
+  --accent-border: #9fcfc8;
+  --on-accent: #fbf8f1;
+  --garnet: #a6472f;
+  --garnet-bg: #f3e1db;
+  --verdant: #5c7a3a;
+  --verdant-bg: #e7ebd8;
+  /* Arcane glow behind the mascot while it channels a reply. */
+  --glow: rgba(44, 140, 131, 0.55);
+
+  --user-bubble: #ede4d3;
+  --card-frame: #c3b69c;
+
+  /* MTG mana pips (warm-tuned) */
+  --mana-w: #c7a94e;
+  --mana-u: #2c8c83;
+  --mana-b: #7a5c86;
+  --mana-r: #a6472f;
+  --mana-g: #5c7a3a;
+  --mana-c: #9a8c78;
+  --venn-lens: #7a5c86;
+  /* Contrast ring around mana pips — dark on light surfaces, white on dark. */
+  --pip-ring: rgba(34, 30, 26, 0.28);
+
+  /* Card-art placeholder gradient */
+  --art-1: #dcede9;
+  --art-2: #ede4d3;
+
+  /* ── Legacy aliases (consumed by styles/global.css) ─────────────────── */
+  --text: var(--ink-2);
+  --text-h: var(--ink);
+  --text-dim: var(--ink-3);
+  --bg-soft: var(--panel);
+  --bg-soft-2: var(--panel-2);
+  --border: var(--line);
+  --code-bg: var(--well);
+  --user-bubble-bg: var(--user-bubble);
+  --bracket: var(--brass);
+  --bracket-2: var(--brass);
+  --ok: var(--verdant);
+  --ok-2: var(--verdant);
+  --danger: var(--garnet);
+  --danger-fg: var(--garnet);
+  --brand-a: var(--accent);
+  --brand-b: var(--brass);
+
+  /* Type */
+  --serif: 'Spectral', Georgia, 'Times New Roman', serif;
+  --sans: 'Public Sans', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Consolas, monospace;
 
   font: 16px/145% var(--sans);
   color-scheme: light dark;
-  color: var(--text);
+  color: var(--ink-2);
   background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -23,19 +96,91 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Dark tokens, shared by auto (no explicit choice) + forced dark. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --text: #c4c2cb;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --bg-soft: #1c1d24;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --user-bubble-bg: #2a2535;
+  :root:not([data-theme]) {
+    --bg: #1f1a15;
+    --panel: #2a231c;
+    --panel-2: #342b22;
+    --well: #241e18;
+    --line: #483e32;
+    --line-soft: #332b22;
+    --scroll: #483e32;
+    --desk: #171310;
+
+    --ink: #f1e9da;
+    --ink-2: #c8bca8;
+    --ink-3: #9a8c78;
+    --label: #8a7c66;
+
+    --brass: #c99f52;
+    --accent: #45b0a5;
+    --accent-bg: #173e3a;
+    --accent-border: #2c6660;
+    --on-accent: #0f1e1b;
+    --garnet: #d6795f;
+    --garnet-bg: #3a241d;
+    --verdant: #9cbe6e;
+    --verdant-bg: #28311c;
+    --glow: rgba(69, 176, 165, 0.6);
+
+    --user-bubble: #332b21;
+    --card-frame: #5a4b39;
+
+    --mana-w: #d8be6a;
+    --mana-u: #45b0a5;
+    --mana-b: #a17fc4;
+    --mana-r: #d6795f;
+    --mana-g: #9cbe6e;
+    --mana-c: #a9977e;
+    --venn-lens: #a17fc4;
+    --pip-ring: rgba(241, 233, 218, 0.42);
+
+    --art-1: #123430;
+    --art-2: #241e18;
   }
+}
+
+:root[data-theme='dark'] {
+  --bg: #1f1a15;
+  --panel: #2a231c;
+  --panel-2: #342b22;
+  --well: #241e18;
+  --line: #483e32;
+  --line-soft: #332b22;
+  --scroll: #483e32;
+  --desk: #171310;
+
+  --ink: #f1e9da;
+  --ink-2: #c8bca8;
+  --ink-3: #9a8c78;
+  --label: #8a7c66;
+
+  --brass: #c99f52;
+  --accent: #45b0a5;
+  --accent-bg: #173e3a;
+  --accent-border: #2c6660;
+  --on-accent: #0f1e1b;
+  --garnet: #d6795f;
+  --garnet-bg: #3a241d;
+  --verdant: #9cbe6e;
+  --verdant-bg: #28311c;
+  --glow: rgba(69, 176, 165, 0.6);
+
+  --user-bubble: #332b21;
+  --card-frame: #5a4b39;
+
+  --mana-w: #d8be6a;
+  --mana-u: #45b0a5;
+  --mana-b: #a17fc4;
+  --mana-r: #d6795f;
+  --mana-g: #9cbe6e;
+  --mana-c: #a9977e;
+  --venn-lens: #a17fc4;
+  --pip-ring: rgba(241, 233, 218, 0.42);
+
+  --art-1: #123430;
+  --art-2: #241e18;
 }
 
 * {
@@ -44,13 +189,13 @@
 
 body {
   margin: 0;
-  color: var(--text);
+  color: var(--ink-2);
   background: var(--bg);
 }
 
 h1, h2, h3 {
   font-weight: 600;
-  color: var(--text-h);
+  color: var(--ink);
   margin: 0;
 }
 
@@ -61,4 +206,5 @@ button {
 
 #root {
   height: 100vh;
+  height: 100dvh;
 }

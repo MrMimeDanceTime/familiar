@@ -45,5 +45,14 @@ if ($needsBuild) {
     Write-Host "[build] frontend unchanged, skipping rebuild"
 }
 
+$tailscale = Get-Command tailscale -ErrorAction SilentlyContinue
+if ($tailscale) {
+    Write-Host "[tailscale] Exposing port $Port on your tailnet..."
+    # Expose via plain HTTP to the local uvicorn backend (uvicorn does not
+    # speak TLS, so https+insecure would send TLS ClientHello bytes ->
+    # "Invalid HTTP request received").
+    tailscale serve --bg http://localhost:$Port
+}
+
 Write-Host "[start] Familiar running at http://localhost:$Port"
 & $venvPython -m uvicorn app.main:app --app-dir (Join-Path $root "backend") --port $Port

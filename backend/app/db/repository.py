@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from app.db.models import Conversation, Deck, DeckCard, Message
+from app.db.models import Conversation, Deck, DeckCard, DeckProposal, Message, UserPreferences
 
 
 def _utcnow() -> datetime:
@@ -51,8 +51,19 @@ def delete_conversation(session: Session, conversation_id: int) -> None:
         return
     for message in list_messages(session, conversation_id):
         session.delete(message)
+    for proposal in list_proposals(session, conversation_id):
+        session.delete(proposal)
     session.delete(conversation)
     session.commit()
+
+
+def latest_conversation_for_deck(session: Session, deck_id: int) -> Conversation | None:
+    statement = (
+        select(Conversation)
+        .where(Conversation.deck_id == deck_id)
+        .order_by(Conversation.updated_at.desc())
+    )
+    return session.exec(statement).first()
 
 
 def set_conversation_deck(session: Session, conversation_id: int, deck_id: int) -> Conversation:
@@ -116,8 +127,9 @@ def create_deck(
     session: Session,
     name: str = "Untitled Deck",
     commander: str | None = None,
+    format: str = "commander",
 ) -> Deck:
-    deck = Deck(name=name, commander=commander)
+    deck = Deck(name=name, commander=commander, format=format)
     session.add(deck)
     session.commit()
     session.refresh(deck)
@@ -141,6 +153,7 @@ def update_deck(
     partner_commander: str | None = None,
     notes: str | None = None,
     power_level: str | None = None,
+    format: str | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -155,6 +168,31 @@ def update_deck(
         deck.notes = notes
     if power_level is not None:
         deck.power_level = power_level
+    if format is not None:
+        deck.format = format
+    deck.updated_at = _utcnow()
+    session.add(deck)
+    session.commit()
+    session.refresh(deck)
+    return deck
+
+
+def set_deck_commander_fields(
+    session: Session,
+    deck_id: int,
+    commander: str | None,
+    partner_commander: str | None,
+) -> Deck:
+    """Set both commander slots directly, allowing either to be cleared.
+
+    Unlike update_deck (where None means "leave unchanged"), this writes the
+    given values verbatim so a commander can be removed by passing None.
+    """
+    deck = session.get(Deck, deck_id)
+    if not deck:
+        raise ValueError(f"Deck {deck_id} not found")
+    deck.commander = commander
+    deck.partner_commander = partner_commander
     deck.updated_at = _utcnow()
     session.add(deck)
     session.commit()
@@ -168,6 +206,8 @@ def delete_deck(session: Session, deck_id: int) -> None:
         return
     for card in list_deck_cards(session, deck_id):
         session.delete(card)
+    for proposal in list_proposals_by_deck_id(session, deck_id):
+        session.delete(proposal)
     session.delete(deck)
     session.commit()
 
@@ -191,18 +231,32 @@ def add_deck_card(
     session: Session,
     deck_id: int,
     card_name: str,
-    quantity: int = 1,
+    quantity: int | None = None,
     category: str | None = None,
     mana_value: float | None = None,
     color_identity: str | None = None,
+    type_line: str | None = None,
+    oracle_text: str | None = None,
+    oracle_id: str | None = None,
+    tags: list | None = None,
     notes: str | None = None,
 ) -> DeckCard:
     existing = get_deck_card(session, deck_id, card_name)
     if existing:
-        existing.quantity = quantity
+        # quantity=None means the caller didn't specify a count (e.g. a
+        # tag/metadata-only refresh) — don't let that clobber an existing
+        # stack (e.g. 34 Swamps). An explicit quantity adds to the existing
+        # stack (mirrors remove_deck_card subtracting) — e.g. adding 6 more
+        # Swamps to 8 already in the deck results in 14, not 6.
+        if quantity is not None:
+            existing.quantity += quantity
         existing.category = category if category is not None else existing.category
         existing.mana_value = mana_value if mana_value is not None else existing.mana_value
         existing.color_identity = color_identity if color_identity is not None else existing.color_identity
+        existing.type_line = type_line if type_line is not None else existing.type_line
+        existing.oracle_text = oracle_text if oracle_text is not None else existing.oracle_text
+        existing.oracle_id = oracle_id if oracle_id is not None else existing.oracle_id
+        existing.tags = tags if tags is not None else existing.tags
         existing.notes = notes if notes is not None else existing.notes
         session.add(existing)
         session.commit()
@@ -212,10 +266,14 @@ def add_deck_card(
     card = DeckCard(
         deck_id=deck_id,
         card_name=card_name,
-        quantity=quantity,
+        quantity=quantity if quantity is not None else 1,
         category=category,
         mana_value=mana_value,
         color_identity=color_identity,
+        type_line=type_line,
+        oracle_text=oracle_text,
+        oracle_id=oracle_id,
+        tags=tags,
         notes=notes,
     )
     session.add(card)
@@ -224,13 +282,42 @@ def add_deck_card(
     return card
 
 
-def remove_deck_card(session: Session, deck_id: int, card_name: str) -> bool:
+def remove_deck_card(
+    session: Session, deck_id: int, card_name: str, quantity: int | None = None
+) -> bool:
     card = get_deck_card(session, deck_id, card_name)
     if not card:
         return False
+    # quantity=None means "remove the whole stack" — the common case in
+    # singleton formats where there's only ever 1 copy.  An explicit
+    # quantity less than the current stack just shrinks it (e.g. cutting
+    # 2 of 34 Swamps) instead of deleting the row outright.
+    if quantity is not None and quantity < card.quantity:
+        card.quantity -= quantity
+        session.add(card)
+        session.commit()
+        return True
     session.delete(card)
     session.commit()
     return True
+
+
+def get_conversation_by_deck_id(session: Session, deck_id: int) -> Conversation | None:
+    statement = (
+        select(Conversation)
+        .where(Conversation.deck_id == deck_id)
+        .order_by(Conversation.updated_at.desc())
+    )
+    return session.exec(statement).first()
+
+
+def list_conversations_by_deck_id(session: Session, deck_id: int) -> list[Conversation]:
+    statement = (
+        select(Conversation)
+        .where(Conversation.deck_id == deck_id)
+        .order_by(Conversation.updated_at.desc())
+    )
+    return list(session.exec(statement))
 
 
 def deck_snapshot(session: Session, deck_id: int) -> dict:
@@ -238,6 +325,17 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
     if not deck:
         raise ValueError(f"Deck {deck_id} not found")
     cards = list_deck_cards(session, deck_id)
+    linked = get_conversation_by_deck_id(session, deck_id)
+
+    # Display category is DERIVED from Scryfall community tags, not stored or
+    # hand-set — the same tags that drive scoring, so display and scoring can
+    # never disagree. Commander(s) are a deck designation, not a functional
+    # tag, so they override to "Commander".
+    from app.tools.deck_tools import category_for_card
+    commander_names = {
+        n.lower() for n in (deck.commander, deck.partner_commander) if n
+    }
+
     return {
         "id": deck.id,
         "name": deck.name,
@@ -245,15 +343,148 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "partner_commander": deck.partner_commander,
         "notes": deck.notes,
         "power_level": deck.power_level,
+        "format": deck.format,
+        "conversation_id": linked.id if linked else None,
         "cards": [
             {
                 "name": c.card_name,
                 "quantity": c.quantity,
-                "category": c.category,
+                "category": (
+                    "Commander" if c.card_name.lower() in commander_names
+                    else category_for_card(c.type_line, c.oracle_text or "", c.oracle_id, c.tags)
+                ),
                 "mana_value": c.mana_value,
                 "color_identity": c.color_identity,
+                "type_line": c.type_line,
+                "oracle_text": c.oracle_text,
+                "tags": c.tags or [],
                 "notes": c.notes,
             }
             for c in cards
         ],
     }
+
+
+# --- Proposals --------------------------------------------------------------
+
+
+def get_proposal(session: Session, proposal_id: int) -> DeckProposal | None:
+    return session.get(DeckProposal, proposal_id)
+
+
+def list_proposals(session: Session, conversation_id: int) -> list[DeckProposal]:
+    statement = (
+        select(DeckProposal)
+        .where(DeckProposal.conversation_id == conversation_id)
+        .order_by(DeckProposal.created_at.asc())
+    )
+    return list(session.exec(statement))
+
+
+def anchor_proposals_to_message(
+    session: Session, proposal_ids: list[int], message_id: int
+) -> None:
+    """Point a turn's freshly-created proposals at the assistant message whose
+    tool call produced them, so the UI can render each batch inline at the spot
+    it happened instead of pooling them all at the bottom of the transcript.
+    Proposals are created mid-tool-loop, before that message row exists, so the
+    anchor is back-filled once the message has been persisted."""
+    if not proposal_ids:
+        return
+    for pid in proposal_ids:
+        proposal = session.get(DeckProposal, pid)
+        if proposal is not None:
+            proposal.message_id = message_id
+            session.add(proposal)
+    session.commit()
+
+
+def list_proposals_by_deck_id(session: Session, deck_id: int) -> list[DeckProposal]:
+    statement = (
+        select(DeckProposal)
+        .where(DeckProposal.deck_id == deck_id)
+        .order_by(DeckProposal.created_at.asc())
+    )
+    return list(session.exec(statement))
+
+
+def apply_proposal(session: Session, proposal_id: int) -> dict | None:
+    """Execute a pending proposal and return the updated deck snapshot."""
+    from app.tools import deck_tools
+
+    proposal = get_proposal(session, proposal_id)
+    if not proposal or proposal.status != "pending":
+        return None
+
+    if proposal.action == "add":
+        deck_tools.deck_add_card(
+            session,
+            deck_id=proposal.deck_id,
+            card_name=proposal.card_name,
+            qty=proposal.quantity,
+            category=proposal.category,
+        )
+    elif proposal.action == "remove":
+        deck_tools.deck_remove_card(
+            session,
+            deck_id=proposal.deck_id,
+            card_name=proposal.card_name,
+            quantity=proposal.quantity,
+        )
+    elif proposal.action == "set_commander":
+        deck_tools.deck_set_commander(
+            session, deck_id=proposal.deck_id, commander_name=proposal.commander_name
+        )
+
+    proposal.status = "approved"
+    session.add(proposal)
+    session.commit()
+    return deck_snapshot(session, proposal.deck_id)
+
+
+def deny_proposal(session: Session, proposal_id: int) -> bool:
+    proposal = get_proposal(session, proposal_id)
+    if not proposal or proposal.status != "pending":
+        return False
+    proposal.status = "denied"
+    session.add(proposal)
+    session.commit()
+    return True
+
+
+# --- User preferences -------------------------------------------------------
+
+
+def get_or_create_preferences(session: Session) -> UserPreferences:
+    prefs = session.get(UserPreferences, 1)
+    if prefs is None:
+        prefs = UserPreferences(id=1)
+        session.add(prefs)
+        session.commit()
+        session.refresh(prefs)
+    return prefs
+
+
+def update_preferences(
+    session: Session,
+    preferred_bracket: str | None = None,
+    preferred_power: str | None = None,
+    budget: str | None = None,
+    rule0_notes: str | None = None,
+    build_preferences: str | None = None,
+) -> UserPreferences:
+    prefs = get_or_create_preferences(session)
+    if preferred_bracket is not None:
+        prefs.preferred_bracket = preferred_bracket
+    if preferred_power is not None:
+        prefs.preferred_power = preferred_power
+    if budget is not None:
+        prefs.budget = budget
+    if rule0_notes is not None:
+        prefs.rule0_notes = rule0_notes
+    if build_preferences is not None:
+        prefs.build_preferences = build_preferences
+    session.add(prefs)
+    session.commit()
+    session.refresh(prefs)
+    return prefs

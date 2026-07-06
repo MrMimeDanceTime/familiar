@@ -14,14 +14,21 @@ from typing import Any, Iterator
 
 from sqlmodel import Session
 
-from app.chat.prompt import SYSTEM_PROMPT
-from app.chat.streaming import deck_updated_event, done_event, error_event, token_event, tool_call_event
+from app.chat.prompt import build_system_prompt
+from app.chat.streaming import (
+    deck_proposal_event,
+    deck_updated_event,
+    done_event,
+    error_event,
+    token_event,
+    tool_call_event,
+)
 from app.db import repository as repo
 from app.llm.base import ChatProvider, ToolResult
-from app.tools.dispatch import DECK_MUTATION_TOOLS, dispatch
+from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
 from app.tools.schemas import TOOL_SPECS
 
-MAX_TOOL_ITERATIONS = 8
+MAX_TOOL_ITERATIONS = 12
 
 
 def _load_history(session: Session, conversation_id: int) -> list[dict[str, Any]]:
@@ -56,9 +63,38 @@ def run_chat_turn(
     )
     sequence += 1
 
+    # Determine format for the system prompt. Default to commander if the
+    # deck isn't found or no deck_id is set (shouldn't happen in practice
+    # since every conversation gets a deck at creation time).
+    format_key = "commander"
+    if deck_id is not None:
+        deck = repo.get_deck(session, deck_id)
+        if deck:
+            format_key = deck.format
+
+    prefs = repo.get_or_create_preferences(session)
+    system_prompt = build_system_prompt(
+        format_key,
+        preferred_bracket=prefs.preferred_bracket,
+        preferred_power=prefs.preferred_power,
+        budget=prefs.budget,
+        rule0_notes=prefs.rule0_notes,
+        build_preferences=prefs.build_preferences,
+    )
+    grounding = _deck_grounding(session, deck_id)
+    if grounding:
+        system_prompt = f"{system_prompt}\n\n{grounding}"
+
+    # Proposals are created mid-turn (during a tool-call iteration) but the
+    # message the player actually sees for that turn is the *final* assistant
+    # text response ("here's the ramp package"), not the internal, text-less
+    # tool-call message. Accumulate proposal ids across the whole turn and
+    # anchor them to that final message so the UI renders the batch inline
+    # under the bubble that introduced it, rather than pooling at the bottom.
+    proposal_ids_this_turn: list[int] = []
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
-            turn = provider.send(SYSTEM_PROMPT, history, TOOL_SPECS)
+            turn = provider.send(system_prompt, history, TOOL_SPECS)
 
             if not turn.tool_calls:
                 if turn.text:
@@ -71,6 +107,9 @@ def run_chat_turn(
                     text_content=turn.text,
                     provider_native=[turn.raw_assistant_message],
                 )
+                repo.anchor_proposals_to_message(
+                    session, proposal_ids_this_turn, message.id
+                )
                 repo.touch_conversation(session, conversation_id)
                 yield done_event(message.id, conversation_id)
                 return
@@ -82,8 +121,15 @@ def run_chat_turn(
                 yield tool_call_event(call.name, call.arguments)
 
                 args = dict(call.arguments)
-                if call.name in DECK_MUTATION_TOOLS or call.name == "deck_get_current":
-                    args.setdefault("deck_id", deck_id)
+                # The conversation's deck is authoritative — override whatever
+                # deck_id the model supplied. deck_id is a required tool param,
+                # so the model always guesses one; deferring to its guess made
+                # deck-scoped tools read the wrong deck (or none).
+                if call.name in DECK_SCOPED_TOOLS and deck_id is not None:
+                    args["deck_id"] = deck_id
+
+                if call.name in PROPOSAL_TOOLS:
+                    args["conversation_id"] = conversation_id
 
                 result = dispatch(call.name, args, session)
                 content = str(result.content) if not result.ok else _serialize(result.content)
@@ -92,7 +138,12 @@ def run_chat_turn(
                 tool_calls_log.append({"id": call.id, "name": call.name, "arguments": call.arguments})
                 tool_results_log.append({"call_id": call.id, "content": content})
 
-                if result.ok and call.name in DECK_MUTATION_TOOLS and deck_id is not None:
+                if result.ok and call.name in PROPOSAL_TOOLS:
+                    for p in result.content.get("proposals", []):
+                        if p.get("id") is not None:
+                            proposal_ids_this_turn.append(p["id"])
+                    yield deck_proposal_event(result.content)
+                elif result.ok and call.name in DECK_MUTATION_TOOLS and deck_id is not None:
                     yield deck_updated_event(result.content)
 
             new_history = provider.append_tool_results(history, turn, results)
@@ -132,12 +183,186 @@ def run_chat_turn(
         yield error_event(str(exc))
 
 
+# Maps a deficiency category from deck stats to (knowledge category, query)
+# used to proactively pull the relevant grounding entry into the turn.
+_DEFICIENCY_KNOWLEDGE = {
+    "lands": ("land-base", "land count formula commander"),
+    "ramp": ("ramp", "ramp package sizing commander"),
+    "draw": ("card-draw", "card draw density commander"),
+    "removal": ("removal", "removal suite composition commander"),
+}
+
+
+def _deck_grounding(session: Session, deck_id: int | None) -> str:
+    """Proactively retrieve knowledge for the attached deck's weak spots.
+
+    Retrieval is otherwise model-elective (it must choose to call the search
+    tool), so a deck with off-target ramp/draw/removal often gets advice from
+    training data instead of the curated knowledge base. When a deck has cards
+    and any deficiency is off-target, pull the matching knowledge entry and the
+    deck's own stat summary into the system prompt so the model reasons from
+    grounded numbers on its first turn. Best-effort: never break the turn.
+    """
+    if deck_id is None:
+        return ""
+    try:
+        from app.knowledge.store import search_knowledge
+        from app.tools.deck_tools import compute_deck_stats
+
+        stats = compute_deck_stats(session, deck_id)
+        if stats.get("total_cards", 0) == 0:
+            return ""
+
+        off_target = [d for d in stats.get("deficiencies", []) if d["status"] != "OK"]
+        if not off_target:
+            return ""
+
+        blocks: list[str] = []
+        seen: set[str] = set()
+        for d in off_target:
+            mapping = _DEFICIENCY_KNOWLEDGE.get(d["category"])
+            if not mapping:
+                continue
+            kb_category, query = mapping
+            if kb_category in seen:
+                continue
+            seen.add(kb_category)
+            hits = search_knowledge(query, top_k=1, format="commander", category=kb_category)
+            if hits:
+                blocks.append(f"- {hits[0]['title']}: {hits[0]['body']}")
+
+        summary = ", ".join(
+            f"{d['category']} {d['count']} ({d['status']} vs {d['target_low']}-{d['target_high']})"
+            for d in off_target
+        )
+        if not blocks:
+            return ""
+        return (
+            "<deck_grounding>\n"
+            "The attached deck has counts outside typical targets: "
+            f"{summary}. Relevant deckbuilding guidance retrieved for you "
+            "(prefer this over training-data assumptions; call deck_get_stats "
+            "for the full breakdown before quoting numbers):\n"
+            + "\n".join(blocks)
+            + "\n</deck_grounding>"
+        )
+    except Exception:  # noqa: BLE001 - grounding is best-effort, never fatal
+        return ""
+
+
 def _serialize(value: Any) -> str:
     import json
 
     return json.dumps(value)
 
 
+_NAME_SYSTEM_PROMPT = (
+    "You produce a short, natural, evocative name for a Magic: The Gathering "
+    "Commander deck. Lead with the commander, then a couple of words naming the "
+    "deck's strategy or theme — the way a player would title their own list. "
+    "Examples: \"Korvold Jund Aristocrats\", \"Yuriko Ninja Tribal\", "
+    "\"Winota Boros Stax\", \"Mass of Mysteries Elemental Myriad\". "
+    "You MAY use a guild/shard/clan name (Jund, Boros, Dimir…) when it reads "
+    "naturally, but never emit a raw color-letter string like \"WUBRG\" or "
+    "\"WUB\". Prefer the player's stated goal over guessing from a thin card "
+    "list. Do not invent a strategy the inputs don't support — if the theme "
+    "isn't clear, name it after the commander and its color identity only. "
+    "Keep it under about six words. Output ONLY the name — no quotes, no "
+    "explanation, no commentary."
+)
+
+_GUILD_NAMES = {
+    "W": "Mono-White", "U": "Mono-Blue", "B": "Mono-Black", "R": "Mono-Red",
+    "G": "Mono-Green", "WU": "Azorius", "UB": "Dimir", "BR": "Rakdos",
+    "RG": "Gruul", "GW": "Selesnya", "WB": "Orzhov", "UR": "Izzet",
+    "BG": "Golgari", "RW": "Boros", "GU": "Simic", "WUB": "Esper",
+    "UBR": "Grixis", "BRG": "Jund", "RGW": "Naya", "GWU": "Bant",
+    "WBG": "Abzan", "URW": "Jeskai", "BGU": "Sultai", "RWB": "Mardu",
+    "GUR": "Temur", "WUBRG": "Five-Color",
+}
+
+
+def _color_word(colors: set[str]) -> str:
+    """Human-readable color-identity name (guild/shard/wedge), never a raw
+    letter string — the old code fed 'WUBRG' straight into the name."""
+    if not colors:
+        return "Colorless"
+    key = "".join(c for c in "WUBRG" if c in colors)
+    return _GUILD_NAMES.get(key, key)
+
+
+def _generate_deck_name(
+    provider: ChatProvider,
+    snapshot: dict,
+    format_key: str,
+    user_intent: str | None = None,
+) -> str:
+    """Ask the LLM for a short descriptive name.
+
+    Naming fires as soon as a commander is approved, when the card list is
+    usually just the commander — so the player's stated goal (``user_intent``)
+    is the primary signal, and the card list only refines it once it exists.
+    """
+    commander = snapshot.get("commander")
+    partner = snapshot.get("partner_commander")
+    cards: list[dict] = snapshot.get("cards", [])
+
+    by_category: dict[str, list[str]] = {}
+    for c in cards:
+        cat = c.get("category", "Other")
+        by_category.setdefault(cat, []).append(c["name"])
+
+    colors: set[str] = set()
+    for c in cards:
+        for ch in c.get("color_identity", ""):
+            if ch in "WUBRG":
+                colors.add(ch)
+    color_str = _color_word(colors)
+
+    # Surface the strategy-revealing categories prominently so the LLM can
+    # pick up on the deck's archetype (aristocrats, stax, spellslinger, etc.).
+    strategy_cats = {k: v for k, v in by_category.items() if k not in ("Commander", "Land")}
+    top_cats = sorted(strategy_cats.items(), key=lambda kv: -len(kv[1]))
+
+    lines = []
+    if commander:
+        cmd_line = commander
+        if partner:
+            cmd_line += f" / {partner}"
+        lines.append(f"Commander: {cmd_line}")
+    lines.append(f"Color identity: {color_str}")
+    lines.append(f"Format: {format_key}")
+    if user_intent:
+        lines.append(f"Player's stated goal for this deck: {user_intent}")
+    if top_cats:
+        lines.append("Strategy categories (name the archetype these suggest):")
+        for cat, names in top_cats[:6]:
+            lines.append(f"  {cat} ({len(names)} cards): {', '.join(names[:5])}")
+    elif not user_intent:
+        lines.append(
+            "No cards or stated goal yet — name it from the commander and "
+            "color identity only; do not invent a strategy."
+        )
+
+    user_prompt = "\n".join(lines)
+
+    try:
+        turn = provider.send(
+            system_prompt=_NAME_SYSTEM_PROMPT,
+            history=[{"role": "user", "content": user_prompt}],
+            tools=[],
+        )
+        name = (turn.text or "").strip().strip('"').strip("'")
+        for prefix in ("Name: ", "Deck Name: ", "name: "):
+            if name.startswith(prefix):
+                name = name[len(prefix) :]
+        if not name:
+            return "Untitled Deck"
+        if len(name) > 80:
+            name = name[:77].rstrip() + "…"
+        return name
+    except Exception:
+        return "Untitled Deck"
 def _derive_title(user_text: str, max_length: int = 60) -> str:
     title = " ".join(user_text.split())
     if len(title) <= max_length:

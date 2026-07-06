@@ -90,6 +90,44 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="search_deckbuilding_knowledge",
+        description=(
+            "Search a local knowledge base of MTG deckbuilding best practices "
+            "and format-specific rules. Use this whenever you need grounded "
+            "advice on topics like ideal land counts, mana curve construction, "
+            "ramp package sizing, removal suite composition, color pie "
+            "strengths and weaknesses, commander selection heuristics, synergy "
+            "vs goodstuff tradeoffs, or sideboard construction. Returns the "
+            "top matching entries with their full content. This knowledge base "
+            "is authoritative — prefer it over training-data assumptions."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query, e.g. 'how many lands in commander', 'ramp curve', 'removal suite sizing'",
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Optional filter to one topic when the query keyword also "
+                        "appears in unrelated entries. One of: mana-curve, ramp, "
+                        "removal, card-draw, land-base, color-pie, commander, "
+                        "synergy, format-specific, power-level."
+                    ),
+                    "enum": [
+                        "mana-curve", "ramp", "removal", "card-draw", "land-base",
+                        "color-pie", "commander", "synergy", "format-specific",
+                        "power-level",
+                    ],
+                },
+                "top_k": {"type": "integer", "default": 5, "description": "Max results to return"},
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
         name="deck_get_current",
         description="Get the current in-progress deck: commander, card list, quantities, categories, and notes.",
         parameters={
@@ -99,49 +137,102 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
-        name="deck_add_card",
+        name="deck_get_stats",
         description=(
-            "Add a card to the in-progress deck (or update its quantity/category/notes "
-            "if already present). Only call this once the user has actually agreed to "
-            "include the card — not while still discussing options."
+            "Get the deck's computed bracket (1-5), power level (1-10), and "
+            "the detailed breakdown factors explaining why each score was "
+            "assigned. Includes mana curve, type breakdown, color distribution, "
+            "ramp/draw/removal counts, game changer detection, tutor count, "
+            "MLD presence, and the dimension-by-dimension power level scoring. "
+            "Use this whenever discussing the deck's power or bracket. The "
+            "'untagged' field lists nonland cards with no functional tags yet "
+            "(usually brand-new cards) — when non-empty, the ramp/draw/removal "
+            "counts may undercount, so caveat any count-based advice. The "
+            "'deficiencies' field (commander only) compares lands/ramp/draw/"
+            "removal against target ranges and flags each LOW/OK/HIGH — use it "
+            "to prioritise what a deck needs instead of re-deriving targets."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"deck_id": {"type": "integer"}},
+            "required": ["deck_id"],
+        },
+    ),
+    ToolSpec(
+        name="propose_deck_changes",
+        description=(
+            "Propose changes to the in-progress deck for the player to approve or "
+            "deny. You cannot modify the deck directly — you must use this tool to "
+            "make proposals. Propose 3-6 changes at a time in a batch. For each "
+            "change, provide clear reasoning the player can evaluate. For 'add' "
+            "actions, the card name will be validated against Scryfall."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "deck_id": {"type": "integer"},
-                "card_name": {"type": "string"},
-                "qty": {"type": "integer", "default": 1},
-                "category": {
+                "summary": {
                     "type": "string",
-                    "description": "Free-text role, e.g. ramp, removal, draw, win-con, synergy-piece, land, other",
+                    "description": "One-line summary of the proposal batch, e.g. 'Adding 3 ramp pieces and cutting 2 overcosted top-end cards'",
                 },
-                "notes": {"type": "string"},
+                "changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["add", "remove", "set_commander"],
+                            },
+                            "card_name": {"type": "string", "description": "Card name (required for add/remove)"},
+                            "quantity": {
+                                "type": "integer",
+                                "default": 1,
+                                "description": (
+                                    "For 'add', how many copies to add (default 1). For "
+                                    "'remove', how many copies to cut — omit this to remove "
+                                    "the entire stack (the usual case in singleton formats); "
+                                    "set it explicitly to cut only some copies of a card with "
+                                    "multiple copies, e.g. removing 2 of 34 Swamp."
+                                ),
+                            },
+                            "category": {"type": "string", "description": "Free-text role (add only), e.g. ramp, removal, draw, win-con"},
+                            "reasoning": {"type": "string", "description": "Why this change — shown to the player for approval"},
+                        },
+                        "required": ["action", "reasoning"],
+                    },
+                },
             },
-            "required": ["deck_id", "card_name"],
+            "required": ["deck_id", "summary", "changes"],
         },
     ),
     ToolSpec(
-        name="deck_remove_card",
-        description="Remove a card from the in-progress deck.",
+        name="withdraw_pending_proposals",
+        description=(
+            "Withdraw (deny) pending CARD proposals for the deck. Use this "
+            "when the player changes direction, rejects a batch in favour of "
+            "a different approach, or explicitly asks to cancel the current "
+            "proposals. Call this BEFORE proposing a replacement batch. "
+            "A pending set_commander proposal is NOT cleared by this — it is "
+            "the deck's identity, not a batch, and must never be cancelled as "
+            "a side effect of swapping card batches. Only set "
+            "include_commander=true when the player has explicitly decided "
+            "against the proposed commander, and say so in your reply."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "deck_id": {"type": "integer"},
-                "card_name": {"type": "string"},
+                "include_commander": {
+                    "type": "boolean",
+                    "description": (
+                        "Also withdraw a pending commander proposal. Default "
+                        "false. Set true ONLY when the player has decided "
+                        "against the proposed commander."
+                    ),
+                },
             },
-            "required": ["deck_id", "card_name"],
-        },
-    ),
-    ToolSpec(
-        name="deck_set_commander",
-        description="Set or change the commander for the in-progress deck.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "deck_id": {"type": "integer"},
-                "commander_name": {"type": "string"},
-            },
-            "required": ["deck_id", "commander_name"],
+            "required": ["deck_id"],
         },
     ),
     ToolSpec(

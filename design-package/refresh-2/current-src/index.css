@@ -1,0 +1,110 @@
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --bg-soft: #f7f6fa;
+  --bg-soft-2: #efeef4;
+  --border: #e5e4e7;
+  --code-bg: #f4f3ec;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --user-bubble-bg: #ece9f5;
+
+  --label: #8a8894;
+  --text-dim: #6f6d79;
+  --bracket: #d98a1f;
+  --bracket-2: #c9701f;
+  --ok: #17945a;
+  --ok-2: #17945a;
+  --danger: #c53a2a;
+  --danger-fg: #c53a2a;
+  --brand-a: #863bff;
+  --brand-b: #1f8fd6;
+  --on-accent: #fff;
+
+  --mana-w: #b8ad74;
+  --mana-u: #3f9bf0;
+  --mana-b: #8b6fae;
+  --mana-r: #e0503c;
+  --mana-g: #35b06a;
+  --mana-c: #7f828c;
+  --venn-lens: #9a6cd0;
+  /* Contrast ring around mana pips — dark on light surfaces, white on dark. */
+  --pip-ring: rgba(0, 0, 0, 0.3);
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 16px/145% var(--sans);
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #c4c2cb;
+    --text-h: #f3f4f6;
+    --bg: #16171d;
+    --bg-soft: #1c1d24;
+    --bg-soft-2: #22232c;
+    --border: #2e303a;
+    --code-bg: #1f2028;
+    --accent: #c084fc;
+    --accent-bg: rgba(192, 132, 252, 0.15);
+    --accent-border: rgba(192, 132, 252, 0.5);
+    --user-bubble-bg: #2a2535;
+
+    --label: #7a7c88;
+    --text-dim: #8b8d99;
+    --bracket: #ffb454;
+    --bracket-2: #ff8f3f;
+    --ok: #3fbf7f;
+    --ok-2: #58c98d;
+    --danger: #d0402e;
+    --danger-fg: #e0685a;
+    --brand-a: #863bff;
+    --brand-b: #47bfff;
+    --on-accent: #17121d;
+
+    --mana-w: #e7e2bf;
+    --mana-u: #4aa4f5;
+    --mana-b: #a17fc4;
+    --mana-r: #e85a44;
+    --mana-g: #3cbf76;
+    --mana-c: #a9adb8;
+    --venn-lens: #a074d8;
+    --pip-ring: rgba(255, 255, 255, 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+}
+
+h1, h2, h3 {
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+#root {
+  height: 100vh;
+  height: 100dvh;
+}

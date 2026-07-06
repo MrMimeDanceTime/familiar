@@ -32,6 +32,7 @@ def _normalize_card(raw: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "name": raw.get("name"),
+        "oracle_id": raw.get("oracle_id"),
         "mana_cost": raw.get("mana_cost"),
         "cmc": raw.get("cmc"),
         "type_line": raw.get("type_line"),

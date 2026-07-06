@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+:root{
+  --text:#c4c2cb; --text-h:#f3f4f6; --bg:#16171d; --bg-soft:#1c1d24;
+  --bg-soft2:#22232c; --border:#2e303a; --code-bg:#1f2028;
+  --accent:#c084fc; --accent-2:#63b3ff; --accent-bg:rgba(192,132,252,.15);
+  --accent-border:rgba(192,132,252,.5); --user-bubble-bg:#2a2535;
+  --sans:system-ui,'Segoe UI',Roboto,sans-serif;
+  --mono:ui-monospace,'SF Mono',Consolas,monospace;
+}
+body{margin:0;background:#0e0f13;color:var(--text);font:16px/1.45 var(--sans);}
+::selection{background:rgba(192,132,252,.3);}
+@keyframes fam-pulse{0%,100%{opacity:.35}50%{opacity:1}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;padding:44px 48px 90px;background:#0e0f13;">
+
+  <div style="display:flex;align-items:baseline;gap:16px;margin-bottom:6px;">
+    <div style="display:flex;align-items:center;gap:9px;">
+      <div style="width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#863bff,#47bfff);"></div>
+      <span style="font-size:19px;font-weight:700;color:var(--text-h);letter-spacing:-.01em;">Familiar</span>
+    </div>
+    <span style="font-size:13px;color:#7a7c88;">The Familiar system — 3A applied across every surface</span>
+  </div>
+  <p style="margin:0 0 30px;font-size:13.5px;color:#8b8d99;max-width:820px;">
+    <a href="#4a" style="color:var(--accent);text-decoration:none;">4A</a> takes 3A's language — compact mono micro-labels, WUBRG pips, dense stat strips, a conic power dial, restrained purple, no glow — into the full three-column app: sidebar, chat (bubbles, a proposal card, a markdown results table, tool-activity), and the live deck side-panel. <a href="#4b" style="color:var(--accent);text-decoration:none;">4B</a> is the import popover and <a href="#4c" style="color:var(--accent);text-decoration:none;">4C</a> the preferences modal in the same system. The deck manager <a href="#3a" style="color:var(--accent);text-decoration:none;">3A</a> and early explorations are kept below for reference.
+  </p>
+
+  <section id="turn4" style="display:flex;flex-direction:column;gap:40px;margin-bottom:56px;">
+
+    <!-- ============ 4A — FULL THREE-COLUMN APP ============ -->
+    <div id="4a" style="width:1440px;flex:0 0 auto;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">4A</span>
+        <span style="font-size:15px;font-weight:600;color:var(--text-h);">Full app — chat + shell + live deck panel</span>
+        <span style="font-size:12.5px;color:#7a7c88;">— 240 · 1fr · 320 three-column grid, 3A language throughout</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:240px 1fr 320px;height:824px;background:var(--bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 30px 70px -30px rgba(0,0,0,.8);">
+
+        <!-- ===== SIDEBAR ===== -->
+        <aside style="background:var(--bg-soft);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:16px 14px;gap:15px;overflow:hidden;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,#863bff,#47bfff);"></div>
+              <span style="font-size:16px;font-weight:700;color:var(--text-h);letter-spacing:-.01em;">Familiar</span>
+            </div>
+            <span style="width:28px;height:28px;border-radius:7px;border:1px solid var(--border);background:var(--bg);color:#8b8d99;display:flex;align-items:center;justify-content:center;font-size:13px;">⚙</span>
+          </div>
+
+          <div style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:3px;gap:3px;">
+            <button style="flex:1;font-size:12.5px;font-weight:600;padding:6px;border-radius:6px;border:none;background:var(--accent-bg);color:var(--accent);">Conversations</button>
+            <button style="flex:1;font-size:12.5px;padding:6px;border-radius:6px;border:none;background:transparent;color:#8b8d99;">Decks</button>
+          </div>
+
+          <button style="font-size:13px;font-weight:600;padding:10px;border-radius:9px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);">+ New conversation</button>
+
+          <div style="font:600 10px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;text-transform:uppercase;margin-top:4px;">Recent</div>
+          <div style="display:flex;flex-direction:column;gap:3px;overflow:hidden;">
+            <div style="padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.35;color:var(--text-h);background:var(--accent-bg);border-left:2px solid var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Korlash, Heir to Blackblade — voltron</div>
+            <div style="padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.35;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Krark + Sakashima — tune to bracket 3</div>
+            <div style="padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.35;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Colorless artifact stax brainstorm</div>
+          </div>
+        </aside>
+
+        <!-- ===== CHAT ===== -->
+        <main style="display:flex;flex-direction:column;background:var(--bg);overflow:hidden;min-width:0;">
+          <div style="flex:1;overflow:hidden;padding:26px 32px;display:flex;flex-direction:column;gap:20px;">
+
+            <div style="align-self:flex-end;max-width:72%;background:var(--user-bubble-bg);border:1px solid var(--border);border-radius:14px 14px 4px 14px;padding:12px 15px;font-size:13.5px;color:var(--text-h);line-height:1.5;">
+              Any changes to get this closer to PL 7/8 and trim it to bracket 3 at the same time?
+            </div>
+
+            <div style="max-width:90%;">
+              <div style="font:600 10px/1 var(--mono);letter-spacing:.16em;color:var(--accent);text-transform:uppercase;margin-bottom:9px;">Familiar</div>
+              <div style="font-size:13.5px;color:var(--text);line-height:1.55;">
+                <p style="margin:0 0 9px;">Yes — two swaps get you there without touching the game plan:</p>
+                <p style="margin:0;"><strong style="color:var(--text-h);">Bracket 3</strong> <span style="color:#8b8d99;">(3 Game Changers — Demonic Tutor, Necropotence, Vampiric Tutor)</span> · <strong style="color:var(--text-h);">PL ~7</strong> — same raw score, the deck just plays tighter.</p>
+              </div>
+
+              <!-- proposal card -->
+              <div style="margin-top:14px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:12px;background:var(--bg-soft);padding:15px 16px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                  <span style="font:600 10px/1 var(--mono);letter-spacing:.14em;color:var(--accent);text-transform:uppercase;">Proposed change</span>
+                  <span style="font:10px/1 var(--mono);color:#7a7c88;">4 cards · net 0</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:7px;margin-bottom:12px;">
+                  <div style="display:flex;align-items:center;gap:9px;font-size:13px;">
+                    <span style="width:17px;height:17px;border-radius:5px;background:rgba(208,64,46,.16);color:#e0685a;display:flex;align-items:center;justify-content:center;font:700 13px/1 var(--mono);flex:0 0 auto;">−</span>
+                    <span style="color:var(--text-h);flex:1;">Mana Vault</span>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;">fast, fragile</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:9px;font-size:13px;">
+                    <span style="width:17px;height:17px;border-radius:5px;background:rgba(63,191,127,.16);color:#58c98d;display:flex;align-items:center;justify-content:center;font:700 13px/1 var(--mono);flex:0 0 auto;">+</span>
+                    <span style="color:var(--text-h);flex:1;">Mishra's Bauble</span>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;">ramp + draw</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:9px;font-size:13px;">
+                    <span style="width:17px;height:17px;border-radius:5px;background:rgba(208,64,46,.16);color:#e0685a;display:flex;align-items:center;justify-content:center;font:700 13px/1 var(--mono);flex:0 0 auto;">−</span>
+                    <span style="color:var(--text-h);flex:1;">Nightmare</span>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;">6 MV beater</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:9px;font-size:13px;">
+                    <span style="width:17px;height:17px;border-radius:5px;background:rgba(63,191,127,.16);color:#58c98d;display:flex;align-items:center;justify-content:center;font:700 13px/1 var(--mono);flex:0 0 auto;">+</span>
+                    <span style="color:var(--text-h);flex:1;">Succumb to the Cold</span>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;">repeatable draw</span>
+                  </div>
+                </div>
+                <div style="font-size:12.5px;color:#8b8d99;line-height:1.45;margin-bottom:14px;">Drops the clunky top-end and adds a cheap draw outlet — nudges Avg MV down and pushes Draw over the ≥12 threshold.</div>
+                <div style="display:flex;gap:9px;">
+                  <button style="flex:1;padding:9px;border-radius:9px;border:1px solid transparent;background:var(--accent);color:#17121d;font-weight:700;font-size:13px;">✓ Approve both</button>
+                  <button style="flex:1;padding:9px;border-radius:9px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;">Deny</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- tool activity -->
+            <div style="display:flex;align-items:center;gap:9px;font:11.5px/1 var(--mono);color:#7a7c88;">
+              <span style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:fam-pulse 1.2s ease-in-out infinite;flex:0 0 auto;"></span>
+              Checked 100 cards against Scryfall · 2 flagged
+            </div>
+
+            <!-- familiar msg 2: table -->
+            <div style="max-width:96%;">
+              <div style="font:600 10px/1 var(--mono);letter-spacing:.16em;color:var(--accent);text-transform:uppercase;margin-bottom:9px;">Familiar</div>
+              <div style="font-size:13.5px;color:var(--text);line-height:1.55;margin-bottom:11px;">Projected final state if you approve both swaps:</div>
+              <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+                <div style="display:grid;grid-template-columns:1.1fr 46px 1.5fr 54px;gap:8px;padding:9px 10px;background:var(--bg-soft);border-bottom:1px solid var(--border);font:600 10px/1 var(--mono);letter-spacing:.1em;color:#7a7c88;text-transform:uppercase;">
+                  <span>Metric</span><span>Before</span><span>After</span><span style="text-align:right;">Score</span>
+                </div>
+                <sc-for list="{{ tableRows }}" as="tr" hint-placeholder-count="7">
+                  <div style="{{ tr.rowStyle }}">
+                    <span style="font-size:12.5px;color:var(--text-h);font-weight:500;">{{ tr.metric }}</span>
+                    <span style="font:11.5px/1 var(--mono);color:#7a7c88;">{{ tr.before }}</span>
+                    <span style="font:11.5px/1.3 var(--mono);color:var(--text);">{{ tr.after }}</span>
+                    <span style="font:600 11.5px/1 var(--mono);color:#58c98d;text-align:right;">{{ tr.score }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="font-size:13.5px;color:var(--text);line-height:1.55;margin-top:11px;"><strong style="color:var(--text-h);">Final Bracket 3 · PL 7</strong> — right in your sweet spot. Approve above and I'll update the list.</div>
+            </div>
+          </div>
+
+          <!-- composer -->
+          <div style="border-top:1px solid var(--border);padding:15px 20px;display:flex;gap:10px;align-items:center;background:var(--bg);">
+            <div style="flex:1;background:var(--bg-soft);border:1px solid var(--border);border-radius:11px;padding:12px 14px;font-size:13.5px;color:#7a7c88;">Ask Familiar to tune, swap, or explain a card…</div>
+            <button style="padding:12px 20px;border-radius:11px;border:1px solid transparent;background:var(--accent);color:#17121d;font-weight:700;font-size:13.5px;">Send</button>
+          </div>
+        </main>
+
+        <!-- ===== DECK SIDE-PANEL ===== -->
+        <aside style="background:var(--bg-soft);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;">
+          <div style="padding:16px 18px;border-bottom:1px solid var(--border);">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:5px;">
+              <span style="width:13px;height:13px;border-radius:50%;background:#6d5c80;box-shadow:0 0 0 1px rgba(255,255,255,.16);flex:0 0 auto;"></span>
+              <span style="font-size:16px;font-weight:700;color:var(--text-h);letter-spacing:-.01em;">Korlash Swamptron</span>
+            </div>
+            <div style="font:11px/1.4 var(--mono);color:#8b8d99;">Korlash, Heir to Blackblade · mono-black</div>
+            <div style="display:flex;gap:6px;margin-top:12px;">
+              <button style="flex:1;font:11px/1 var(--mono);padding:7px;border-radius:7px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Export</button>
+              <button style="flex:1;font:11px/1 var(--mono);padding:7px;border-radius:7px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Import</button>
+              <button style="flex:1.4;font:11px/1 var(--mono);padding:7px;border-radius:7px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:600;">Open →</button>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid var(--border);">
+            <div style="padding:12px 14px;border-right:1px solid var(--border);"><div style="font:600 9px/1 var(--mono);letter-spacing:.1em;color:#7a7c88;margin-bottom:7px;">POWER</div><span style="font:700 18px/1 var(--mono);color:var(--accent);">7</span><span style="font:10px/1 var(--mono);color:#7a7c88;">/10</span></div>
+            <div style="padding:12px 14px;border-right:1px solid var(--border);"><div style="font:600 9px/1 var(--mono);letter-spacing:.1em;color:#7a7c88;margin-bottom:7px;">BRACKET</div><span style="font:700 18px/1 var(--mono);color:#ffb454;">3</span><span style="font:10px/1 var(--mono);color:#7a7c88;">/5</span></div>
+            <div style="padding:12px 14px;"><div style="font:600 9px/1 var(--mono);letter-spacing:.1em;color:#7a7c88;margin-bottom:7px;">CARDS</div><span style="font:700 18px/1 var(--mono);color:var(--text-h);">100</span></div>
+          </div>
+
+          <div style="flex:1;overflow:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:13px;">
+            <sc-for list="{{ panelGroups }}" as="g" hint-placeholder-count="7">
+              <div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                  <span style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;text-transform:uppercase;">{{ g.name }}</span>
+                  <span style="font:10px/1 var(--mono);color:#7a7c88;">{{ g.count }}</span>
+                </div>
+                <sc-for list="{{ g.cards }}" as="card" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0;">
+                    <span style="font:600 10px/1 var(--mono);color:#7a7c88;width:14px;flex:0 0 auto;">{{ card.q }}×</span>
+                    <span style="{{ card.pip }}"></span>
+                    <span style="color:var(--text-h);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ card.name }}</span>
+                    <span style="font:10px/1 var(--mono);color:#7a7c88;flex:0 0 auto;">{{ card.mv }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ===== 4B + 4C row ===== -->
+    <div style="display:flex;gap:34px;flex-wrap:wrap;">
+
+      <!-- 4B import popover -->
+      <div id="4b" style="width:560px;flex:0 0 auto;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+          <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">4B</span>
+          <span style="font-size:15px;font-weight:600;color:var(--text-h);">Import popover</span>
+          <span style="font-size:12.5px;color:#7a7c88;">— portaled, anchored under Import</span>
+        </div>
+        <div style="background:#101116;border:1px solid var(--border);border-radius:16px;padding:24px;overflow:hidden;">
+          <div style="display:flex;justify-content:flex-end;gap:8px;">
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:7px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Export</button>
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:7px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:600;">Import ▾</button>
+          </div>
+          <div style="width:296px;margin-left:auto;margin-top:10px;background:var(--bg-soft);border:1px solid var(--border);border-radius:12px;box-shadow:0 24px 50px -20px rgba(0,0,0,.75);padding:16px;">
+            <div style="font:600 10px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;text-transform:uppercase;margin-bottom:12px;">Import from…</div>
+            <div style="display:flex;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:3px;gap:3px;margin-bottom:12px;">
+              <button style="flex:1;font-size:12.5px;padding:7px;border-radius:6px;border:none;background:transparent;color:#8b8d99;">Text</button>
+              <button style="flex:1;font-size:12.5px;font-weight:600;padding:7px;border-radius:6px;border:none;background:var(--accent-bg);color:var(--accent);">Archidekt</button>
+            </div>
+            <div style="background:var(--bg);border:1px solid var(--accent-border);border-radius:9px;padding:10px 12px;font-size:13px;color:#7a7c88;margin-bottom:12px;">archidekt.com/decks/… or id</div>
+            <button style="width:100%;font-size:13px;font-weight:600;padding:10px;border-radius:9px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);margin-bottom:10px;">Fetch from Archidekt</button>
+            <div style="font-size:11.5px;color:#8b8d99;line-height:1.4;">Merges into this deck; maybeboard is skipped.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4C preferences modal -->
+      <div id="4c" style="width:560px;flex:0 0 auto;">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+          <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">4C</span>
+          <span style="font-size:15px;font-weight:600;color:var(--text-h);">Preferences modal</span>
+          <span style="font-size:12.5px;color:#7a7c88;">— bracket · power · budget · rule-0</span>
+        </div>
+        <div style="background:#101116;border:1px solid var(--border);border-radius:16px;padding:30px 24px;overflow:hidden;">
+          <div style="width:400px;margin:0 auto;background:var(--bg);border:1px solid var(--border);border-radius:14px;box-shadow:0 30px 60px -24px rgba(0,0,0,.8);padding:22px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+              <h3 style="font-size:18px;font-weight:700;color:var(--text-h);">Preferences</h3>
+              <span style="width:26px;height:26px;border-radius:7px;border:1px solid var(--border);background:var(--bg-soft);color:#8b8d99;display:flex;align-items:center;justify-content:center;font-size:14px;">✕</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:15px;">
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--text-h);margin-bottom:7px;">Preferred bracket</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-soft);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:13px;color:var(--text-h);"><span>Bracket 3 — Upgraded</span><span style="color:#7a7c88;">▾</span></div>
+              </div>
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--text-h);margin-bottom:7px;">Preferred power level</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-soft);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:13px;color:var(--text-h);"><span>7</span><span style="color:#7a7c88;">▾</span></div>
+              </div>
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--text-h);margin-bottom:7px;">Budget</div>
+                <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-soft);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:13px;color:var(--text-h);"><span>Unlimited</span><span style="color:#7a7c88;">▾</span></div>
+              </div>
+              <div>
+                <div style="font-size:12px;font-weight:600;color:var(--text-h);margin-bottom:7px;">Rule 0 notes</div>
+                <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:12.5px;color:var(--text);line-height:1.5;min-height:70px;">Anything goes within reason — no Black Lotus or alpha/revised dual lands. We mostly play on Cockatrice.</div>
+              </div>
+              <button style="align-self:flex-start;padding:9px 20px;border-radius:9px;border:1px solid transparent;background:var(--accent);color:#17121d;font-weight:700;font-size:13px;margin-top:2px;">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="turn3" style="display:flex;gap:34px;align-items:flex-start;flex-wrap:nowrap;margin-bottom:52px;">
+
+    <!-- ============ OPTION 3A — CONSOLE v2 (1C top bar + merged pip + dense metric bar + 1A grid) ============ -->
+    <div id="3a" style="width:840px;flex:0 0 auto;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">3A</span>
+        <span style="font-size:15px;font-weight:600;color:var(--text-h);">Console v2</span>
+        <span style="font-size:12.5px;color:#7a7c88;">— 1C top bar + merged commander pip · dense metric strip · 1A grid</span>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.7);">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 22px;background:var(--bg-soft);">
+          <div style="display:flex;align-items:center;gap:11px;min-width:0;flex:1;">
+            <span style="position:relative;display:inline-block;width:26px;height:16px;flex:0 0 auto;">
+              <span style="position:absolute;left:0;top:0;width:16px;height:16px;border-radius:50%;background:#2f86e0;"></span>
+              <span style="position:absolute;left:10px;top:0;width:16px;height:16px;border-radius:50%;background:#d0402e;"></span>
+              <span style="position:absolute;left:10px;top:2px;width:6px;height:12px;border-radius:50%;background:#8a5cc0;"></span>
+            </span>
+            <span style="font-size:15px;font-weight:700;color:var(--text-h);letter-spacing:-.01em;flex:0 0 auto;">Sakashima and Krark</span>
+            <span style="font:11px/1 var(--mono);color:#7a7c88;flex:0 0 auto;">UR · Commander/EDH</span>
+            <span style="font:11px/1 var(--mono);color:#8b8d99;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Krark, the Thumbless / Sakashima of a Thousand Faces</span>
+          </div>
+          <div style="display:flex;gap:6px;flex:0 0 auto;">
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Export</button>
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Import</button>
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:6px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:600;">Open →</button>
+          </div>
+        </div>
+
+        <!-- dense metric bar -->
+        <div style="display:grid;grid-template-columns:1.35fr 1fr 1fr 1fr 1fr;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--bg-soft);">
+          <div style="padding:15px 18px;border-right:1px solid var(--border);display:flex;align-items:center;gap:13px;">
+            <div style="{{ powerRingSm }}"><div style="position:absolute;inset:6px;border-radius:50%;background:var(--bg-soft);display:flex;align-items:center;justify-content:center;"><span style="{{ gaugeNumSm }}">7</span></div></div>
+            <div>
+              <div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:6px;">POWER LEVEL</div>
+              <div style="font-size:13px;color:var(--text-h);font-weight:600;">High-power <span style="color:#7a7c88;font-weight:400;">· 7/10</span></div>
+            </div>
+          </div>
+          <div style="padding:15px 18px;border-right:1px solid var(--border);">
+            <div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">BRACKET</div>
+            <div style="display:flex;align-items:baseline;gap:5px;margin-bottom:12px;"><span style="font:700 26px/1 var(--mono);color:#ffb454;">3</span><span style="font:12px/1 var(--mono);color:#7a7c88;">/ 5</span></div>
+            <div style="display:flex;gap:8px;"><sc-for list="{{ bracketsSm }}" as="b" hint-placeholder-count="5"><span style="{{ b.style }}"></span></sc-for></div>
+          </div>
+          <div style="padding:15px 18px;border-right:1px solid var(--border);"><div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">CARDS</div><span style="font:700 26px/1 var(--mono);color:var(--text-h);">100</span><div style="font:11px/1 var(--mono);color:#3fbf7f;margin-top:8px;">legal ✓</div></div>
+          <div style="padding:15px 18px;border-right:1px solid var(--border);"><div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">AVG MV</div><span style="font:700 26px/1 var(--mono);color:var(--text-h);">2.6</span><div style="font:11px/1 var(--mono);color:#7a7c88;margin-top:8px;">nonland</div></div>
+          <div style="padding:15px 18px;"><div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">LANDS</div><span style="font:700 26px/1 var(--mono);color:var(--text-h);">34</span><div style="font:11px/1 var(--mono);color:#7a7c88;margin-top:8px;">34%</div></div>
+        </div>
+
+        <div style="padding:22px 26px 26px;">
+          <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-bottom:14px;">
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:16px;">MANA CURVE</div>
+              <div style="display:flex;align-items:flex-end;gap:12px;height:118px;">
+                <sc-for list="{{ curve }}" as="c" hint-placeholder-count="6">
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;justify-content:flex-end;height:100%;">
+                    <span style="font:600 12px/1 var(--mono);color:var(--text-h);">{{ c.n }}</span>
+                    <div style="{{ c.barA }}"></div>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;">{{ c.label }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:16px;">ROLE BALANCE</div>
+              <div style="display:flex;flex-direction:column;gap:12px;">
+                <sc-for list="{{ roles }}" as="r" hint-placeholder-count="4">
+                  <div>
+                    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;"><span style="color:var(--text-h);">{{ r.label }}</span><span style="font:600 12px/1 var(--mono);color:#8b8d99;">{{ r.n }}</span></div>
+                    <div style="height:8px;border-radius:4px;background:var(--bg-soft2);overflow:hidden;"><div style="{{ r.barA }}"></div></div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1.35fr;gap:14px;margin-bottom:24px;">
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:16px;">COLORS</div>
+              <div style="display:flex;flex-direction:column;gap:12px;">
+                <sc-for list="{{ colors }}" as="cl" hint-placeholder-count="2">
+                  <div style="display:flex;align-items:center;gap:11px;">
+                    <span style="{{ cl.pipA }}"></span>
+                    <span style="font-size:13.5px;color:var(--text-h);flex:1;">{{ cl.label }}</span>
+                    <span style="font:600 12px/1 var(--mono);color:#8b8d99;">{{ cl.n }} · {{ cl.pct }}%</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:14px;">TYPES</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px 22px;">
+                <sc-for list="{{ types }}" as="t" hint-placeholder-count="7">
+                  <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;"><span style="color:var(--text-h);">{{ t.label }}</span><span style="font:600 12px/1 var(--mono);color:#8b8d99;">{{ t.n }} · {{ t.pct }}%</span></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:12px;">QUICK ACTIONS</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:26px;">
+            <sc-for list="{{ actions }}" as="a" hint-placeholder-count="4">
+              <button style="font-size:13px;padding:9px 15px;border-radius:9px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:500;">{{ a }}</button>
+            </sc-for>
+          </div>
+
+          <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:14px;">DECKLIST · 100</div>
+          <div style="columns:2;column-gap:26px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="6">
+              <div style="break-inside:avoid;margin-bottom:16px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:7px;margin-bottom:6px;border-bottom:1px solid var(--border);">
+                  <span style="font-size:12px;font-weight:600;color:var(--text-h);letter-spacing:.02em;">{{ g.name }}</span>
+                  <span style="font:11px/1 var(--mono);color:#7a7c88;">{{ g.count }}</span>
+                </div>
+                <sc-for list="{{ g.cards }}" as="card" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:9px;padding:4px 0;font-size:13px;">
+                    <span style="font:600 11px/1 var(--mono);color:#7a7c88;width:16px;flex:0 0 auto;">{{ card.q }}×</span>
+                    <span style="{{ card.pipA }}"></span>
+                    <span style="color:var(--text-h);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ card.name }}</span>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;flex:0 0 auto;">{{ card.mv }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="turn1" style="display:flex;gap:34px;align-items:flex-start;flex-wrap:nowrap;">
+
+    <!-- ============ OPTION 1A — REFINED GRID ============ -->
+    <div id="1a" style="width:840px;flex:0 0 auto;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">1A</span>
+        <span style="font-size:15px;font-weight:600;color:var(--text-h);">Refined Grid</span>
+        <span style="font-size:12.5px;color:#7a7c88;">— tighten what's there · restrained accent · promoted power/bracket</span>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.7);">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 26px 18px;border-bottom:1px solid var(--border);">
+          <div>
+            <h2 style="font-size:22px;font-weight:700;color:var(--text-h);letter-spacing:-.01em;">Sakashima and Krark</h2>
+            <div style="margin-top:5px;display:flex;align-items:center;gap:8px;font-size:12.5px;color:#8b8d99;">
+              <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#2f86e0;box-shadow:0 0 0 1px rgba(255,255,255,.12);"></span>
+              <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#d0402e;box-shadow:0 0 0 1px rgba(255,255,255,.12);margin-left:-4px;"></span>
+              <span style="margin-left:3px;">Krark, the Thumbless / Sakashima of a Thousand Faces</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex:0 0 auto;">
+            <button style="font-size:12.5px;padding:7px 13px;border-radius:8px;border:1px solid var(--border);background:var(--bg-soft);color:var(--text);">Export</button>
+            <button style="font-size:12.5px;padding:7px 13px;border-radius:8px;border:1px solid var(--border);background:var(--bg-soft);color:var(--text);">Import</button>
+            <button style="font-size:12.5px;padding:7px 13px;border-radius:8px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:600;">Open conversation →</button>
+          </div>
+        </div>
+
+        <div style="padding:22px 26px 26px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+            <span style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;">FORMAT</span>
+            <span style="font-size:13px;color:var(--text-h);border:1px solid var(--border);background:var(--bg-soft);padding:6px 11px;border-radius:8px;">Commander / EDH ▾</span>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:14px;margin-bottom:14px;">
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;display:flex;align-items:center;gap:18px;">
+              <div style="{{ powerRing }}">
+                <div style="position:absolute;inset:9px;border-radius:50%;background:var(--bg-soft);display:flex;flex-direction:column;align-items:center;justify-content:center;">
+                  <span style="font:700 34px/1 var(--mono);color:var(--text-h);">7</span>
+                  <span style="font:12px/1 var(--mono);color:#7a7c88;margin-top:3px;">/ 10</span>
+                </div>
+              </div>
+              <div>
+                <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:8px;">POWER LEVEL</div>
+                <div style="font-size:13px;color:var(--text-h);font-weight:600;">High-power</div>
+                <div style="font-size:12px;color:#8b8d99;margin-top:3px;max-width:150px;">Tuned, focused lines; not cEDH.</div>
+              </div>
+            </div>
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:14px;">BRACKET</div>
+              <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:14px;">
+                <span style="font:700 40px/1 var(--mono);color:#ffb454;">3</span>
+                <span style="font:14px/1 var(--mono);color:#7a7c88;">/ 5</span>
+              </div>
+              <div style="display:flex;gap:5px;">
+                <span style="flex:1;height:6px;border-radius:3px;background:#ffb454;"></span>
+                <span style="flex:1;height:6px;border-radius:3px;background:#ffb454;"></span>
+                <span style="flex:1;height:6px;border-radius:3px;background:#ffb454;"></span>
+                <span style="flex:1;height:6px;border-radius:3px;background:var(--border);"></span>
+                <span style="flex:1;height:6px;border-radius:3px;background:var(--border);"></span>
+              </div>
+              <div style="font-size:11.5px;color:#8b8d99;margin-top:9px;">Upgraded</div>
+            </div>
+            <div style="display:grid;grid-template-rows:1fr 1fr;gap:14px;">
+              <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:14px 16px;">
+                <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:8px;">CARDS</div>
+                <div style="display:flex;align-items:baseline;gap:6px;"><span style="font:700 26px/1 var(--mono);color:var(--text-h);">100</span><span style="font-size:12px;color:#3fbf7f;">✓ legal</span></div>
+              </div>
+              <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:14px 16px;">
+                <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:8px;">AVG MV · NONLAND</div>
+                <div style="display:flex;align-items:baseline;gap:8px;"><span style="font:700 26px/1 var(--mono);color:var(--text-h);">2.6</span><span style="font-size:12px;color:#8b8d99;">34 lands · 34%</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-bottom:14px;">
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:16px;">MANA CURVE</div>
+              <div style="display:flex;align-items:flex-end;gap:12px;height:118px;">
+                <sc-for list="{{ curve }}" as="c" hint-placeholder-count="6">
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;justify-content:flex-end;height:100%;">
+                    <span style="font:600 12px/1 var(--mono);color:var(--text-h);">{{ c.n }}</span>
+                    <div style="{{ c.barA }}"></div>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;">{{ c.label }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:16px;">ROLE BALANCE</div>
+              <div style="display:flex;flex-direction:column;gap:12px;">
+                <sc-for list="{{ roles }}" as="r" hint-placeholder-count="4">
+                  <div>
+                    <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;"><span style="color:var(--text-h);">{{ r.label }}</span><span style="font:600 12px/1 var(--mono);color:#8b8d99;">{{ r.n }}</span></div>
+                    <div style="height:8px;border-radius:4px;background:var(--bg-soft2);overflow:hidden;"><div style="{{ r.barA }}"></div></div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1.35fr;gap:14px;margin-bottom:24px;">
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:16px;">COLORS</div>
+              <div style="display:flex;flex-direction:column;gap:12px;">
+                <sc-for list="{{ colors }}" as="cl" hint-placeholder-count="2">
+                  <div style="display:flex;align-items:center;gap:11px;">
+                    <span style="{{ cl.pipA }}"></span>
+                    <span style="font-size:13.5px;color:var(--text-h);flex:1;">{{ cl.label }}</span>
+                    <span style="font:600 12px/1 var(--mono);color:#8b8d99;">{{ cl.n }} · {{ cl.pct }}%</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:14px;padding:18px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:14px;">TYPES</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px 22px;">
+                <sc-for list="{{ types }}" as="t" hint-placeholder-count="7">
+                  <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;"><span style="color:var(--text-h);">{{ t.label }}</span><span style="font:600 12px/1 var(--mono);color:#8b8d99;">{{ t.n }} · {{ t.pct }}%</span></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:12px;">QUICK ACTIONS</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:26px;">
+            <sc-for list="{{ actions }}" as="a" hint-placeholder-count="4">
+              <button style="font-size:13px;padding:9px 15px;border-radius:9px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:500;">{{ a }}</button>
+            </sc-for>
+          </div>
+
+          <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#7a7c88;margin-bottom:14px;">DECKLIST · 100</div>
+          <div style="columns:2;column-gap:26px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="6">
+              <div style="break-inside:avoid;margin-bottom:16px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:7px;margin-bottom:6px;border-bottom:1px solid var(--border);">
+                  <span style="font-size:12px;font-weight:600;color:var(--text-h);letter-spacing:.02em;">{{ g.name }}</span>
+                  <span style="font:11px/1 var(--mono);color:#7a7c88;">{{ g.count }}</span>
+                </div>
+                <sc-for list="{{ g.cards }}" as="card" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:9px;padding:4px 0;font-size:13px;">
+                    <span style="font:600 11px/1 var(--mono);color:#7a7c88;width:16px;flex:0 0 auto;">{{ card.q }}×</span>
+                    <span style="{{ card.pipA }}"></span>
+                    <span style="color:var(--text-h);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ card.name }}</span>
+                    <span style="font:11px/1 var(--mono);color:#7a7c88;flex:0 0 auto;">{{ card.mv }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ OPTION 1B — GRIMOIRE ============ -->
+    <div id="1b" style="width:840px;flex:0 0 auto;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">1B</span>
+        <span style="font-size:15px;font-weight:600;color:var(--text-h);">Grimoire</span>
+        <span style="font-size:12.5px;color:#7a7c88;">— leaned-in “Familiar” theming · big power gauge · arcane accents</span>
+      </div>
+
+      <div style="background:linear-gradient(180deg,#191524,#141319 240px);border:1px solid #2c2740;border-radius:16px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(90,40,160,.5);position:relative;">
+        <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#863bff,#47bfff);"></div>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 26px 18px;">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:15px;">✦</span>
+              <h2 style="font-size:23px;font-weight:700;color:#f3f4f6;letter-spacing:-.01em;">Sakashima and Krark</h2>
+            </div>
+            <div style="margin-top:6px;font-size:12.5px;color:#9a92ad;">Krark, the Thumbless · Sakashima of a Thousand Faces</div>
+          </div>
+          <div style="display:flex;gap:8px;flex:0 0 auto;">
+            <button style="font-size:12.5px;padding:7px 13px;border-radius:8px;border:1px solid #322c47;background:rgba(255,255,255,.03);color:#c4c2cb;">Export</button>
+            <button style="font-size:12.5px;padding:7px 13px;border-radius:8px;border:1px solid #322c47;background:rgba(255,255,255,.03);color:#c4c2cb;">Import</button>
+            <button style="font-size:12.5px;padding:7px 13px;border-radius:8px;border:1px solid transparent;background:linear-gradient(135deg,#863bff,#47bfff);color:#fff;font-weight:600;">Open conversation →</button>
+          </div>
+        </div>
+
+        <div style="padding:6px 26px 26px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:16px;padding:22px;display:flex;align-items:center;gap:22px;position:relative;overflow:hidden;">
+              <div style="position:absolute;inset:0;background:radial-gradient(120px 120px at 24% 50%,rgba(134,59,255,.16),transparent 70%);"></div>
+              <div style="{{ powerRingB }}">
+                <div style="position:absolute;inset:11px;border-radius:50%;background:#141119;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:inset 0 0 24px rgba(134,59,255,.15);">
+                  <span style="{{ gaugeNum }}">7</span>
+                  <span style="font:11px/1 var(--mono);color:#8a83a0;margin-top:2px;letter-spacing:.1em;">POWER / 10</span>
+                </div>
+              </div>
+              <div style="position:relative;">
+                <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:10px;">ATTUNEMENT</div>
+                <div style="font-size:15px;color:#f3f4f6;font-weight:600;margin-bottom:4px;">High-power</div>
+                <div style="font-size:12px;color:#9a92ad;max-width:140px;line-height:1.4;">Fast, focused spellslinger. A step below cEDH.</div>
+              </div>
+            </div>
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:16px;padding:22px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:16px;">COMMANDER BRACKET</div>
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+                <sc-for list="{{ brackets }}" as="b" hint-placeholder-count="5">
+                  <span style="{{ b.style }}"><span style="{{ b.textStyle }}">{{ b.i }}</span></span>
+                </sc-for>
+              </div>
+              <div style="font-size:13px;color:#f3f4f6;font-weight:600;">Bracket 3 — Upgraded</div>
+              <div style="font-size:12px;color:#9a92ad;margin-top:4px;line-height:1.4;">Tuned staples, a few Game Changers, no cheap combos.</div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px;">
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:14px;padding:16px 18px;"><div style="font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:9px;">CARDS</div><span style="font:700 24px/1 var(--mono);color:#f3f4f6;">100</span></div>
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:14px;padding:16px 18px;"><div style="font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:9px;">AVG MV</div><span style="font:700 24px/1 var(--mono);color:#f3f4f6;">2.6</span></div>
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:14px;padding:16px 18px;"><div style="font:600 10.5px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:9px;">LANDS</div><span style="font:700 24px/1 var(--mono);color:#f3f4f6;">34</span> <span style="font:12px/1 var(--mono);color:#8a83a0;">34%</span></div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1.1fr 1fr;gap:16px;margin-bottom:16px;">
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:16px;padding:20px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:16px;">MANA CURVE</div>
+              <div style="display:flex;align-items:flex-end;gap:12px;height:112px;">
+                <sc-for list="{{ curve }}" as="c" hint-placeholder-count="6">
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;justify-content:flex-end;height:100%;">
+                    <span style="font:600 12px/1 var(--mono);color:#c8c4d4;">{{ c.n }}</span>
+                    <div style="{{ c.barB }}"></div>
+                    <span style="font:11px/1 var(--mono);color:#8a83a0;">{{ c.label }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:16px;padding:20px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:16px;">ROLE BALANCE</div>
+              <div style="display:flex;flex-direction:column;gap:13px;">
+                <sc-for list="{{ roles }}" as="r" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:11px;">
+                    <span style="width:64px;font-size:12.5px;color:#c8c4d4;flex:0 0 auto;">{{ r.label }}</span>
+                    <div style="flex:1;height:9px;border-radius:5px;background:rgba(255,255,255,.05);overflow:hidden;"><div style="{{ r.barB }}"></div></div>
+                    <span style="font:600 12px/1 var(--mono);color:#9a92ad;width:20px;text-align:right;flex:0 0 auto;">{{ r.n }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:16px;margin-bottom:24px;">
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:16px;padding:20px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:16px;">COLOR IDENTITY</div>
+              <div style="display:flex;flex-direction:column;gap:14px;">
+                <sc-for list="{{ colors }}" as="cl" hint-placeholder-count="2">
+                  <div style="display:flex;align-items:center;gap:12px;">
+                    <span style="{{ cl.pipB }}">{{ cl.glyph }}</span>
+                    <span style="font-size:13.5px;color:#f3f4f6;flex:1;">{{ cl.label }}</span>
+                    <span style="font:600 12px/1 var(--mono);color:#9a92ad;">{{ cl.pct }}%</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:rgba(20,17,30,.6);border:1px solid #2c2740;border-radius:16px;padding:20px;">
+              <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:14px;">TYPES</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 22px;">
+                <sc-for list="{{ types }}" as="t" hint-placeholder-count="7">
+                  <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px;"><span style="color:#c8c4d4;">{{ t.label }}</span><span style="font:600 12px/1 var(--mono);color:#9a92ad;">{{ t.n }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:12px;">CAST A PROMPT</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:26px;">
+            <sc-for list="{{ actions }}" as="a" hint-placeholder-count="4">
+              <button style="font-size:13px;padding:9px 15px;border-radius:20px;border:1px solid #3a2f57;background:rgba(134,59,255,.1);color:#c9a8ff;font-weight:500;">✦ {{ a }}</button>
+            </sc-for>
+          </div>
+
+          <div style="font:600 11px/1 var(--mono);letter-spacing:.14em;color:#8a83a0;margin-bottom:14px;">THE SPELLBOOK · 100</div>
+          <div style="columns:2;column-gap:26px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="6">
+              <div style="break-inside:avoid;margin-bottom:16px;padding-left:12px;border-left:2px solid #322c47;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;">
+                  <span style="font-size:12px;font-weight:700;color:#c9a8ff;letter-spacing:.04em;text-transform:uppercase;">{{ g.name }}</span>
+                  <span style="font:11px/1 var(--mono);color:#8a83a0;">{{ g.count }}</span>
+                </div>
+                <sc-for list="{{ g.cards }}" as="card" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:9px;padding:4px 0;font-size:13px;">
+                    <span style="{{ card.pipB }}"></span>
+                    <span style="color:#e6e3ee;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ card.name }}</span>
+                    <span style="font:11px/1 var(--mono);color:#8a83a0;flex:0 0 auto;">{{ card.mv }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ OPTION 1C — ANALYST ============ -->
+    <div id="1c" style="width:840px;flex:0 0 auto;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <span style="font:600 12px/1 var(--mono);letter-spacing:.12em;color:#0e0f13;background:var(--accent);padding:6px 9px;border-radius:6px;">1C</span>
+        <span style="font-size:15px;font-weight:600;color:var(--text-h);">Analyst</span>
+        <span style="font-size:12.5px;color:#7a7c88;">— dense dashboard · monospace numerals · table decklist</span>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.7);">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px;border-bottom:1px solid var(--border);background:var(--bg-soft);">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="display:flex;"><span style="width:12px;height:12px;border-radius:50%;background:#2f86e0;"></span><span style="width:12px;height:12px;border-radius:50%;background:#d0402e;margin-left:-4px;"></span></div>
+            <span style="font-size:15px;font-weight:700;color:var(--text-h);">Sakashima and Krark</span>
+            <span style="font:11px/1 var(--mono);color:#7a7c88;">UR · Commander/EDH</span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Export</button>
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">Import</button>
+            <button style="font:12px/1 var(--mono);padding:7px 11px;border-radius:6px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);font-weight:600;">Open →</button>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);">
+          <div style="padding:16px 18px;border-right:1px solid var(--border);">
+            <div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">POWER</div>
+            <div style="display:flex;align-items:baseline;gap:4px;"><span style="font:700 30px/1 var(--mono);color:var(--accent);">7</span><span style="font:12px/1 var(--mono);color:#7a7c88;">/10</span></div>
+            <div style="display:flex;gap:2px;margin-top:9px;">
+              <sc-for list="{{ plTicks }}" as="p" hint-placeholder-count="10">
+                <span style="{{ p.style }}"></span>
+              </sc-for>
+            </div>
+          </div>
+          <div style="padding:16px 18px;border-right:1px solid var(--border);">
+            <div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">BRACKET</div>
+            <div style="display:flex;align-items:baseline;gap:4px;"><span style="font:700 30px/1 var(--mono);color:#ffb454;">3</span><span style="font:12px/1 var(--mono);color:#7a7c88;">/5</span></div>
+            <div style="display:flex;gap:2px;margin-top:9px;">
+              <sc-for list="{{ brTicks }}" as="p" hint-placeholder-count="5">
+                <span style="{{ p.style }}"></span>
+              </sc-for>
+            </div>
+          </div>
+          <div style="padding:16px 18px;border-right:1px solid var(--border);"><div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">CARDS</div><span style="font:700 30px/1 var(--mono);color:var(--text-h);">100</span><div style="font:11px/1 var(--mono);color:#3fbf7f;margin-top:9px;">legal ✓</div></div>
+          <div style="padding:16px 18px;border-right:1px solid var(--border);"><div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">AVG MV</div><span style="font:700 30px/1 var(--mono);color:var(--text-h);">2.6</span><div style="font:11px/1 var(--mono);color:#7a7c88;margin-top:9px;">nonland</div></div>
+          <div style="padding:16px 18px;"><div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:9px;">LANDS</div><span style="font:700 30px/1 var(--mono);color:var(--text-h);">34</span><div style="font:11px/1 var(--mono);color:#7a7c88;margin-top:9px;">34%</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;">
+          <div style="padding:18px 22px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);">
+            <div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:14px;">MANA CURVE</div>
+            <div style="display:flex;align-items:flex-end;gap:8px;height:84px;">
+              <sc-for list="{{ curve }}" as="c" hint-placeholder-count="6">
+                <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;justify-content:flex-end;height:100%;">
+                  <span style="font:11px/1 var(--mono);color:#8b8d99;">{{ c.n }}</span>
+                  <div style="{{ c.barC }}"></div>
+                  <span style="font:10px/1 var(--mono);color:#7a7c88;">{{ c.label }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="padding:18px 22px;border-bottom:1px solid var(--border);">
+            <div style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-bottom:14px;">ROLE BALANCE</div>
+            <div style="display:flex;height:14px;border-radius:4px;overflow:hidden;margin-bottom:12px;">
+              <sc-for list="{{ roles }}" as="r" hint-placeholder-count="4">
+                <div style="{{ r.segC }}"></div>
+              </sc-for>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;">
+              <sc-for list="{{ roles }}" as="r" hint-placeholder-count="4">
+                <div style="display:flex;align-items:center;gap:7px;font:11.5px/1 var(--mono);"><span style="{{ r.dotC }}"></span><span style="color:var(--text-h);flex:1;">{{ r.label }}</span><span style="color:#8b8d99;">{{ r.n }}</span></div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:8px;padding:16px 22px;border-bottom:1px solid var(--border);align-items:center;">
+          <span style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;margin-right:4px;">TYPES</span>
+          <sc-for list="{{ types }}" as="t" hint-placeholder-count="7">
+            <span style="font:11.5px/1 var(--mono);color:var(--text-h);background:var(--bg-soft);border:1px solid var(--border);border-radius:6px;padding:5px 9px;">{{ t.label }} <span style="color:#8b8d99;">{{ t.n }}</span></span>
+          </sc-for>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:8px;padding:14px 22px;border-bottom:1px solid var(--border);">
+          <sc-for list="{{ actions }}" as="a" hint-placeholder-count="4">
+            <button style="font:12px/1 var(--mono);padding:8px 12px;border-radius:6px;border:1px solid var(--accent-border);background:var(--accent-bg);color:var(--accent);">{{ a }}</button>
+          </sc-for>
+        </div>
+
+        <div style="padding:16px 22px 20px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span style="font:600 10px/1 var(--mono);letter-spacing:.12em;color:#7a7c88;">DECKLIST</span>
+            <span style="font:11px/1 var(--mono);color:#7a7c88;">100 cards · grouped by type</span>
+          </div>
+          <div style="display:flex;flex-direction:column;">
+            <div style="display:grid;grid-template-columns:34px 20px 1fr 96px 34px;gap:8px;padding:0 8px 7px;font:600 10px/1 var(--mono);letter-spacing:.08em;color:#7a7c88;border-bottom:1px solid var(--border);">
+              <span>QTY</span><span></span><span>NAME</span><span>TYPE</span><span style="text-align:right;">MV</span>
+            </div>
+            <sc-for list="{{ flatCards }}" as="row" hint-placeholder-count="14">
+              <div style="{{ row.rowStyle }}">
+                <span style="font:11px/1 var(--mono);color:#8b8d99;">{{ row.q }}×</span>
+                <span style="{{ row.pipDot }}"></span>
+                <span style="color:var(--text-h);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ row.name }}</span>
+                <span style="font:11px/1 var(--mono);color:#8b8d99;">{{ row.type }}</span>
+                <span style="font:11px/1 var(--mono);color:#8b8d99;text-align:right;">{{ row.mv }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2700,&quot;height&quot;:1500}}">
+class Component extends DCLogic {
+  renderVals() {
+    const PIP = { W:'#e7e2bf', U:'#2f86e0', B:'#5a4a68', R:'#d0402e', G:'#2f9e5f', C:'#6f7280' };
+    const GLYPH = { W:'☀', U:'💧', B:'💀', R:'🔥', G:'🌳', C:'◇' };
+
+    // mana curve
+    const curveRaw = [['0-1',13],['2',22],['3',17],['4',10],['5',1],['6+',3]];
+    const cmax = Math.max(...curveRaw.map(c=>c[1]));
+    const curve = curveRaw.map(([label,n]) => {
+      const h  = Math.max(6, Math.round(n/cmax*96));
+      const hs = Math.max(5, Math.round(n/cmax*72));
+      return {
+        label, n,
+        barA: { height:h+'px', width:'100%', borderRadius:'6px 6px 2px 2px', background:'linear-gradient(180deg,var(--accent),rgba(192,132,252,.45))' },
+        barB: { height:h+'px', width:'100%', borderRadius:'6px 6px 3px 3px', background:'linear-gradient(180deg,#c084fc,#7a4fd6)', boxShadow:'0 0 14px -3px rgba(192,132,252,.7)' },
+        barC: { height:hs+'px', width:'100%', borderRadius:'3px 3px 0 0', background:'var(--accent)', opacity:0.85 },
+      };
+    });
+
+    // roles
+    const roleRaw = [['Lands',34,'#7c7f8c'],['Ramp',15,'#2f9e5f'],['Draw',10,'#2f86e0'],['Removal',11,'#d0402e']];
+    const rmax = Math.max(...roleRaw.map(r=>r[1]));
+    const rtot = roleRaw.reduce((s,r)=>s+r[1],0);
+    const roles = roleRaw.map(([label,n,col]) => ({
+      label, n,
+      barA: { width:Math.round(n/rmax*100)+'%', background:col, height:'100%', borderRadius:'4px' },
+      barB: { width:Math.round(n/rmax*100)+'%', background:col, color:col, height:'100%', borderRadius:'5px', boxShadow:'0 0 10px -2px currentColor' },
+      segC: { width:(n/rtot*100)+'%', background:col, height:'100%' },
+      dotC: { width:'9px', height:'9px', borderRadius:'2px', flex:'0 0 auto', background:col },
+    }));
+
+    // types
+    const types = [['Creature',19],['Instant',16],['Sorcery',16],['Artifact',11],['Enchantment',3],['Planeswalker',1],['Land',34]]
+      .map(([label,n]) => ({ label, n, pct:n }));
+
+    // colors
+    const pipBase = { borderRadius:'50%', flex:'0 0 auto' };
+    const colors = [
+      { label:'Blue', n:50, pct:57, glyph:GLYPH.U,
+        pipA:{ ...pipBase, width:'22px', height:'22px', background:PIP.U, color:PIP.U, boxShadow:'0 0 0 1px rgba(255,255,255,.14),0 0 12px -2px currentColor' },
+        pipB:{ ...pipBase, width:'26px', height:'26px', background:PIP.U, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'12px', boxShadow:'0 0 0 1px rgba(255,255,255,.14),0 0 16px -2px '+PIP.U } },
+      { label:'Red', n:50, pct:57, glyph:GLYPH.R,
+        pipA:{ ...pipBase, width:'22px', height:'22px', background:PIP.R, color:PIP.R, boxShadow:'0 0 0 1px rgba(255,255,255,.14),0 0 12px -2px currentColor' },
+        pipB:{ ...pipBase, width:'26px', height:'26px', background:PIP.R, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'12px', boxShadow:'0 0 0 1px rgba(255,255,255,.14),0 0 16px -2px '+PIP.R } },
+    ];
+
+    // power ring (7/10)
+    const pl = 7;
+    const powerRing  = { position:'relative', width:'96px', height:'96px', flex:'0 0 auto', borderRadius:'50%',
+      background:`conic-gradient(var(--accent) 0turn ${pl/10}turn, var(--border) ${pl/10}turn 1turn)` };
+    const powerRingB = { position:'relative', width:'130px', height:'130px', flex:'0 0 auto', borderRadius:'50%',
+      background:`conic-gradient(from -0.02turn, #863bff 0turn, #47bfff ${pl/10}turn, rgba(255,255,255,.06) ${pl/10}turn 1turn)` };
+    const gaugeNum = { fontFamily:'var(--mono)', fontWeight:700, fontSize:'46px', lineHeight:1,
+      background:'linear-gradient(135deg,#c084fc,#63b3ff)', WebkitBackgroundClip:'text', backgroundClip:'text', color:'transparent' };
+
+    // bracket diamonds (3/5)
+    const br = 3;
+    const brackets = [1,2,3,4,5].map(i => ({
+      i,
+      style: i<=br
+        ? { width:'34px', height:'34px', transform:'rotate(45deg)', borderRadius:'7px', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(135deg,#ffb454,#ff8f3f)', boxShadow:'0 0 14px -3px rgba(255,180,84,.8)' }
+        : { width:'34px', height:'34px', transform:'rotate(45deg)', borderRadius:'7px', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(255,255,255,.04)', border:'1px solid #322c47' },
+      textStyle: { transform:'rotate(-45deg)', fontFamily:'var(--mono)', fontWeight:700, fontSize:'14px', color: i<=br ? '#241400' : '#5c5670' },
+    }));
+
+    // power / bracket ticks (analyst)
+    const tickBase = { flex:1, height:'4px', borderRadius:'1px' };
+    const plTicks = Array.from({length:10}, (_,k) => ({ style:{ ...tickBase, background: k < pl ? 'var(--accent)' : 'var(--border)' } }));
+    const brTicks = Array.from({length:5},  (_,k) => ({ style:{ ...tickBase, background: k < br ? '#ffb454' : 'var(--border)' } }));
+
+    // decklist — Izzet Krark/Sakashima
+    const dot = (c) => ({ width:'9px', height:'9px', borderRadius:'50%', flex:'0 0 auto', background:PIP[c], color:PIP[c] });
+    const dotB = (c) => ({ width:'16px', height:'16px', borderRadius:'50%', flex:'0 0 auto', background:PIP[c], boxShadow:'0 0 8px -2px '+PIP[c] });
+    const mk = (q,name,mv,c) => ({ q,name,mv,c, pipA:dot(c), pipB:dotB(c) });
+    const groups = [
+      { name:'Commanders', count:2, cards:[ mk(1,'Krark, the Thumbless',2,'R'), mk(1,'Sakashima of a Thousand Faces',5,'U') ] },
+      { name:'Planeswalker', count:1, cards:[ mk(1,'Ral, Storm Conduit',4,'U') ] },
+      { name:'Creatures', count:8, cards:[ mk(1,'Third Path Iconoclast',2,'U'), mk(1,'Young Pyromancer',2,'R'), mk(1,'Snapcaster Mage',2,'U'), mk(1,'Storm-Kiln Artist',3,'R'), mk(1,'Birgi, God of Storytelling',3,'R'), mk(1,'Talrand, Sky Summoner',4,'U'), mk(1,'Archmage Emeritus',4,'U'), mk(1,'Murmuring Mystic',5,'U') ] },
+      { name:'Instants', count:8, cards:[ mk(1,'Brainstorm',1,'U'), mk(1,'Consider',1,'U'), mk(1,'Swan Song',1,'U'), mk(1,'Lightning Bolt',1,'R'), mk(1,"An Offer You Can't Refuse",1,'U'), mk(1,'Counterspell',2,'U'), mk(1,'Reckless Rage',1,'R'), mk(1,'Deflecting Swat',3,'R') ] },
+      { name:'Sorceries', count:7, cards:[ mk(1,'Ponder',1,'U'), mk(1,'Preordain',1,'U'), mk(1,'Faithless Looting',1,'R'), mk(1,'Gamble',1,'R'), mk(1,'Reckless Impulse',2,'R'), mk(1,'Wheel of Fortune',3,'R'), mk(1,'Windfall',3,'U') ] },
+      { name:'Artifacts', count:8, cards:[ mk(1,'Sol Ring',1,'C'), mk(1,"Sensei's Divining Top",1,'C'), mk(1,'Arcane Signet',2,'C'), mk(1,'Izzet Signet',2,'C'), mk(1,'Fellwar Stone',2,'C'), mk(1,'Mind Stone',2,'C'), mk(1,'Lightning Greaves',2,'C'), mk(1,'Aetherflux Reservoir',4,'C') ] },
+      { name:'Enchantments', count:3, cards:[ mk(1,'Mystic Remora',1,'U'), mk(1,'Underworld Breach',3,'R'), mk(1,'Rhystic Study',3,'U') ] },
+      { name:'Lands', count:34, cards:[ mk(1,'Command Tower',0,'C'), mk(1,'Steam Vents',0,'C'), mk(1,'Spirebluff Canal',0,'C'), mk(9,'Island',0,'U'), mk(8,'Mountain',0,'R'), mk(1,'Otawara, Soaring City',0,'U') ] },
+    ];
+
+    // flat table for analyst
+    const typeOf = { 'Commanders':'Commander','Planeswalker':'Planeswalker','Creatures':'Creature','Instants':'Instant','Sorceries':'Sorcery','Artifacts':'Artifact','Enchantments':'Enchantment','Lands':'Land' };
+    const rowBase = { display:'grid', gridTemplateColumns:'34px 20px 1fr 96px 34px', gap:'8px', padding:'7px 8px', alignItems:'center', fontSize:'12.5px', borderBottom:'1px solid rgba(46,48,58,.5)' };
+    let i = 0;
+    const flatCards = [];
+    groups.forEach(g => g.cards.forEach(c => {
+      flatCards.push({ q:c.q, name:c.name, mv:c.mv, type:typeOf[g.name], pipDot:{ width:'9px', height:'9px', borderRadius:'50%', background:PIP[c.c] },
+        rowStyle: (i++ % 2) ? { ...rowBase, background:'rgba(255,255,255,.014)' } : rowBase });
+    }));
+
+    const actions = ['Tune this deck','Fix my mana curve','Assess power level','Review my removal'];
+
+    // compact gauges + small diamonds for the synthesis (turn 2)
+    const powerRingSm  = { position:'relative', width:'56px', height:'56px', flex:'0 0 auto', borderRadius:'50%',
+      background:`conic-gradient(var(--accent) 0turn ${pl/10}turn, var(--border) ${pl/10}turn 1turn)` };
+    const powerRingSmB = { position:'relative', width:'56px', height:'56px', flex:'0 0 auto', borderRadius:'50%',
+      background:`conic-gradient(from -0.02turn, #863bff 0turn, #47bfff ${pl/10}turn, rgba(255,255,255,.06) ${pl/10}turn 1turn)` };
+    const gaugeNumSm  = { fontFamily:'var(--mono)', fontWeight:700, fontSize:'19px', lineHeight:1, color:'var(--text-h)' };
+    const gaugeNumSmB = { fontFamily:'var(--mono)', fontWeight:700, fontSize:'19px', lineHeight:1,
+      background:'linear-gradient(135deg,#c9a2ff,#63b3ff)', WebkitBackgroundClip:'text', backgroundClip:'text', color:'transparent' };
+    // merged commander identity pip — half blue / half red (UR), crisp not glowy
+    const splitPipTop = { width:'14px', height:'14px', borderRadius:'50%', flex:'0 0 auto',
+      background:'linear-gradient(90deg,#2f86e0 0 50%,#d0402e 50% 100%)', boxShadow:'0 0 0 1px rgba(255,255,255,.16)' };
+
+    const bracketsSm = [1,2,3,4,5].map(i => ({
+      i,
+      style: i<=br
+        ? { width:'14px', height:'14px', transform:'rotate(45deg)', borderRadius:'3px', flex:'0 0 auto', background:'linear-gradient(135deg,#ffb454,#ff8f3f)', boxShadow:'0 0 10px -3px rgba(255,180,84,.9)' }
+        : { width:'14px', height:'14px', transform:'rotate(45deg)', borderRadius:'3px', flex:'0 0 auto', background:'rgba(255,255,255,.04)', border:'1px solid var(--border)' },
+    }));
+
+    // ---------- surfaces (turn 4): shell · chat · side-panel ----------
+    const convItems = [
+      { title:'Korlash, Heir to Blackblade — mono-black voltron', active:true },
+      { title:'Krark + Sakashima — tune toward bracket 3', active:false },
+      { title:'Colorless artifact stax brainstorm', active:false },
+    ];
+    const pB = (c) => ({ width:'9px', height:'9px', borderRadius:'50%', flex:'0 0 auto', background:({ B:'#6d5c80', C:'#6f7280' })[c] || '#6f7280' });
+    const mkp = (q,name,mv,c) => ({ q, name, mv, c, pip: pB(c) });
+    const panelGroups = [
+      { name:'Commander', count:1, cards:[ mkp(1,'Korlash, Heir to Blackblade',4,'B') ] },
+      { name:'Equipment', count:9, cards:[ mkp(1,'Lashwrithe',4,'C'), mkp(1,'Nightmare Lash',4,'C'), mkp(1,'Blackblade Reforged',2,'C'), mkp(1,'Strata Scythe',3,'C'), mkp(1,'Whispersilk Cloak',3,'C'), mkp(1,'Commander\u2019s Plate',1,'C'), mkp(1,'Shadowspear',1,'C'), mkp(1,'Lightning Greaves',2,'C'), mkp(1,'Swiftfoot Boots',2,'C') ] },
+      { name:'Ramp', count:2, cards:[ mkp(1,'Jet Medallion',2,'C'), mkp(1,'Charcoal Diamond',2,'C') ] },
+      { name:'Card Draw', count:3, cards:[ mkp(1,'Necropotence',3,'B'), mkp(1,'Nightmare',6,'B'), mkp(1,'Essence Harvest',3,'B') ] },
+      { name:'Tutors', count:2, cards:[ mkp(1,'Demonic Tutor',2,'B'), mkp(1,'Vampiric Tutor',1,'B') ] },
+      { name:'Interaction', count:4, cards:[ mkp(1,'Consuming Corruption',2,'B'), mkp(1,'Imp\u2019s Mischief',2,'B'), mkp(1,'Silent Arbiter',4,'C'), mkp(1,'Squelching Leeches',4,'B') ] },
+      { name:'Payoffs', count:3, cards:[ mkp(1,'Hatred',5,'B'), mkp(1,'Tainted Strike',1,'B'), mkp(1,'Dauthi Embrace',3,'B') ] },
+    ];
+    const trBase = { display:'grid', gridTemplateColumns:'1.1fr 46px 1.5fr 54px', gap:'8px', padding:'8px 10px', alignItems:'center', borderBottom:'1px solid rgba(46,48,58,.6)' };
+    const tableRaw = [
+      ['Lands','38','36','+0.5'],['Ramp','14','14 · Vault→Bauble','+2.0'],['Draw','11','12 · +Succumb','+1.5'],
+      ['Interaction','12','12','+1.0'],['Avg MV','2.8','~2.8','+1.0'],['Raw score','5.5','6.0','7/10'],['Bracket','4','3 · 3 GCs','✓'],
+    ];
+    const tableRows = tableRaw.map(([metric,before,after,score],i) => ({
+      metric, before, after, score,
+      rowStyle: (i % 2) ? { ...trBase, background:'rgba(255,255,255,.014)' } : trBase,
+    }));
+
+    return { curve, roles, types, colors, powerRing, powerRingB, gaugeNum, brackets, plTicks, brTicks, groups, flatCards, actions,
+      powerRingSm, powerRingSmB, gaugeNumSm, gaugeNumSmB, bracketsSm, splitPipTop,
+      convItems, panelGroups, tableRows };
+  }
+}
+</script>
+</body>
+</html>

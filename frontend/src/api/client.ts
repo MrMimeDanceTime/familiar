@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Deck } from '../types/api'
+import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, ImportResult, UserPreferences } from '../types/api'
 
 async function asJson<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -23,7 +23,7 @@ export const api = {
   getDeck: (id: number): Promise<Deck> =>
     fetch(`/api/decks/${id}`).then((r) => asJson<Deck>(r)),
 
-  updateDeck: (id: number, body: Partial<Pick<Deck, 'name' | 'commander' | 'partner_commander' | 'notes' | 'power_level'>>): Promise<Deck> =>
+  updateDeck: (id: number, body: Partial<Pick<Deck, 'name' | 'commander' | 'partner_commander' | 'notes' | 'power_level' | 'format'>>): Promise<Deck> =>
     fetch(`/api/decks/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -32,4 +32,73 @@ export const api = {
 
   deleteDeck: (id: number): Promise<{ ok: boolean }> =>
     fetch(`/api/decks/${id}`, { method: 'DELETE' }).then((r) => asJson<{ ok: boolean }>(r)),
+
+  createDeck: (name?: string, commander?: string): Promise<Deck> =>
+    fetch('/api/decks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, commander }),
+    }).then((r) => asJson<Deck>(r)),
+
+  setCommanders: (
+    deckId: number,
+    body: { commander: string | null; partner_commander: string | null },
+  ): Promise<Deck> =>
+    fetch(`/api/decks/${deckId}/commanders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => asJson<Deck>(r)),
+
+  importDecklist: (deckId: number, text: string): Promise<ImportResult> =>
+    fetch(`/api/decks/${deckId}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).then((r) => asJson<ImportResult>(r)),
+
+  listProviders: (): Promise<{ providers: DeckProvider[] }> =>
+    fetch('/api/decks/providers').then((r) => asJson<{ providers: DeckProvider[] }>(r)),
+
+  fetchDeckFrom: (deckId: number, provider: string, ref: string): Promise<ImportResult> =>
+    fetch(`/api/decks/${deckId}/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, ref }),
+    }).then((r) => asJson<ImportResult>(r)),
+
+  pushDeckTo: (deckId: number, provider: string): Promise<{ url: string; external_id: string }> =>
+    fetch(`/api/decks/${deckId}/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    }).then((r) => asJson<{ url: string; external_id: string }>(r)),
+
+  getDeckConversation: (deckId: number): Promise<Conversation> =>
+    fetch(`/api/decks/${deckId}/conversation`).then((r) => asJson<Conversation>(r)),
+
+  listDeckConversations: (deckId: number): Promise<Conversation[]> =>
+    fetch(`/api/decks/${deckId}/conversations`).then((r) => asJson<Conversation[]>(r)),
+
+  startDeckConversation: (deckId: number): Promise<Conversation> =>
+    fetch(`/api/decks/${deckId}/start-conversation`, { method: 'POST' }).then((r) => asJson<Conversation>(r)),
+
+  getDeckStats: (deckId: number): Promise<DeckStats> =>
+    fetch(`/api/decks/${deckId}/stats`).then((r) => asJson<DeckStats>(r)),
+
+  applyProposal: (proposalId: number): Promise<Deck> =>
+    fetch(`/api/decks/proposals/${proposalId}/apply`, { method: 'POST' }).then((r) => asJson<Deck>(r)),
+
+  denyProposal: (proposalId: number): Promise<{ ok: boolean }> =>
+    fetch(`/api/decks/proposals/${proposalId}/deny`, { method: 'POST' }).then((r) => asJson<{ ok: boolean }>(r)),
+
+  getPreferences: (): Promise<UserPreferences> =>
+    fetch('/api/preferences').then((r) => asJson<UserPreferences>(r)),
+
+  updatePreferences: (body: Partial<UserPreferences>): Promise<UserPreferences> =>
+    fetch('/api/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => asJson<UserPreferences>(r)),
 }
