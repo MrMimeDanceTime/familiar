@@ -4,7 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>Familiar — MTG Deckbuilding</title>
+    <script>
+      // Apply the stored theme before first paint to avoid a light/dark flash.
+      // Mirrors useTheme.ts: a stored choice stamps data-theme; no choice
+      // leaves it off so prefers-color-scheme drives the theme.
+      (function () {
+        try {
+          var t = localStorage.getItem('familiar-theme')
+          if (t === 'light' || t === 'dark') {
+            document.documentElement.setAttribute('data-theme', t)
+          }
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

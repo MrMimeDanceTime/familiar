@@ -8,8 +8,12 @@ venv/
 
 # Backend data
 backend/familiar.db
+backend/familiar.db.bak*
+backend/*.db.bak*
 backend/cache/edhrec/*.json
 !backend/cache/edhrec/.gitkeep
+# Regenerable Scryfall oracle-tags bulk cache (~18MB, re-downloaded every 24h)
+backend/oracle_tags_cache.json
 
 # Env
 .env

@@ -1,16 +1,30 @@
 import { useCallback, useRef, useState } from 'react'
 import { streamChat } from '../api/sse'
-import type { Deck } from '../types/api'
+import type { Deck, DeckProposal } from '../types/api'
 
 export interface DisplayMessage {
   id: string
   role: 'user' | 'assistant'
   text: string
+  serverId?: number
+}
+
+export interface ProposalBatch {
+  summary: string
+  proposals: DeckProposal[]
+  // The server id of the assistant message this batch belongs to, so it can
+  // render inline where it happened. null for a live batch not yet anchored
+  // (its assistant message id isn't known until the turn's `done` event).
+  anchorMessageId: number | null
 }
 
 interface UseChatStreamOptions {
   onDeckUpdated?: (deck: Deck) => void
+  onDeckProposal?: (batch: ProposalBatch) => void
   onConversationCreated?: (conversationId: number) => void
+  // Fires when a turn finishes, with the persisted id of its final assistant
+  // message — used to anchor this turn's proposal batches to that bubble.
+  onTurnComplete?: (finalMessageId: number) => void
 }
 
 export function useChatStream(options: UseChatStreamOptions = {}) {
@@ -49,9 +63,27 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
               }
               return [...prev, { id: assistantId, role: 'assistant', text: assistantText }]
             })
+          } else if (evt.event === 'deck_proposal') {
+            if (evt.data.ok) {
+              options.onDeckProposal?.({
+                summary: evt.data.summary,
+                proposals: evt.data.proposals,
+                anchorMessageId: null,
+              })
+            }
           } else if (evt.event === 'deck_updated') {
             options.onDeckUpdated?.(evt.data)
           } else if (evt.event === 'done') {
+            // Stamp the just-streamed assistant bubble with its persisted id so
+            // this turn's proposal batches (created with a null anchor) can be
+            // pinned under it without waiting for a reload.
+            const finalMessageId = evt.data.message_id
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, serverId: finalMessageId } : m,
+              ),
+            )
+            options.onTurnComplete?.(finalMessageId)
             options.onConversationCreated?.(evt.data.conversation_id)
           } else if (evt.event === 'error') {
             setError(evt.data.message)

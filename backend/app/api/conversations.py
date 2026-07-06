@@ -56,6 +56,7 @@ def get_conversation(conversation_id: int):
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
         messages = repo.list_messages(session, conversation_id)
+        proposals_raw = repo.list_proposals(session, conversation_id)
         return {
             "conversation": _conversation_out(conversation),
             "messages": [
@@ -69,5 +70,21 @@ def get_conversation(conversation_id: int):
                     created_at=m.created_at.isoformat(),
                 )
                 for m in messages
+            ],
+            "proposals": [
+                {
+                    "id": p.id,
+                    "deck_id": p.deck_id,
+                    "message_id": p.message_id,
+                    "status": p.status,
+                    "action": p.action,
+                    "card_name": p.card_name,
+                    "quantity": p.quantity,
+                    "category": p.category,
+                    "commander_name": p.commander_name,
+                    "reasoning": p.reasoning,
+                    "created_at": p.created_at.isoformat(),
+                }
+                for p in proposals_raw
             ],
         }

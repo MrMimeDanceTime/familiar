@@ -23,6 +23,10 @@ def tool_call_event(name: str, arguments: dict[str, Any]) -> str:
     return format_sse("tool_call", {"name": name, "arguments": arguments})
 
 
+def deck_proposal_event(data: dict[str, Any]) -> str:
+    return format_sse("deck_proposal", data)
+
+
 def deck_updated_event(deck_snapshot: dict[str, Any]) -> str:
     return format_sse("deck_updated", deck_snapshot)
 

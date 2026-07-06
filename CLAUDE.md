@@ -19,8 +19,13 @@ Claude Code on this repo.
 
 - No comments explaining *what* code does; only for non-obvious *why* (see
   the `provider_native` slicing comment in `engine.py` as the model).
-- Don't add migration tooling (Alembic etc.) — single-user local SQLite,
-  schema changes during development are expected to mean a manual DB wipe.
+- Don't add migration tooling (Alembic etc.) — single-user local SQLite.
+  For a schema change, prefer a targeted, idempotent, non-destructive edit
+  to the existing DB (e.g. `ALTER TABLE ... ADD COLUMN` guarded by a
+  `PRAGMA table_info` check) so the user's decks and conversations survive.
+  Only wipe `backend/familiar.db` when the change genuinely can't be applied
+  in place (a column type change, a table restructure, dropped data), and
+  say so before doing it.
 - `.env` is gitignored and must never be committed; `.env.example` is the
   tracked template — keep them in sync when adding new settings.
 - The user prefers one launch command (`run.ps1`) over running separate

@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 from sqlmodel import Session
 
+from app.knowledge.store import search_knowledge
+from app.knowledge.tag_lookup import get_tags_for_card
 from app.tools import deck_tools
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
 from app.tools.scryfall_client import ScryfallError, get_scryfall_client
@@ -21,6 +23,26 @@ DECK_MUTATION_TOOLS = {
     "deck_remove_card",
     "deck_set_commander",
     "deck_update_notes",
+}
+
+PROPOSAL_TOOLS = {
+    "propose_deck_changes",
+}
+
+# Tools scoped to the active conversation's deck. The chat engine forces
+# `deck_id` on these to the conversation's deck rather than trusting the
+# deck_id the model puts in the call — deck_id is a required tool param, so
+# the model always guesses one, and its guess must not decide which deck the
+# tool touches.
+DECK_SCOPED_TOOLS = {
+    "deck_get_current",
+    "deck_get_stats",
+    "deck_add_card",
+    "deck_remove_card",
+    "deck_set_commander",
+    "deck_update_notes",
+    "propose_deck_changes",
+    "withdraw_pending_proposals",
 }
 
 
@@ -35,11 +57,16 @@ def _scryfall_search(query: str, limit: int = 10) -> list[dict]:
 
 
 def _scryfall_card_by_name(name: str, fuzzy: bool = True) -> dict:
-    return get_scryfall_client().named(name, fuzzy=fuzzy)
+    result = get_scryfall_client().named(name, fuzzy=fuzzy)
+    result["tags"] = get_tags_for_card(result.get("oracle_id"))
+    return result
 
 
 def _scryfall_card_collection(names: list[str]) -> dict:
-    return get_scryfall_client().collection(names)
+    result = get_scryfall_client().collection(names)
+    for c in result.get("found", []):
+        c["tags"] = get_tags_for_card(c.get("oracle_id"))
+    return result
 
 
 def _edhrec_commander_recs(commander_name: str) -> dict:
@@ -57,19 +84,28 @@ STATELESS_TOOLS: dict[str, Callable[..., Any]] = {
     "scryfall_card_collection": _scryfall_card_collection,
     "edhrec_commander_recs": _edhrec_commander_recs,
     "edhrec_card_synergy": _edhrec_card_synergy,
+    "search_deckbuilding_knowledge": search_knowledge,
 }
 
 # Tools that operate on deck state and need a `session` injected as the first arg.
 SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "deck_get_current": deck_tools.deck_get_current,
+    "deck_get_stats": deck_tools.deck_get_stats,
     "deck_add_card": deck_tools.deck_add_card,
     "deck_remove_card": deck_tools.deck_remove_card,
     "deck_set_commander": deck_tools.deck_set_commander,
     "deck_update_notes": deck_tools.deck_update_notes,
+    "propose_deck_changes": deck_tools.propose_deck_changes,
+    "withdraw_pending_proposals": deck_tools.withdraw_pending_proposals,
 }
 
 
 def dispatch(name: str, arguments: dict[str, Any], session: Session) -> DispatchResult:
+    if arguments.get("_parse_error"):
+        return DispatchResult(
+            ok=False,
+            content=f"Failed to parse arguments for '{name}'. Raw: {arguments.get('_raw', '')[:200]}",
+        )
     try:
         if name in STATELESS_TOOLS:
             result = STATELESS_TOOLS[name](**arguments)

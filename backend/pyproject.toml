@@ -7,6 +7,10 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "httpx>=0.27",
+    # Moxfield's API sits behind Cloudflare and TLS-fingerprints plain httpx
+    # (returns 403); curl_cffi impersonates a real browser's TLS handshake so
+    # the Moxfield provider can reach it. See app/integrations/moxfield.py.
+    "curl_cffi>=0.7",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "sqlmodel>=0.0.22",

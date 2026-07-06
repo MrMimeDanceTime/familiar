@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 class ChatIn(BaseModel):
     conversation_id: int | str  # "new" or an existing conversation id
     message: str
+    deck_id: int | None = None  # when "new", optionally link to an existing deck
 
 
 @router.post("")
@@ -21,8 +22,14 @@ def post_chat(body: ChatIn):
     session = Session(get_engine())
 
     if body.conversation_id == "new":
+        if body.deck_id is not None:
+            deck = repo.get_deck(session, body.deck_id)
+            if not deck:
+                session.close()
+                raise HTTPException(status_code=404, detail=f"Deck {body.deck_id} not found")
+        else:
+            deck = repo.create_deck(session)
         conversation = repo.create_conversation(session)
-        deck = repo.create_deck(session)
         repo.set_conversation_deck(session, conversation.id, deck.id)
         conversation_id = conversation.id
         deck_id = deck.id
