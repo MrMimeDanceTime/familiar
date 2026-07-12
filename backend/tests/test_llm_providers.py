@@ -86,7 +86,7 @@ def test_deepseek_send_parses_tool_calls(mock_openai_cls):
         choices=[SimpleNamespace(message=fake_message, finish_reason="tool_calls")]
     )
 
-    provider = DeepSeekProvider(api_key="fake", model="deepseek-reasoner")
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-flash")
     turn = provider.send("system prompt", [{"role": "user", "content": "hi"}], [TOOL])
 
     assert turn.tool_calls[0].name == "get_weather"
@@ -96,11 +96,14 @@ def test_deepseek_send_parses_tool_calls(mock_openai_cls):
     call_kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert call_kwargs["tools"][0]["function"]["name"] == "get_weather"
     assert call_kwargs["messages"][0] == {"role": "system", "content": "system prompt"}
+    # V4 IDs default to non-thinking; the provider must opt in explicitly or it
+    # silently regresses from the always-thinking deepseek-reasoner it replaced.
+    assert call_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
 @patch("app.llm.deepseek_provider.OpenAI")
 def test_deepseek_append_tool_results_shape(mock_openai_cls):
-    provider = DeepSeekProvider(api_key="fake", model="deepseek-reasoner")
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-flash")
     from app.llm.base import AssistantTurn, ToolCallRequest
 
     turn = AssistantTurn(
@@ -136,7 +139,7 @@ def test_deepseek_send_parses_plain_text_no_tools(mock_openai_cls):
         choices=[SimpleNamespace(message=fake_message, finish_reason="stop")]
     )
 
-    provider = DeepSeekProvider(api_key="fake", model="deepseek-reasoner")
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-flash")
     turn = provider.send("system prompt", [{"role": "user", "content": "hi"}], [TOOL])
 
     assert turn.text == "It's sunny."

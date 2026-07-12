@@ -18,7 +18,10 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
 
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-reasoner"
+    # deepseek-v4-flash is the current ID; the old deepseek-reasoner alias hard-errors
+    # after 2026-07-24. Thinking mode is no longer implied by the ID — the provider
+    # enables it explicitly (see DeepSeekProvider.send), preserving reasoner behavior.
+    deepseek_model: str = "deepseek-v4-flash"
 
     familiar_db_path: str = "familiar.db"
 
