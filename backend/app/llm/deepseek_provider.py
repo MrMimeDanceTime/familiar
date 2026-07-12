@@ -40,6 +40,11 @@ class DeepSeekProvider:
                 model=self._model,
                 messages=messages,
                 tools=openai_tools,
+                # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
+                # default to non-thinking, unlike the retired deepseek-reasoner
+                # alias which was always thinking. Enable it explicitly so replacing
+                # the ID preserves the reasoning behavior the chat loop relies on.
+                extra_body={"thinking": {"type": "enabled"}},
             )
         except Exception as exc:
             raise RuntimeError(

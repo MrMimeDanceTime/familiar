@@ -15,7 +15,7 @@ engine.
   loop (no LangChain/LangGraph). Python ≥3.10.
 - Frontend: React + TypeScript + Vite, plain CSS (no component library).
 - LLM: provider-neutral abstraction supporting Anthropic (Claude) and
-  DeepSeek. **DeepSeek-reasoner is the default/primary provider** in this
+  DeepSeek. **deepseek-v4-flash (thinking mode) is the default/primary provider** in this
   deployment — see [PROVIDERS.md](PROVIDERS.md).
 - Data sources: Scryfall REST API (self-throttled httpx client), EDHREC's
   unofficial JSON endpoint (disk-cached, defensively parsed since it's

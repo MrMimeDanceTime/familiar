@@ -7,9 +7,17 @@ Familiar supports two LLM providers behind the `ChatProvider` Protocol in
 
 ## DeepSeek is the default and the actively-used provider
 
-`LLM_PROVIDER=deepseek` and `DEEPSEEK_MODEL=deepseek-reasoner` are the
+`LLM_PROVIDER=deepseek` and `DEEPSEEK_MODEL=deepseek-v4-flash` are the
 defaults in both `.env` and `.env.example`, and `Settings.llm_provider`
 defaults to `"deepseek"` in `backend/app/config.py`.
+
+The old `deepseek-reasoner` ID stopped working after 2026-07-24. In V4,
+reasoning is decoupled from the model ID — `deepseek-v4-flash` defaults to
+non-thinking, so `DeepSeekProvider.send` passes
+`extra_body={"thinking": {"type": "enabled"}}` to preserve the always-on
+reasoning that `deepseek-reasoner` used to give. Stage-4 selection in the
+retrieval overhaul routes to the larger `deepseek-v4-pro`; both models need
+that thinking flag to actually reason.
 
 This deployment's owner pays for DeepSeek API usage directly and does not
 have a paid Anthropic API key configured (they use Claude via a separate
