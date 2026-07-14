@@ -7,7 +7,7 @@ harness then enforces legality on every query (appends ``id<=`` / ``f:commander`
 regardless of what the model wrote) so correctness never depends on the model
 getting the DSL right.
 
-See ``scryfall-query-cheatsheet.md`` for the canonical operator reference; the
+See ``docs/SCRYFALL_QUERY_CHEATSHEET.md`` for the canonical operator reference; the
 few-shot block below is a trimmed embed of it for the runtime prompt.
 """
 
@@ -58,7 +58,7 @@ class QuerySpec:
 
 
 # Trimmed few-shot block embedded in the prompt. The full reference lives in
-# scryfall-query-cheatsheet.md; this is the runtime-facing subset (§B/§C).
+# docs/SCRYFALL_QUERY_CHEATSHEET.md; this is the runtime-facing subset (§B/§C).
 FEW_SHOT_BLOCK = """\
 Emit Scryfall query strings, one per role/intent. Rules:
 - Prefer several tight queries over one broad OR-soup.

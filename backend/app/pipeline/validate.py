@@ -9,8 +9,9 @@ denies. Reusing it (rather than hand-building rows) means the pipeline can't
 drift from the invariant that suggestions are proposals, not edits — and it
 inherits the banned-list check for free.
 
-Cuts are proposed as ``remove`` actions; ``propose_deck_changes`` already refuses
-to remove a card that isn't in the deck, so a hallucinated cut is rejected there.
+Cuts are proposed as ``remove`` actions, but a cut naming a card not in the deck
+is dropped here first (see ``selection_to_changes``): if it reached
+``propose_deck_changes`` it would raise and sink the whole batch of good adds.
 """
 
 from __future__ import annotations

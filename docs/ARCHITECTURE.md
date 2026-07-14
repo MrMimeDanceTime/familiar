@@ -140,11 +140,12 @@ restructure, or intentionally dropping data.
 
 ## SSE event vocabulary
 
-`token`, `tool_call`, `deck_updated`, `done`, `error` — formatted in
-`app/chat/streaming.py`, consumed by `frontend/src/hooks/useChatStream.ts`.
-Deck proposals aren't a separate event type: the model calls
-`propose_deck_changes`, and the pending proposals ride along in the
-`deck_updated` snapshot; the player approves/denies them through the
+`token`, `tool_call`, `deck_proposal`, `deck_updated`, `done`, `error` —
+formatted in `app/chat/streaming.py`, consumed by
+`frontend/src/hooks/useChatStream.ts`. When the model calls a proposal tool
+(`propose_deck_changes` or `suggest_cards`), the engine emits a `deck_proposal`
+event carrying the pending batch and anchors those proposals to the turn's final
+assistant message; the player approves/denies them through the
 `/api/decks/proposals/{id}/apply|deny` REST endpoints.
 
 ## Subsystems
