@@ -23,9 +23,11 @@ class FakeProvider:
     def __init__(self, turns):
         self._turns = list(turns)
         self.sent_history_snapshots = []
+        self.thinking_flags = []
 
-    def send(self, system_prompt, history, tools):
+    def send(self, system_prompt, history, tools, *, thinking=True):
         self.sent_history_snapshots.append(list(history))
+        self.thinking_flags.append(thinking)
         return self._turns.pop(0)
 
     def append_tool_results(self, history, assistant_turn, results):
@@ -61,6 +63,15 @@ def test_immediate_final_response_no_tools(session):
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[1].text_content == "Sure, let's talk about it!"
+
+
+def test_engine_disables_thinking_for_the_chat_loop(session):
+    # Thinking mode is the biggest lever on turn latency; the loop turns it off
+    # (deep reasoning lives in tool choices + the pipeline/nuance calls).
+    provider = FakeProvider([AssistantTurn(text="hi", tool_calls=[])])
+    convo = repo.create_conversation(session)
+    _collect(run_chat_turn(session, provider, convo.id, "hey", deck_id=None))
+    assert provider.thinking_flags == [False]
 
 
 def test_tool_call_then_final_response(session):

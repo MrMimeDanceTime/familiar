@@ -94,7 +94,12 @@ def run_chat_turn(
     proposal_ids_this_turn: list[int] = []
     try:
         for _ in range(MAX_TOOL_ITERATIONS):
-            turn = provider.send(system_prompt, history, TOOL_SPECS)
+            # Thinking mode roughly doubles per-call latency and the chat loop is
+            # mostly mechanical tool-dispatch plus narration of decisions already
+            # made through the tool sequence — the deep reasoning lives in the
+            # tool choices and in the pipeline/nuance calls (which keep thinking
+            # on). Turning it off here is the biggest lever on perceived turn lag.
+            turn = provider.send(system_prompt, history, TOOL_SPECS, thinking=False)
 
             if not turn.tool_calls:
                 if turn.text:

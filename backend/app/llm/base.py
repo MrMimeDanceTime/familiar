@@ -48,6 +48,8 @@ class ChatProvider(Protocol):
         system_prompt: str,
         history: list[dict[str, Any]],
         tools: list[ToolSpec],
+        *,
+        thinking: bool = True,
     ) -> AssistantTurn: ...
 
     def complete_json(

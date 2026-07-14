@@ -102,6 +102,24 @@ def test_deepseek_send_parses_tool_calls(mock_openai_cls):
 
 
 @patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_send_can_disable_thinking(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    fake_message = SimpleNamespace(
+        content="ok", tool_calls=None,
+        model_dump=lambda exclude_none=True: {"role": "assistant", "content": "ok"},
+    )
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=fake_message, finish_reason="stop")]
+    )
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    provider.send("sys", [{"role": "user", "content": "hi"}], [TOOL], thinking=False)
+
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
 def test_deepseek_append_tool_results_shape(mock_openai_cls):
     provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-flash")
     from app.llm.base import AssistantTurn, ToolCallRequest

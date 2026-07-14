@@ -20,6 +20,8 @@ class DeepSeekProvider:
         system_prompt: str,
         history: list[dict[str, Any]],
         tools: list[ToolSpec],
+        *,
+        thinking: bool = True,
     ) -> AssistantTurn:
         openai_tools = [
             {
@@ -41,10 +43,10 @@ class DeepSeekProvider:
                 messages=messages,
                 tools=openai_tools,
                 # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
-                # default to non-thinking, unlike the retired deepseek-reasoner
-                # alias which was always thinking. Enable it explicitly so replacing
-                # the ID preserves the reasoning behavior the chat loop relies on.
-                extra_body={"thinking": {"type": "enabled"}},
+                # default to non-thinking. Thinking is slow, so the engine turns it
+                # OFF for intermediate tool-dispatch iterations (mechanical "which
+                # tool next" decisions) and back ON for the final synthesis turn.
+                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
             )
         except Exception as exc:
             raise RuntimeError(

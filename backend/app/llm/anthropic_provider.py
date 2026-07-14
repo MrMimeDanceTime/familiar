@@ -17,6 +17,9 @@ class AnthropicProvider:
         system_prompt: str,
         history: list[dict[str, Any]],
         tools: list[ToolSpec],
+        *,
+        thinking: bool = True,  # accepted for a provider-neutral signature; Anthropic
+        # reasoning is a separate mechanism the chat loop doesn't toggle here.
     ) -> AssistantTurn:
         anthropic_tools = [
             {
