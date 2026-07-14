@@ -18,10 +18,15 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
 
     deepseek_api_key: str = ""
-    # deepseek-v4-flash is the current ID; the old deepseek-reasoner alias hard-errors
-    # after 2026-07-24. Thinking mode is no longer implied by the ID — the provider
-    # enables it explicitly (see DeepSeekProvider.send), preserving reasoner behavior.
-    deepseek_model: str = "deepseek-v4-flash"
+    # Default to Pro everywhere: V4 pricing makes the Flash/Pro gap negligible, so
+    # we pay for the better model unless a call genuinely benefits from Flash (bulk
+    # extraction). Thinking mode is no longer implied by the ID (the retired
+    # deepseek-reasoner alias always thought) — the provider enables it explicitly
+    # in send(), preserving reasoner behavior across the ID change.
+    deepseek_model: str = "deepseek-v4-pro"
+    # The Flash seam: passed as a per-call model override where high throughput
+    # beats reasoning depth. Not used by the chat loop, which runs on the default.
+    deepseek_model_fast: str = "deepseek-v4-flash"
 
     familiar_db_path: str = "familiar.db"
 

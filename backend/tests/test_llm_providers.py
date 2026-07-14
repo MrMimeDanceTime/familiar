@@ -127,6 +127,65 @@ def test_deepseek_append_tool_results_shape(mock_openai_cls):
 
 
 @patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_complete_json_forces_json_and_honors_model_override(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"queries": []}'))]
+    )
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    out = provider.complete_json("sys", "user", model="deepseek-v4-flash")
+
+    assert out == '{"queries": []}'
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    # per-call override wins over the provider default
+    assert call_kwargs["model"] == "deepseek-v4-flash"
+    assert call_kwargs["response_format"] == {"type": "json_object"}
+    assert call_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert call_kwargs["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "user"},
+    ]
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_complete_json_defaults_to_provider_model_and_can_disable_thinking(
+    mock_openai_cls,
+):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+    )
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    provider.complete_json("sys", "user", thinking=False)
+
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["model"] == "deepseek-v4-pro"  # no override -> default
+    assert call_kwargs["extra_body"] == {}  # thinking disabled -> no flag
+
+
+@patch("app.llm.anthropic_provider.anthropic.Anthropic")
+def test_anthropic_complete_json_prefills_brace(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    # model replies with the body AFTER the prefilled "{"
+    mock_client.messages.create.return_value = SimpleNamespace(
+        content=[_block("text", text='"queries": []}')]
+    )
+
+    provider = AnthropicProvider(api_key="fake", model="claude-sonnet-4-6")
+    out = provider.complete_json("sys", "user")
+
+    assert out == '{"queries": []}'  # brace re-prepended
+    call_kwargs = mock_client.messages.create.call_args.kwargs
+    assert call_kwargs["messages"][-1] == {"role": "assistant", "content": "{"}
+    assert call_kwargs["system"] == "sys"
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
 def test_deepseek_send_parses_plain_text_no_tools(mock_openai_cls):
     mock_client = MagicMock()
     mock_openai_cls.return_value = mock_client

@@ -49,6 +49,34 @@ class AnthropicProvider:
             raw_assistant_message={"role": "assistant", "content": response.content},
         )
 
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: str | None = None,
+        thinking: bool = True,
+    ) -> str:
+        """Single-shot JSON completion for the retrieval pipeline's stage-1/4.
+
+        Anthropic has no response_format=json_object, so we force JSON the
+        idiomatic way: prefill the assistant turn with ``{`` and re-prepend it to
+        the reply. ``thinking`` is accepted for a provider-neutral signature but
+        ignored — Anthropic reasoning is a separate mechanism the chat loop
+        doesn't use here. ``model`` overrides the provider default per call.
+        """
+        response = self._client.messages.create(
+            model=model or self._model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+        text = "".join(b.text for b in response.content if b.type == "text")
+        return "{" + text
+
     def append_tool_results(
         self,
         history: list[dict[str, Any]],
