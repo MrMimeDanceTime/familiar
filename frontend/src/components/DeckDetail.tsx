@@ -45,16 +45,22 @@ function parsePowerRow(line: string): PowerRow | null {
 
 interface PowerBreakdown {
   raw: number
+  base: number
   level: number
   rows: PowerRow[]
 }
 
 function parsePowerFactors(factors: string[]): PowerBreakdown | null {
-  // First line is the summary: "Raw: 6.5 + 1 = 8/10"
+  // First line is the summary of the deterministic base: "Raw: 6.5 + 1 = 7/10".
+  // (This is the BASE level; the nuanced final level comes from stats, not here.)
   const head = factors[0]?.match(/Raw:\s*([\d.]+).*?=\s*(\d+)\/10/)
+  // The appended "LLM nuance: +x (reason)" line has its value mid-string, so
+  // parsePowerRow (which expects a trailing +/-n) correctly skips it — nuance is
+  // rendered separately from the structured stats fields, not from this text.
   const rows = factors.slice(1).map(parsePowerRow).filter((r): r is PowerRow => r !== null)
   if (!head) return null
-  return { raw: parseFloat(head[1]), level: parseInt(head[2], 10), rows }
+  const base = parseInt(head[2], 10)
+  return { raw: parseFloat(head[1]), base, level: base, rows }
 }
 
 interface BracketRow {
@@ -89,18 +95,46 @@ function parseBracketFactors(factors: string[]): BracketBreakdown | null {
   return { bracket: parseInt(head[1], 10), verdict: head[2].trim(), rows }
 }
 
-function PowerWhy({ factors }: { factors: string[] }) {
+function PowerWhy({
+  factors,
+  level,
+  base,
+  nuanceAdj,
+  nuanceReason,
+}: {
+  factors: string[]
+  level: number
+  base: number
+  nuanceAdj: number
+  nuanceReason: string
+}) {
   const data = parsePowerFactors(factors)
   if (!data) {
     return <div className="why-panel why-panel--raw">{factors.join('\n')}</div>
   }
-  const maxPts = Math.max(...data.rows.map((r) => Math.abs(r.points)), 2)
+  // Show the nuance row whenever the LLM produced a judgment (a reason), even
+  // when it chose NOT to move the score (adj 0). A zero with a reason is
+  // informative — "the model looked and the fundamentals already capture it" —
+  // and hiding it makes a fully-evaluated deck look un-evaluated.
+  const hasNuanceJudgment = nuanceReason.trim().length > 0
+  const nuanceMovedScore = nuanceAdj !== 0
+  const maxPts = Math.max(...data.rows.map((r) => Math.abs(r.points)), Math.abs(nuanceAdj), 2)
+  const fmtAdj = (a: number) => (a > 0 ? `+${a.toFixed(1)}` : a < 0 ? a.toFixed(1) : '0')
   return (
     <div className="why-panel">
       <div className="why-panel__head">
-        <div className="why-panel__title">Power level {data.level}/10</div>
+        <div className="why-panel__title">
+          {nuanceMovedScore ? (
+            <>Power level {base} → {level}/10</>
+          ) : (
+            <>Power level {level}/10</>
+          )}
+        </div>
         <div className="why-panel__sub">
           {data.rows.length} fundamentals scored · base 1 + {data.raw.toFixed(1)} earned
+          {hasNuanceJudgment
+            ? nuanceMovedScore ? ' · LLM nuance applied' : ' · LLM nuance: no change'
+            : ''}
         </div>
       </div>
       <ul className="why-rows">
@@ -119,6 +153,21 @@ function PowerWhy({ factors }: { factors: string[] }) {
             </span>
           </li>
         ))}
+        {hasNuanceJudgment && (
+          <li className="why-row why-row--nuance" key="__nuance">
+            <span className="why-row__label">✦ LLM nuance</span>
+            <span className="why-row__detail">{nuanceReason}</span>
+            <span className="why-row__bar" aria-hidden>
+              <span
+                className={`why-row__bar-fill why-row__bar-fill--nuance ${nuanceAdj <= 0 ? 'why-row__bar-fill--zero' : ''}`}
+                style={{ width: `${(Math.abs(nuanceAdj) / maxPts) * 100}%` }}
+              />
+            </span>
+            <span className={`why-row__pts ${nuanceAdj <= 0 ? 'why-row__pts--zero' : ''}`}>
+              {fmtAdj(nuanceAdj)}
+            </span>
+          </li>
+        )}
       </ul>
     </div>
   )
@@ -556,7 +605,13 @@ export function DeckDetail({ deck, stats, onDeckUpdated, onStartConversation, on
       )}
 
       {expandedBreakdown === 'power' && stats && (
-        <PowerWhy factors={stats.power_factors} />
+        <PowerWhy
+          factors={stats.power_factors}
+          level={stats.power_level}
+          base={stats.power_level_base}
+          nuanceAdj={stats.power_nuance_adj}
+          nuanceReason={stats.power_nuance_reason}
+        />
       )}
       {expandedBreakdown === 'bracket' && stats && (
         <BracketWhy factors={stats.bracket_factors} />

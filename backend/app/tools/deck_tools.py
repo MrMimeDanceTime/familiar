@@ -171,9 +171,13 @@ def deck_get_current(session: Session, deck_id: int) -> dict:
     return repo.deck_snapshot(session, deck_id)
 
 
-def deck_get_stats(session: Session, deck_id: int) -> dict:
-    """Return the deck's bracket, power level, and breakdown factors."""
-    return compute_deck_stats(session, deck_id)
+def deck_get_stats(session: Session, deck_id: int, provider: Any | None = None) -> dict:
+    """Return the deck's bracket, power level, and breakdown factors.
+
+    ``provider`` enables the cached LLM power-level nuance (computed once per
+    deck-content change); omitting it returns the deterministic base score plus
+    any still-fresh cached nuance."""
+    return compute_deck_stats(session, deck_id, provider)
 
 
 def deck_add_card(
@@ -407,11 +411,58 @@ def _classify_type(type_line: str | None) -> str:
     return "Other"
 
 
-def compute_deck_stats(session: Session, deck_id: int) -> dict:
+def _resolve_power_nuance(
+    session: Session,
+    deck: Any,
+    deck_id: int,
+    base_score: int,
+    base_factors: list[str],
+    provider: Any | None,
+) -> tuple[int, float, str]:
+    """Return ``(nuanced_score, adjustment, reason)`` for the power level.
+
+    Cache-first: if the deck's stored ``power_nuance_key`` matches the current
+    deck-content hash, reuse the cached adjustment (free — no LLM call), whether
+    or not a provider is present. On a miss WITH a provider, compute the nuance,
+    cache it, and apply. On a miss WITHOUT a provider (grounding, pipeline), skip
+    the LLM and return the base score unadjusted rather than blocking. Only
+    applied to the commander format — power level is a commander concept here.
+    """
+    from app.tools.power_nuance import compute_nuance, deck_content_hash
+
+    if deck is None or deck.format != "commander":
+        return base_score, 0.0, ""
+
+    snapshot = repo.deck_snapshot(session, deck_id)
+    key = deck_content_hash(snapshot)
+
+    if deck.power_nuance_key == key and deck.power_nuance_adj is not None:
+        adj, reason = deck.power_nuance_adj, deck.power_nuance_reason or ""
+    elif provider is not None:
+        adj, reason = compute_nuance(provider, snapshot, base_score, base_factors)
+        repo.set_deck_power_nuance(session, deck_id, adj, reason, key)
+    else:
+        return base_score, 0.0, ""
+
+    # Keep the half-point: base is an integer band, adj is a multiple of 0.5, so
+    # the sum is a clean .0/.5. Don't round — that would (a) use banker's rounding
+    # (7.5->8 but 6.5->6, making a -0.5 a no-op on even bases) and (b) discard the
+    # ±0.5 granularity the nuance exists to add. The frontend renders fractions.
+    nuanced = min(10.0, max(1.0, base_score + adj))
+    return nuanced, adj, reason
+
+
+def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = None) -> dict:
     """Compute stats for a deck from its stored cards.
 
     If any card is missing ``type_line``, backfills via Scryfall's
     ``/cards/collection`` endpoint (up to 75 names per request).
+
+    When ``provider`` is given, the 1-10 power level is refined by a bounded LLM
+    nuance adjustment (see ``power_nuance``): computed once per deck-content
+    change and cached on the Deck row, so routine callers that pass no provider
+    (grounding, pipeline internals) still reuse a fresh cached adjustment for
+    free but never trigger an LLM call.
     """
     cards = repo.list_deck_cards(session, deck_id)
 
@@ -519,7 +570,7 @@ def compute_deck_stats(session: Session, deck_id: int) -> dict:
     land_pct = round(land_count / total_cards * 100)
     card_names = {c.card_name for c in cards}
 
-    power_level, power_factors = _estimate_power_level(
+    power_base, power_factors = _estimate_power_level(
         avg_mv, land_count, ramp_count, draw_count, interaction_count, total_cards)
     bracket, bracket_factors = _estimate_bracket(
         card_names, avg_mv, land_count, ramp_count, interaction_count, type_counts, total_cards)
@@ -529,6 +580,16 @@ def compute_deck_stats(session: Session, deck_id: int) -> dict:
         deck.format if deck else "commander",
         land_count, ramp_count, draw_count, removal_count,
     )
+
+    power_level, power_nuance_adj, power_nuance_reason = _resolve_power_nuance(
+        session, deck, deck_id, power_base, power_factors, provider,
+    )
+    if power_nuance_adj:
+        sign = "+" if power_nuance_adj > 0 else ""
+        power_factors = [
+            *power_factors,
+            f"LLM nuance: {sign}{power_nuance_adj} ({power_nuance_reason})",
+        ]
 
     return {
         "mana_curve": mana_curve,
@@ -542,6 +603,9 @@ def compute_deck_stats(session: Session, deck_id: int) -> dict:
         "removal_count": removal_count,
         "total_cards": total_cards,
         "power_level": power_level,
+        "power_level_base": power_base,
+        "power_nuance_adj": power_nuance_adj,
+        "power_nuance_reason": power_nuance_reason,
         "power_factors": power_factors,
         "bracket": bracket,
         "bracket_factors": bracket_factors,
@@ -863,6 +927,9 @@ def _empty_stats() -> dict:
         "removal_count": 0,
         "total_cards": 0,
         "power_level": 1,
+        "power_level_base": 1,
+        "power_nuance_adj": 0.0,
+        "power_nuance_reason": "",
         "power_factors": [],
         "bracket": 1,
         "bracket_factors": [],

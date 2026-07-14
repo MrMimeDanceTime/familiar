@@ -32,13 +32,6 @@ PROPOSAL_TOOLS = {
     "suggest_cards",
 }
 
-# Tools that need the LLM provider injected (the retrieval pipeline calls the
-# model itself, in stages 1 and 4). The engine passes the active provider to
-# dispatch, which forwards it only to these.
-PROVIDER_TOOLS = {
-    "suggest_cards",
-}
-
 # Tools scoped to the active conversation's deck. The chat engine forces
 # `deck_id` on these to the conversation's deck rather than trusting the
 # deck_id the model puts in the call — deck_id is a required tool param, so
@@ -101,7 +94,6 @@ STATELESS_TOOLS: dict[str, Callable[..., Any]] = {
 # Tools that operate on deck state and need a `session` injected as the first arg.
 SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "deck_get_current": deck_tools.deck_get_current,
-    "deck_get_stats": deck_tools.deck_get_stats,
     "deck_add_card": deck_tools.deck_add_card,
     "deck_remove_card": deck_tools.deck_remove_card,
     "deck_set_commander": deck_tools.deck_set_commander,
@@ -137,6 +129,7 @@ def _suggest_cards(
 # Tools that additionally need the LLM provider injected after `session`.
 PROVIDER_SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "suggest_cards": _suggest_cards,
+    "deck_get_stats": deck_tools.deck_get_stats,
 }
 
 

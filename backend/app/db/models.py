@@ -36,6 +36,14 @@ class Deck(SQLModel, table=True):
     notes: str | None = None
     power_level: str | None = None
     format: str = "commander"
+    # Cached LLM power-level nuance: the clamped ±adjustment, its one-line reason,
+    # and the deck-content hash it was computed for. When the hash matches the
+    # deck's current cards + commander, the adjustment is reused for free; a
+    # card/commander change flips the hash and forces a recompute. See
+    # app/tools/power_nuance.py.
+    power_nuance_adj: float | None = None
+    power_nuance_reason: str | None = None
+    power_nuance_key: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
