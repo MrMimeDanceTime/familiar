@@ -34,6 +34,19 @@ def test_cuts_become_remove_actions():
     ]
 
 
+def test_hallucinated_cut_is_dropped_when_deck_names_given():
+    # "Chaos Warp" isn't in the deck -> dropped, so it can't sink the batch.
+    sel = Selection(
+        picks=[Pick("Sol Ring", "ramp")],
+        cuts=[Pick("Chaos Warp", "off theme"), Pick("Real Card", "weak")],
+    )
+    changes = selection_to_changes(sel, deck_card_names={"real card"})
+    actions = [(c["action"], c["card_name"]) for c in changes]
+    assert ("add", "Sol Ring") in actions
+    assert ("remove", "Real Card") in actions
+    assert ("remove", "Chaos Warp") not in actions
+
+
 # ── validate_to_proposals (delegates to propose_deck_changes) ──────────────
 
 def test_empty_selection_returns_empty_batch_without_scryfall(session):
@@ -80,6 +93,25 @@ def test_banned_pick_is_rejected_by_the_shared_gate(mock_get_client, session):
     sel = Selection(picks=[Pick("Black Lotus", "fast mana")], cuts=[])
     with pytest.raises(ValueError, match="banned"):
         validate_to_proposals(session, deck.id, sel, conversation_id=convo.id)
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_hallucinated_cut_does_not_sink_good_adds(mock_get_client, session):
+    # Regression: a stage-4 cut naming a card not in the deck used to raise inside
+    # propose_deck_changes and fail the entire suggest_cards call. Now the cut is
+    # dropped and the legitimate add still goes through.
+    mock_get_client.return_value.named.return_value = {"name": "Bedevil"}
+    deck = repo.create_deck(session, format="commander")
+    convo = repo.create_conversation(session)
+
+    sel = Selection(
+        picks=[Pick("Bedevil", "flexible removal")],
+        cuts=[Pick("Chaos Warp", "not in deck at all")],  # hallucinated
+    )
+    result = validate_to_proposals(session, deck.id, sel, conversation_id=convo.id)
+
+    assert result["ok"] is True
+    assert [p["card_name"] for p in result["proposals"]] == ["Bedevil"]
 
 
 def test_summary_override_wins_over_selection_summary(session):

@@ -131,7 +131,7 @@ def run_chat_turn(
                 if call.name in PROPOSAL_TOOLS:
                     args["conversation_id"] = conversation_id
 
-                result = dispatch(call.name, args, session)
+                result = dispatch(call.name, args, session, provider=provider)
                 content = str(result.content) if not result.ok else _serialize(result.content)
                 results.append(ToolResult(call_id=call.id, content=content))
 
