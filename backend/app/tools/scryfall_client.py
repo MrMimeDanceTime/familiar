@@ -44,6 +44,26 @@ def _normalize_card(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _project_pipeline_card(raw: dict[str, Any]) -> dict[str, Any]:
+    """Richer projection for the retrieval pipeline's shaping stage.
+
+    Superset of ``_normalize_card``: keeps the stats the selection model reasons
+    over (keywords, power/toughness/loyalty, rarity) which ``_normalize_card``
+    drops because the current tool loop never needed them. Kept separate so the
+    existing tool-loop card shape stays byte-for-byte unchanged.
+    """
+    card = _normalize_card(raw)
+    card.update(
+        keywords=raw.get("keywords") or [],
+        power=raw.get("power"),
+        toughness=raw.get("toughness"),
+        loyalty=raw.get("loyalty"),
+        rarity=raw.get("rarity"),
+        edhrec_rank=raw.get("edhrec_rank"),
+    )
+    return card
+
+
 class ScryfallClient:
     def __init__(self, client: httpx.Client | None = None) -> None:
         self._client = client or httpx.Client(
@@ -94,10 +114,44 @@ class ScryfallClient:
 
         raise ScryfallError(f"Request failed after retries: {last_error}")
 
-    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        data = self._request("GET", "/cards/search", params={"q": query})
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        order: str | None = None,
+        unique: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, str] = {"q": query}
+        if order is not None:
+            params["order"] = order
+        if unique is not None:
+            params["unique"] = unique
+        data = self._request("GET", "/cards/search", params=params)
         cards = data.get("data", [])[:limit]
         return [_normalize_card(c) for c in cards]
+
+    def search_pipeline(
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        order: str = "edhrec",
+        unique: str = "cards",
+    ) -> list[dict[str, Any]]:
+        """Search for the retrieval pipeline: EDHREC-ordered, deduped printings,
+        richer per-card projection. Returns [] on a query that matches nothing
+        rather than raising, so one dud query in a batch doesn't sink the pool.
+        """
+        try:
+            data = self._request(
+                "GET", "/cards/search",
+                params={"q": query, "order": order, "unique": unique},
+            )
+        except ScryfallNotFoundError:
+            return []
+        cards = data.get("data", [])[:limit]
+        return [_project_pipeline_card(c) for c in cards]
 
     def named(self, name: str, fuzzy: bool = True) -> dict[str, Any]:
         param = "fuzzy" if fuzzy else "exact"
