@@ -1,0 +1,85 @@
+{
+  "input": {
+    "identity": [
+      "B",
+      "R"
+    ],
+    "in_deck": [
+      "terminate"
+    ],
+    "pool": [
+      {
+        "name": "Bedevil",
+        "oracle_id": "bedevil",
+        "mana_cost": "{B}{B}{R}",
+        "cmc": 3.0,
+        "type_line": "Instant",
+        "oracle_text": "Destroy target artifact, creature, or planeswalker.",
+        "color_identity": [
+          "B",
+          "R"
+        ],
+        "legal_commander": true,
+        "keywords": [],
+        "power": null,
+        "toughness": null,
+        "loyalty": null,
+        "rarity": "rare",
+        "edhrec_rank": 800
+      },
+      {
+        "name": "Terminate",
+        "oracle_id": "terminate",
+        "mana_cost": "{B}{R}",
+        "cmc": 2.0,
+        "type_line": "Instant",
+        "oracle_text": "Destroy target creature. It can not be regenerated.",
+        "color_identity": [
+          "B",
+          "R"
+        ],
+        "legal_commander": true,
+        "keywords": [],
+        "power": null,
+        "toughness": null,
+        "loyalty": null,
+        "rarity": "common",
+        "edhrec_rank": 300
+      },
+      {
+        "name": "Kroxa, Titan of Death Hunger",
+        "oracle_id": "kroxa",
+        "mana_cost": "{B}{R}",
+        "cmc": 2.0,
+        "type_line": "Legendary Enchantment Creature — God",
+        "oracle_text": "When Kroxa enters, each opponent discards a card.",
+        "color_identity": [
+          "B",
+          "R"
+        ],
+        "legal_commander": true,
+        "keywords": [
+          "Escape"
+        ],
+        "power": "6",
+        "toughness": "6",
+        "loyalty": null,
+        "rarity": "mythic",
+        "edhrec_rank": 150
+      }
+    ],
+    "tags": {
+      "bedevil": [
+        "removal",
+        "spot-removal"
+      ],
+      "terminate": [
+        "removal"
+      ],
+      "kroxa": [
+        "aristocrats"
+      ]
+    }
+  },
+  "rendered": "Kroxa, Titan of Death Hunger — {B}{R} | Legendary Enchantment Creature — God | 6/6 | roles: aristocrats\n    When Kroxa enters, each opponent discards a card.\nBedevil — {B}{B}{R} | Instant | roles: spot-removal\n    Destroy target artifact, creature, or planeswalker.\nTerminate — {B}{R} | Instant | roles: spot-removal | ILLEGAL (already in deck)\n    Destroy target creature. It can not be regenerated."
+}

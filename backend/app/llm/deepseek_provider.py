@@ -40,6 +40,11 @@ class DeepSeekProvider:
                 model=self._model,
                 messages=messages,
                 tools=openai_tools,
+                # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
+                # default to non-thinking, unlike the retired deepseek-reasoner
+                # alias which was always thinking. Enable it explicitly so replacing
+                # the ID preserves the reasoning behavior the chat loop relies on.
+                extra_body={"thinking": {"type": "enabled"}},
             )
         except Exception as exc:
             raise RuntimeError(
@@ -69,6 +74,44 @@ class DeepSeekProvider:
             stop_reason=response.choices[0].finish_reason or "stop",
             raw_assistant_message=message.model_dump(exclude_none=True),
         )
+
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: str | None = None,
+        thinking: bool = True,
+    ) -> str:
+        """Single-shot JSON completion for the retrieval pipeline's stage-1/4.
+
+        Returns the raw JSON string (the caller parses/validates). No tools, no
+        history threading — deliberately separate from send() so the tool-calling
+        hot path stays untouched. ``model`` overrides the provider default per
+        call (the Pro/Flash seam); ``thinking`` toggles reasoning (on by default,
+        matching send()).
+        """
+        extra_body: dict[str, Any] = {}
+        if thinking:
+            extra_body["thinking"] = {"type": "enabled"}
+
+        try:
+            response = self._client.chat.completions.create(
+                model=model or self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                extra_body=extra_body,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"DeepSeek JSON completion failed (provider may have returned "
+                f"malformed JSON or timed out). Detail: {exc}"
+            ) from exc
+
+        return response.choices[0].message.content or ""
 
     def append_tool_results(
         self,

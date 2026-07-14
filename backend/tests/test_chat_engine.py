@@ -123,9 +123,9 @@ def test_engine_overrides_model_supplied_deck_id(session):
 
     original = engine_mod.dispatch
 
-    def spy(name, arguments, sess):
+    def spy(name, arguments, sess, provider=None):
         captured.append({"name": name, "arguments": dict(arguments)})
-        return original(name, arguments, sess)
+        return original(name, arguments, sess, provider=provider)
 
     with patch.object(engine_mod, "dispatch", spy):
         _collect(

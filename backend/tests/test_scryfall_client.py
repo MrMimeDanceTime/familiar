@@ -42,6 +42,65 @@ def test_search_normalizes_and_limits(client):
 
 
 @respx.mock
+def test_search_omits_order_and_unique_by_default(client):
+    route = respx.get(f"{SCRYFALL_BASE_URL}/cards/search").mock(
+        return_value=httpx.Response(200, json={"data": [RAW_CARD]})
+    )
+    client.search("c:wubg")
+    params = route.calls.last.request.url.params
+    assert "order" not in params
+    assert "unique" not in params
+
+
+@respx.mock
+def test_search_passes_order_and_unique_when_given(client):
+    route = respx.get(f"{SCRYFALL_BASE_URL}/cards/search").mock(
+        return_value=httpx.Response(200, json={"data": [RAW_CARD]})
+    )
+    client.search("c:wubg", order="edhrec", unique="cards")
+    params = route.calls.last.request.url.params
+    assert params["order"] == "edhrec"
+    assert params["unique"] == "cards"
+
+
+@respx.mock
+def test_search_pipeline_projection_and_params(client):
+    raw = dict(
+        RAW_CARD,
+        keywords=["Flying", "Vigilance"],
+        power="7",
+        toughness="5",
+        rarity="mythic",
+        edhrec_rank=42,
+    )
+    route = respx.get(f"{SCRYFALL_BASE_URL}/cards/search").mock(
+        return_value=httpx.Response(200, json={"data": [raw]})
+    )
+    results = client.search_pipeline("id<=wubg otag:ramp f:commander", limit=10)
+    params = route.calls.last.request.url.params
+    assert params["order"] == "edhrec"
+    assert params["unique"] == "cards"
+    card = results[0]
+    # richer fields the pipeline needs, absent from the tool-loop projection
+    assert card["keywords"] == ["Flying", "Vigilance"]
+    assert card["power"] == "7"
+    assert card["toughness"] == "5"
+    assert card["rarity"] == "mythic"
+    assert card["edhrec_rank"] == 42
+    # still carries everything the base projection has
+    assert card["name"] == "Atraxa, Grand Unifier"
+    assert card["legal_commander"] is True
+
+
+@respx.mock
+def test_search_pipeline_returns_empty_on_no_match(client):
+    respx.get(f"{SCRYFALL_BASE_URL}/cards/search").mock(
+        return_value=httpx.Response(404, json={"details": "no cards found"})
+    )
+    assert client.search_pipeline("id<=w otag:bogus-tag f:commander") == []
+
+
+@respx.mock
 def test_named_fuzzy(client):
     route = respx.get(f"{SCRYFALL_BASE_URL}/cards/named").mock(
         return_value=httpx.Response(200, json=RAW_CARD)

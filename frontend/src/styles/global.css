@@ -1578,6 +1578,40 @@ body.has-pinned-tray .deck-detail {
 
 .why-row__pts--zero { color: var(--label); }
 
+/* Nuance variant: the LLM judgment layer, set apart from the counted
+   fundamentals with a top rule and a wrapping (not truncated) reason. */
+.why-row--nuance {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border);
+  /* The reason wraps to multiple lines; baseline-align so the label, points,
+     and the reason's FIRST line share a baseline (center would float the label
+     into the middle of a tall text block). */
+  align-items: baseline;
+}
+
+/* The bar has no text baseline, so baseline alignment would drop it; nudge it
+   back to sit with the first text line. */
+.why-row--nuance .why-row__bar {
+  align-self: center;
+  transform: translateY(-2px);
+}
+
+.why-row--nuance .why-row__label {
+  color: var(--accent);
+}
+
+.why-row--nuance .why-row__detail {
+  white-space: normal;
+  overflow: visible;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
+.why-row__bar-fill--nuance {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2, var(--accent)));
+}
+
 /* Bracket variant: evidence rows with card chips */
 .why-rows--bracket { gap: 10px; }
 

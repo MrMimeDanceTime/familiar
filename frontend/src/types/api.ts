@@ -21,6 +21,9 @@ export interface DeckStats {
   removal_count: number
   total_cards: number
   power_level: number
+  power_level_base: number
+  power_nuance_adj: number
+  power_nuance_reason: string
   power_factors: string[]
   bracket: number
   bracket_factors: string[]

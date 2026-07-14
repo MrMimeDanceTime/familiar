@@ -333,3 +333,32 @@ def test_delete_deck_cascades_proposals(session):
 
     assert repo.get_deck(session, deck.id) is None
     assert repo.get_proposal(session, proposal.id) is None
+
+
+def test_additive_columns_patch_existing_db(tmp_path):
+    """The idempotent ALTER-TABLE patch adds the power-nuance columns to a DB
+    created before they existed, without touching data — the no-Alembic path."""
+    from sqlalchemy import text
+
+    from app.db.session import _apply_additive_columns
+
+    db = tmp_path / "legacy.db"
+    engine = create_engine(f"sqlite:///{db}")
+    # Simulate an old schema: a deck table lacking the nuance columns.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE deck (id INTEGER PRIMARY KEY, name TEXT, commander TEXT, "
+            "format TEXT)"
+        ))
+        conn.execute(text("INSERT INTO deck (id, name, format) VALUES (1, 'Old', 'commander')"))
+
+    _apply_additive_columns(engine)
+    # idempotent: a second run must not error
+    _apply_additive_columns(engine)
+
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(deck)"))}
+        assert {"power_nuance_adj", "power_nuance_reason", "power_nuance_key"} <= cols
+        # existing row survived
+        name = conn.execute(text("SELECT name FROM deck WHERE id=1")).scalar()
+        assert name == "Old"

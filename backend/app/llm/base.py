@@ -50,6 +50,15 @@ class ChatProvider(Protocol):
         tools: list[ToolSpec],
     ) -> AssistantTurn: ...
 
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        model: str | None = None,
+        thinking: bool = True,
+    ) -> str: ...
+
     def append_tool_results(
         self,
         history: list[dict[str, Any]],

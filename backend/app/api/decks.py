@@ -230,7 +230,14 @@ def get_deck_stats(deck_id: int):
     with Session(get_engine()) as session:
         if not repo.get_deck(session, deck_id):
             raise HTTPException(status_code=404, detail=f"Deck {deck_id} not found")
-        return compute_deck_stats(session, deck_id)
+        # Pass the provider so the panel shows the nuanced power level. The
+        # content-hash cache makes this free after the first read per deck edit,
+        # so the endpoint stays fast on repeated panel refreshes.
+        try:
+            provider = get_llm_provider()
+        except Exception:
+            provider = None
+        return compute_deck_stats(session, deck_id, provider)
 
 
 @router.post("/proposals/{proposal_id}/apply")

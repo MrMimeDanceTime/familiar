@@ -1,7 +1,8 @@
 """SSE event vocabulary for the chat stream.
 
 Event types: token (incremental text), tool_call (loading indicator while
-a tool runs), deck_updated (fresh deck snapshot after a deck_* mutation),
+a tool runs), deck_proposal (a pending proposal batch for the player to
+approve/deny), deck_updated (fresh deck snapshot after a deck_* mutation),
 done (final, with persisted message id), error.
 """
 

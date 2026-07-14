@@ -5,7 +5,13 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.db import repository as repo
 from app.tools import deck_tools
-from app.tools.dispatch import DECK_MUTATION_TOOLS, SESSION_TOOLS, STATELESS_TOOLS, dispatch
+from app.tools.dispatch import (
+    DECK_MUTATION_TOOLS,
+    PROVIDER_SESSION_TOOLS,
+    SESSION_TOOLS,
+    STATELESS_TOOLS,
+    dispatch,
+)
 from app.tools.schemas import TOOL_SPECS
 from app.tools.scryfall_client import ScryfallNotFoundError
 
@@ -543,9 +549,56 @@ DISPATCH_ONLY_TOOLS = {
 }
 
 
+def test_suggest_cards_requires_a_provider(session):
+    deck = repo.create_deck(session)
+    # no provider passed -> guarded, not a crash
+    result = dispatch("suggest_cards", {"deck_id": deck.id, "intent": "ramp"}, session)
+    assert result.ok is False
+    assert "requires an LLM provider" in result.content
+
+
+@patch("app.pipeline.service.build_suggestions")
+def test_suggest_cards_threads_provider_and_returns_proposal_shape(mock_build, session):
+    from app.pipeline.service import SuggestionResult
+
+    mock_build.return_value = SuggestionResult(
+        summary="Added ramp.",
+        proposals=[{"id": 1, "action": "add", "card_name": "Sol Ring", "status": "pending"}],
+    )
+    deck = repo.create_deck(session)
+    sentinel_provider = object()
+
+    result = dispatch(
+        "suggest_cards",
+        {"deck_id": deck.id, "intent": "cheap ramp", "conversation_id": 7},
+        session,
+        provider=sentinel_provider,
+    )
+
+    assert result.ok is True
+    # same shape propose_deck_changes returns, so the engine streams it unchanged
+    assert result.content["summary"] == "Added ramp."
+    assert result.content["proposals"][0]["card_name"] == "Sol Ring"
+
+    # the active provider was forwarded into the pipeline
+    _, kwargs = mock_build.call_args
+    args = mock_build.call_args.args
+    assert sentinel_provider in args
+    assert kwargs["conversation_id"] == 7
+
+
+def test_suggest_cards_is_a_proposal_and_deck_scoped_tool():
+    # Membership in these sets is what makes the engine force deck_id/
+    # conversation_id and stream the resulting proposals — assert it explicitly
+    # so a future refactor can't silently drop the wiring.
+    from app.tools.dispatch import DECK_SCOPED_TOOLS, PROPOSAL_TOOLS
+    assert "suggest_cards" in PROPOSAL_TOOLS
+    assert "suggest_cards" in DECK_SCOPED_TOOLS
+
+
 def test_tool_schemas_and_dispatch_registry_in_sync():
     spec_names = {t.name for t in TOOL_SPECS}
-    dispatch_names = set(STATELESS_TOOLS) | set(SESSION_TOOLS)
+    dispatch_names = set(STATELESS_TOOLS) | set(SESSION_TOOLS) | set(PROVIDER_SESSION_TOOLS)
 
     missing_from_dispatch = spec_names - dispatch_names
     assert not missing_from_dispatch, (

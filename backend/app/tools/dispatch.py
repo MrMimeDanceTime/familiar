@@ -27,6 +27,9 @@ DECK_MUTATION_TOOLS = {
 
 PROPOSAL_TOOLS = {
     "propose_deck_changes",
+    # suggest_cards runs the retrieval pipeline and, like propose_deck_changes,
+    # produces pending proposals the engine streams and anchors to the turn.
+    "suggest_cards",
 }
 
 # Tools scoped to the active conversation's deck. The chat engine forces
@@ -43,6 +46,7 @@ DECK_SCOPED_TOOLS = {
     "deck_update_notes",
     "propose_deck_changes",
     "withdraw_pending_proposals",
+    "suggest_cards",
 }
 
 
@@ -90,7 +94,6 @@ STATELESS_TOOLS: dict[str, Callable[..., Any]] = {
 # Tools that operate on deck state and need a `session` injected as the first arg.
 SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "deck_get_current": deck_tools.deck_get_current,
-    "deck_get_stats": deck_tools.deck_get_stats,
     "deck_add_card": deck_tools.deck_add_card,
     "deck_remove_card": deck_tools.deck_remove_card,
     "deck_set_commander": deck_tools.deck_set_commander,
@@ -100,7 +103,42 @@ SESSION_TOOLS: dict[str, Callable[..., Any]] = {
 }
 
 
-def dispatch(name: str, arguments: dict[str, Any], session: Session) -> DispatchResult:
+def _suggest_cards(
+    session: Session,
+    provider: Any,
+    deck_id: int,
+    intent: str,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
+) -> dict:
+    """Run the retrieval pipeline and return its proposal batch.
+
+    The engine forces deck_id/conversation_id (DECK_SCOPED_TOOLS / PROPOSAL_TOOLS),
+    so the model's guesses for them are overridden before we get here. Returns the
+    same {ok, summary, proposals} shape as propose_deck_changes so the engine's
+    proposal streaming needs no special case."""
+    from app.pipeline.service import build_suggestions
+
+    result = build_suggestions(
+        session, deck_id, intent, provider,
+        conversation_id=conversation_id, message_id=message_id,
+    )
+    return {"ok": True, "summary": result.summary, "proposals": result.proposals}
+
+
+# Tools that additionally need the LLM provider injected after `session`.
+PROVIDER_SESSION_TOOLS: dict[str, Callable[..., Any]] = {
+    "suggest_cards": _suggest_cards,
+    "deck_get_stats": deck_tools.deck_get_stats,
+}
+
+
+def dispatch(
+    name: str,
+    arguments: dict[str, Any],
+    session: Session,
+    provider: Any | None = None,
+) -> DispatchResult:
     if arguments.get("_parse_error"):
         return DispatchResult(
             ok=False,
@@ -109,6 +147,12 @@ def dispatch(name: str, arguments: dict[str, Any], session: Session) -> Dispatch
     try:
         if name in STATELESS_TOOLS:
             result = STATELESS_TOOLS[name](**arguments)
+        elif name in PROVIDER_SESSION_TOOLS:
+            if provider is None:
+                return DispatchResult(
+                    ok=False, content=f"Tool '{name}' requires an LLM provider but none was supplied."
+                )
+            result = PROVIDER_SESSION_TOOLS[name](session, provider, **arguments)
         elif name in SESSION_TOOLS:
             result = SESSION_TOOLS[name](session, **arguments)
         else:

@@ -15,8 +15,9 @@ engine.
   loop (no LangChain/LangGraph). Python ≥3.10.
 - Frontend: React + TypeScript + Vite, plain CSS (no component library).
 - LLM: provider-neutral abstraction supporting Anthropic (Claude) and
-  DeepSeek. **DeepSeek-reasoner is the default/primary provider** in this
-  deployment — see [PROVIDERS.md](PROVIDERS.md).
+  DeepSeek. **deepseek-v4-pro (thinking mode) is the default/primary provider** in this
+  deployment, with deepseek-v4-flash available as a per-call fast seam — see
+  [PROVIDERS.md](PROVIDERS.md).
 - Data sources: Scryfall REST API (self-throttled httpx client), EDHREC's
   unofficial JSON endpoint (disk-cached, defensively parsed since it's
   undocumented), and Scryfall's Oracle Tags bulk export (disk-cached ~24h)
@@ -78,6 +79,14 @@ backend/app/
     seed.py            seeds the knowledge base on startup (idempotent)
     store.py           search_knowledge(): FTS5 MATCH + BM25 ranking, optional format/category filter
     tag_lookup.py      Scryfall Oracle Tags bulk cache -> functional roles (ramp/draw/removal/land)
+  pipeline/            deterministic retrieval pipeline — Python owns retrieval; the LLM only emits query specs (stage 1) and selects from a curated pool (stage 4)
+    roles.py           fine functional-role taxonomy layered over the coarse 4 (delegates to tag_lookup, total fallthrough)
+    spec.py            stage 1: intent + identity -> Scryfall query specs (LLM JSON) + enforcement/repair
+    candidates.py      stage 2: run queries via search_pipeline, merge/dedupe, EDHREC-annotate, cap
+    shaping.py         stage 3: strip -> precompute legality/roles -> dedupe -> cap (legal-first) -> render
+    selection.py       stage 4: curated pool -> picks/cuts (LLM JSON), hallucination-guarded to legal pool cards
+    validate.py        stage 5: picks -> pending proposals by reusing propose_deck_changes (the shared gate)
+    service.py         build_suggestions(): wires stages 1-5, returns SuggestionResult (used by the suggest_cards tool)
   integrations/
     base.py            DeckProvider ABC + registry + NormalizedDeck/Card types; supports_fetch/supports_push capability flags
     archidekt.py / moxfield.py   fetch-capable providers (register themselves on import)
@@ -131,11 +140,12 @@ restructure, or intentionally dropping data.
 
 ## SSE event vocabulary
 
-`token`, `tool_call`, `deck_updated`, `done`, `error` — formatted in
-`app/chat/streaming.py`, consumed by `frontend/src/hooks/useChatStream.ts`.
-Deck proposals aren't a separate event type: the model calls
-`propose_deck_changes`, and the pending proposals ride along in the
-`deck_updated` snapshot; the player approves/denies them through the
+`token`, `tool_call`, `deck_proposal`, `deck_updated`, `done`, `error` —
+formatted in `app/chat/streaming.py`, consumed by
+`frontend/src/hooks/useChatStream.ts`. When the model calls a proposal tool
+(`propose_deck_changes` or `suggest_cards`), the engine emits a `deck_proposal`
+event carrying the pending batch and anchors those proposals to the turn's final
+assistant message; the player approves/denies them through the
 `/api/decks/proposals/{id}/apply|deny` REST endpoints.
 
 ## Subsystems
@@ -145,8 +155,22 @@ The model can't touch the deck directly. Beyond the Scryfall/EDHREC lookups it
 gets: `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
 `deck_get_stats` (computed bracket 1-5, power 1-10, and the factor breakdown),
 `propose_deck_changes` / `withdraw_pending_proposals` (the approval workflow),
-and `deck_update_notes`. Specs live in `app/tools/schemas.py` — tune the
-description wording there to correct model misuse rather than adding code.
+`suggest_cards` (runs the `pipeline/` retrieval flow for open-ended "what should
+I add" requests — see below), and `deck_update_notes`. Specs live in
+`app/tools/schemas.py` — tune the description wording there to correct model
+misuse rather than adding code.
+
+### Retrieval pipeline (`app/pipeline/`)
+Inverts control of card suggestion: instead of the model driving retrieval by
+electing to call Scryfall/EDHREC turn-by-turn (which misfired often — the model
+would answer from training data), deterministic Python owns the flow and the
+model is bounded to two JSON calls — emit query specs (stage 1) and pick from a
+pre-filtered, legality-checked, EDHREC-ranked pool (stage 4). `build_suggestions`
+returns the same proposal shape as `propose_deck_changes`, so it plugs into the
+existing approval workflow with no new plumbing. It's currently triggered by the
+model electing to call the `suggest_cards` tool (entry-gated, but everything
+after entry is deterministic); a future proactive trigger could grow out of the
+`_deck_grounding` hook in `engine.py`.
 
 ### Knowledge base (`app/knowledge/`)
 Deckbuilding best-practice entries in a `knowledge_entries` table mirrored into

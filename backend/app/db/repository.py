@@ -145,6 +145,23 @@ def list_decks(session: Session) -> list[Deck]:
     return list(session.exec(statement))
 
 
+def set_deck_power_nuance(
+    session: Session, deck_id: int, adjustment: float, reason: str, content_key: str
+) -> None:
+    """Persist the cached power-level nuance adjustment + reason + the content
+    hash it was computed for. Deliberately does NOT touch updated_at — caching a
+    derived value is not a deck edit, and bumping updated_at would ripple into
+    anything that keys off it."""
+    deck = session.get(Deck, deck_id)
+    if not deck:
+        return
+    deck.power_nuance_adj = adjustment
+    deck.power_nuance_reason = reason
+    deck.power_nuance_key = content_key
+    session.add(deck)
+    session.commit()
+
+
 def update_deck(
     session: Session,
     deck_id: int,
