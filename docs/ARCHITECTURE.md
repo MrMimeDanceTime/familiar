@@ -15,8 +15,9 @@ engine.
   loop (no LangChain/LangGraph). Python ≥3.10.
 - Frontend: React + TypeScript + Vite, plain CSS (no component library).
 - LLM: provider-neutral abstraction supporting Anthropic (Claude) and
-  DeepSeek. **deepseek-v4-flash (thinking mode) is the default/primary provider** in this
-  deployment — see [PROVIDERS.md](PROVIDERS.md).
+  DeepSeek. **deepseek-v4-pro (thinking mode) is the default/primary provider** in this
+  deployment, with deepseek-v4-flash available as a per-call fast seam — see
+  [PROVIDERS.md](PROVIDERS.md).
 - Data sources: Scryfall REST API (self-throttled httpx client), EDHREC's
   unofficial JSON endpoint (disk-cached, defensively parsed since it's
   undocumented), and Scryfall's Oracle Tags bulk export (disk-cached ~24h)

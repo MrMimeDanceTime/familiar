@@ -17,3 +17,13 @@ def get_provider(name: str | None = None) -> ChatProvider:
         )
 
     raise ValueError(f"Unknown LLM_PROVIDER: {provider_name!r}")
+
+
+def get_fast_model(name: str | None = None) -> str | None:
+    """The per-call Flash model override for pipeline stages that want throughput
+    over reasoning depth. Only DeepSeek has a distinct fast tier; other providers
+    return None (use the provider default)."""
+    provider_name = name or settings.llm_provider
+    if provider_name == "deepseek":
+        return settings.deepseek_model_fast
+    return None
