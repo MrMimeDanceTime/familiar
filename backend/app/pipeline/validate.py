@@ -23,12 +23,20 @@ from app.pipeline.selection import Selection
 from app.tools.deck_tools import propose_deck_changes
 
 
-def selection_to_changes(selection: Selection) -> list[dict[str, Any]]:
+def selection_to_changes(
+    selection: Selection, deck_card_names: set[str] | None = None
+) -> list[dict[str, Any]]:
     """Translate a Selection into the change dicts propose_deck_changes expects.
 
     Picks -> add (qty 1), cuts -> remove (whole stack). The reasoning carries the
     model's one-line justification through to the proposal row so the UI can show
     why each card was suggested.
+
+    Cuts are hallucination-guarded: when ``deck_card_names`` (lowercased) is given,
+    a cut naming a card not in the deck is dropped rather than forwarded. Without
+    this guard a single bogus cut makes propose_deck_changes raise and sinks the
+    entire batch of good adds — so the guard is what keeps one bad remove from
+    collapsing the whole suggestion.
     """
     changes: list[dict[str, Any]] = []
     for pick in selection.picks:
@@ -39,6 +47,8 @@ def selection_to_changes(selection: Selection) -> list[dict[str, Any]]:
             "reasoning": pick.reason,
         })
     for cut in selection.cuts:
+        if deck_card_names is not None and cut.name.lower() not in deck_card_names:
+            continue
         changes.append({
             "action": "remove",
             "card_name": cut.name,
@@ -61,8 +71,14 @@ def validate_to_proposals(
     Returns propose_deck_changes' result: ``{ok, summary, proposals}``. When the
     selection is empty, returns an empty batch without calling through (nothing
     to propose). ``summary`` defaults to the selection's own summary line.
+
+    Cuts that name a card not currently in the deck are dropped before proposing,
+    so a hallucinated cut can't make the whole batch fail.
     """
-    changes = selection_to_changes(selection)
+    from app.db import repository as repo
+
+    deck_names = {c.card_name.lower() for c in repo.list_deck_cards(session, deck_id)}
+    changes = selection_to_changes(selection, deck_names)
     if not changes:
         return {"ok": True, "summary": summary or selection.summary, "proposals": []}
 

@@ -180,6 +180,14 @@ separately via the provider API — use the schemas for exact arguments):
 - propose_deck_changes / withdraw_pending_proposals — propose
   additions/removals/commander changes for player approval, or withdraw a
   stale batch.
+- suggest_cards — the preferred path for open-ended "what should I add to
+  fill this role/gap" requests. Give it a focused intent and it runs a
+  deterministic pipeline (query -> retrieve -> filter to legal, on-color,
+  unowned candidates -> select) and returns approval-ready ADD proposals.
+  Reach for this instead of hand-rolling scryfall_search + propose_deck_changes
+  when the player wants suggestions for a role (ramp, removal, draw, a curve
+  slot, the manabase). For a card the player names explicitly, use
+  propose_deck_changes directly.
 </available_tools>
 
 <constraints>

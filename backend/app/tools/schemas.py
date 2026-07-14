@@ -236,6 +236,45 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="suggest_cards",
+        description=(
+            "Run the deterministic card-suggestion pipeline: it generates focused "
+            "Scryfall queries for the intent, retrieves and filters a legal, "
+            "on-color candidate pool (EDHREC-ranked, already excluding the "
+            "commander, owned cards, and banned/off-identity cards), and returns a "
+            "batch of pending ADD proposals with reasoning — the same kind of "
+            "proposals propose_deck_changes creates. "
+            "USE THIS whenever the player asks you to suggest, recommend, find, or "
+            "add cards to fill a role or gap — e.g. 'suggest some ramp', 'what "
+            "removal should I run', 'help me find card draw', 'fill out the "
+            "manabase'. Prefer it over scryfall_search + manual propose_deck_changes "
+            "for open-ended 'what should I add' requests: it does the search, "
+            "filtering, and legality-checking for you. "
+            "Do NOT use it for questions that aren't asking for card suggestions "
+            "(rules questions, explaining a card, discussing the deck's power level, "
+            "or when the player names a specific card to add — use "
+            "propose_deck_changes directly for a named card). Give a clear, specific "
+            "`intent` describing the role and any constraints (budget, mana value, "
+            "keywords), since that intent drives the whole search."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "integer"},
+                "intent": {
+                    "type": "string",
+                    "description": (
+                        "What the player wants, in a focused phrase the query "
+                        "planner can act on, e.g. 'cheap instant-speed removal under "
+                        "3 mana', 'ramp that fixes colors', 'card draw on a budget'. "
+                        "Include constraints the player stated."
+                    ),
+                },
+            },
+            "required": ["deck_id", "intent"],
+        },
+    ),
+    ToolSpec(
         name="deck_update_notes",
         description="Update the free-form notes/strategy summary attached to the in-progress deck.",
         parameters={
