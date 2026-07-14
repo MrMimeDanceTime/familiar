@@ -46,25 +46,47 @@ class SuggestionResult:
     debug: dict[str, Any] = field(default_factory=dict)
 
 
-def _commander_identity(snapshot: dict[str, Any]) -> frozenset[str]:
+def _commander_identity(snapshot: dict[str, Any], scryfall: Any | None = None) -> frozenset[str]:
     """Union the colour identities of the deck's commander card(s).
 
-    Reads from the snapshot's own cards (each carries its stored color_identity
-    string, e.g. "BR"), so no extra Scryfall call is needed. A deck with no
-    commander yet yields the empty (colourless) identity, which legal_in_deck
-    treats as "only colourless cards are legal" — correct for an unset commander.
+    Reads first from the snapshot's own cards (each carries its stored
+    color_identity string, e.g. "BR"), so the common path needs no extra call.
+    A deck with no commander yet yields the empty (colourless) identity, which
+    legal_in_deck treats as "only colourless cards are legal" — correct for an
+    unset commander.
+
+    Robustness for imports: if a commander IS named but its identity comes back
+    empty from the decklist (some import paths may not populate color_identity,
+    or the commander card isn't in the list), fall back to a Scryfall lookup.
+    Without this, an empty identity would silently mark every colored suggestion
+    illegal and return an empty pool — a total, silent failure on exactly the
+    partial-import decks this needs to work for.
     """
-    commander_names = {
-        n.lower()
-        for n in (snapshot.get("commander"), snapshot.get("partner_commander"))
-        if n
-    }
+    commander_names = [
+        n for n in (snapshot.get("commander"), snapshot.get("partner_commander")) if n
+    ]
+    commander_lower = {n.lower() for n in commander_names}
+
     letters: set[str] = set()
     for card in snapshot.get("cards", []):
-        if (card.get("name") or "").lower() in commander_names:
+        if (card.get("name") or "").lower() in commander_lower:
             for ch in (card.get("color_identity") or ""):
                 if ch.strip():
                     letters.add(ch.upper())
+
+    if not letters and commander_names:
+        from app.tools.scryfall_client import ScryfallError, get_scryfall_client
+
+        client = scryfall or get_scryfall_client()
+        for name in commander_names:
+            try:
+                card = client.named(name, fuzzy=True)
+            except ScryfallError:
+                continue
+            for ch in (card.get("color_identity") or []):
+                if ch and ch.strip():
+                    letters.add(ch.upper())
+
     return frozenset(letters)
 
 
@@ -104,7 +126,7 @@ def build_suggestions(
     for testing; ``model`` overrides the provider model for both LLM stages.
     """
     snapshot = repo.deck_snapshot(session, deck_id)
-    identity = _commander_identity(snapshot)
+    identity = _commander_identity(snapshot, scryfall)
     ctx = DeckContext.from_snapshot(snapshot, identity)
 
     spec = spec_stage.generate_query_spec(

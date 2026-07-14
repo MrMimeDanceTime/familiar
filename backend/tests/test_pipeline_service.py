@@ -5,7 +5,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.db import repository as repo
-from app.pipeline.service import build_suggestions
+from app.pipeline.service import _commander_identity, build_suggestions
 
 
 @pytest.fixture
@@ -68,6 +68,56 @@ def _pool_card(name, oid, ci=("B", "R"), rank=100):
         "power": None, "toughness": None, "loyalty": None, "rarity": "common",
         "edhrec_rank": rank,
     }
+
+
+class _FakeNamedScryfall:
+    def __init__(self, identity):
+        self._identity = list(identity)
+        self.named_calls = []
+
+    def named(self, name, fuzzy=True):
+        self.named_calls.append(name)
+        return {"name": name, "color_identity": self._identity}
+
+
+def test_commander_identity_reads_from_decklist():
+    snap = {
+        "commander": "Judith, the Scourge Diva",
+        "cards": [{"name": "Judith, the Scourge Diva", "color_identity": "BR"}],
+    }
+    assert _commander_identity(snap) == frozenset({"B", "R"})
+
+
+def test_commander_identity_falls_back_to_scryfall_when_decklist_empty():
+    # Import path didn't populate color_identity (or commander not in cards):
+    # empty from the decklist -> Scryfall lookup rescues it instead of returning
+    # an empty (colourless) identity that would drop every colored suggestion.
+    snap = {
+        "commander": "Judith, the Scourge Diva",
+        "cards": [{"name": "Judith, the Scourge Diva", "color_identity": ""}],
+    }
+    fake = _FakeNamedScryfall(["B", "R"])
+    assert _commander_identity(snap, fake) == frozenset({"B", "R"})
+    assert fake.named_calls == ["Judith, the Scourge Diva"]
+
+
+def test_commander_identity_no_commander_stays_empty_without_scryfall_call():
+    fake = _FakeNamedScryfall(["B", "R"])
+    snap = {"commander": None, "cards": []}
+    assert _commander_identity(snap, fake) == frozenset()
+    assert fake.named_calls == []  # no commander -> no lookup
+
+
+def test_commander_identity_unions_partners_from_decklist():
+    snap = {
+        "commander": "Commander A",
+        "partner_commander": "Commander B",
+        "cards": [
+            {"name": "Commander A", "color_identity": "W"},
+            {"name": "Commander B", "color_identity": "U"},
+        ],
+    }
+    assert _commander_identity(snap) == frozenset({"W", "U"})
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
