@@ -36,13 +36,22 @@ class Selection:
 
 _SYSTEM_PROMPT = """\
 You are the card-selection stage of a Magic: The Gathering Commander deckbuilding
-assistant. You are given a curated pool of legal candidate cards and the player's
-intent. Choose the best cards for the deck and briefly justify each.
+assistant. You are given the deck being built (its commander and current cards),
+the player's intent, and a curated pool of legal candidate cards. Choose the best
+cards FOR THIS SPECIFIC DECK and briefly justify each.
+
+Judge FIT, not just keyword-match to the intent. A card earns a pick when it
+advances THIS deck's plan: it combos or synergizes with the commander or cards
+already in the list, fills the stated role better than the alternatives, or
+enables a line the deck is set up for. Prefer a card that clicks with the
+commander over a generically-good card that doesn't. Say WHY it fits this deck in
+the reason (name the commander/card it works with when that's the point), not just
+what the card does in a vacuum.
 
 Rules:
 - Pick ONLY from the candidate pool below. Never name a card that isn't listed.
 - Never pick a card marked ILLEGAL.
-- Prefer cards that directly serve the stated intent; note synergy when relevant.
+- Ground your fit reasoning in the commander and current deck shown below.
 - Keep each justification to one sentence.
 
 Output ONLY a JSON object of this shape:
@@ -56,14 +65,18 @@ Pick at most {max_picks} cards. "cuts" may be empty. Nothing outside the JSON ob
 
 
 def build_prompt(
-    pool: list[ShapedCard], user_intent: str, *, max_picks: int = 10
+    pool: list[ShapedCard], user_intent: str, *, max_picks: int = 10,
+    deck_context: str = "",
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the stage-4 call. The pool is
     rendered by the shaping layer so this stage and the golden tests see the same
-    deterministic block."""
+    deterministic block. ``deck_context`` is a compact description of the
+    commander + current deck (built by the service) so the model can judge fit
+    against this specific deck rather than matching the intent in a vacuum."""
     system = _SYSTEM_PROMPT.format(max_picks=max_picks)
     block = render_pool(pool)
-    user = f"Player intent: {user_intent}\n\nCandidate pool:\n{block}"
+    ctx = f"{deck_context.strip()}\n\n" if deck_context.strip() else ""
+    user = f"{ctx}Player intent: {user_intent}\n\nCandidate pool:\n{block}"
     return system, user
 
 
@@ -143,9 +156,18 @@ def select(
     *,
     model: str | None = None,
     max_picks: int = 10,
+    thinking: bool = True,
+    deck_context: str = "",
 ) -> Selection:
     """Run stage 4: prompt the provider with the curated pool, parse+repair its
-    JSON into a validated Selection."""
-    system, user = build_prompt(pool, user_intent, max_picks=max_picks)
-    raw = provider.complete_json(system, user, model=model)
+    JSON into a validated Selection.
+
+    ``deck_context`` gives the model the commander + current deck so it can judge
+    fit/synergy against this specific deck (the one thing Python can't do). This
+    is the stage where deck-aware reasoning happens, so with real context present
+    ``thinking=True`` earns its cost."""
+    system, user = build_prompt(
+        pool, user_intent, max_picks=max_picks, deck_context=deck_context
+    )
+    raw = provider.complete_json(system, user, model=model, thinking=thinking)
     return parse_selection(raw, pool, max_picks=max_picks)

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api/client'
 import { CardPinProvider, useCardPins } from './components/CardPinContext'
 import { ChatView } from './components/ChatView'
@@ -261,8 +261,27 @@ function App() {
         })),
       )
       loadStats(updatedDeck.id)
+      // Deck auto-naming now runs server-side in the background (it's a slow LLM
+      // call), so a freshly-committed commander leaves the deck "Untitled Deck"
+      // in this response. Poll the deck a few times to pick up the generated
+      // name once it lands, then refresh the sidebar list.
+      if (updatedDeck.name === 'Untitled Deck' && updatedDeck.commander) {
+        let tries = 0
+        const poll = async () => {
+          tries += 1
+          const fresh = await api.getDeck(updatedDeck.id).catch(() => null)
+          if (fresh && fresh.name !== 'Untitled Deck') {
+            // Only replace the panel deck if the user is still viewing this one.
+            setDeck((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+            refreshDecks()
+          } else if (tries < 6) {
+            setTimeout(poll, 2000)
+          }
+        }
+        setTimeout(poll, 2000)
+      }
     },
-    [setDeck, loadStats],
+    [setDeck, loadStats, refreshDecks],
   )
 
   const handleDenyProposal = useCallback(
@@ -321,7 +340,21 @@ function App() {
   // ── Derived state ──────────────────────────────────────────────────────
 
   const showDeckDetail = sidebarTab === 'decks' && deck !== null
-  const cardNames = deck?.cards.map((c) => c.name) ?? []
+  // Card names to make hoverable/pinnable in chat: everything in the deck PLUS
+  // every card named in a proposal this conversation. Cards Familiar suggests
+  // live in proposals before (and whether or not) they're added to the deck, so
+  // without the proposal names its in-chat suggestions were never pinnable.
+  const cardNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const c of deck?.cards ?? []) names.add(c.name)
+    for (const b of proposalBatches) {
+      for (const p of b.proposals) {
+        if (p.card_name) names.add(p.card_name)
+        if (p.commander_name) names.add(p.commander_name)
+      }
+    }
+    return [...names]
+  }, [deck, proposalBatches])
 
   return (
     <CardPinProvider>

@@ -19,8 +19,14 @@ def _to_decklist_text(deck: NormalizedDeck) -> str:
     return "\n".join(f"{c.quantity} {c.name}" for c in deck.cards)
 
 
-def fetch_into_deck(session: Session, deck_id: int, provider_name: str, ref: str) -> dict:
+def fetch_into_deck(
+    session: Session, deck_id: int, provider_name: str, ref: str, mode: str = "merge"
+) -> dict:
     """Fetch a deck from *provider_name* (by URL/id *ref*) into an existing deck.
+
+    ``mode`` is forwarded to ``import_decklist``: ``"merge"`` adds onto the
+    current cards, ``"replace"`` wipes them first so the fetched list becomes
+    the deck.
 
     Returns the deck snapshot with an ``_import`` summary (imported count +
     per-card errors) and a ``_source`` block describing the origin.
@@ -28,7 +34,7 @@ def fetch_into_deck(session: Session, deck_id: int, provider_name: str, ref: str
     provider = get_provider(provider_name)
     normalized = provider.fetch_deck(ref)  # raises ProviderError on failure
 
-    result = import_decklist(session, deck_id, _to_decklist_text(normalized))
+    result = import_decklist(session, deck_id, _to_decklist_text(normalized), mode=mode)
     import_summary = result["_import"]
 
     # Designate commander(s) now that the cards are in the deck. Partner pairs

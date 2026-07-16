@@ -300,7 +300,9 @@ def deck_update_notes(session: Session, deck_id: int, notes: str) -> dict:
     return repo.deck_snapshot(session, deck_id)
 
 
-def import_decklist(session: Session, deck_id: int, text: str) -> dict:
+def import_decklist(
+    session: Session, deck_id: int, text: str, mode: str = "merge"
+) -> dict:
     """Parse a decklist in text form and insert all cards into *deck_id*.
 
     Format accepted::
@@ -313,9 +315,21 @@ def import_decklist(session: Session, deck_id: int, text: str) -> dict:
 
     Cards without an explicit ``//Category`` header are auto-categorised
     from their Scryfall oracle text.
+
+    ``mode`` controls how the incoming list interacts with cards already in
+    the deck:
+
+    - ``"merge"`` (default): add the incoming quantities on top of whatever's
+      there (a Sol Ring already in the deck ends up at qty 2).
+    - ``"replace"``: wipe the deck's existing cards first, so the imported
+      list *is* the deck. Only cleared once the list parses; a fully
+      unparseable list leaves the deck untouched.
     """
+    if mode not in ("merge", "replace"):
+        raise ValueError(f"Unknown import mode {mode!r} (expected 'merge' or 'replace').")
     scryfall = get_scryfall_client()
     imported = 0
+    cleared = 0
     errors: list[str] = []
 
     # Phase 1: parse every line into (qty, name, category) up front, so all
@@ -343,6 +357,11 @@ def import_decklist(session: Session, deck_id: int, text: str) -> dict:
             continue
 
         parsed.append((qty, card_name, category))
+
+    # In replace mode, wipe the existing cards now that we know the list parsed
+    # into at least one card — a fully-unparseable paste shouldn't nuke the deck.
+    if mode == "replace" and parsed:
+        cleared = repo.clear_deck_cards(session, deck_id)
 
     # Phase 2: batch-resolve all names, then insert.
     resolved_map = _resolve_many(scryfall, [name for _, name, _ in parsed])
@@ -380,7 +399,9 @@ def import_decklist(session: Session, deck_id: int, text: str) -> dict:
         imported += 1
 
     snapshot = repo.deck_snapshot(session, deck_id)
-    snapshot["_import"] = {"imported": imported, "errors": errors}
+    snapshot["_import"] = {
+        "imported": imported, "errors": errors, "mode": mode, "cleared": cleared,
+    }
     return snapshot
 
 

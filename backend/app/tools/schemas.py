@@ -163,9 +163,16 @@ TOOL_SPECS: list[ToolSpec] = [
         description=(
             "Propose changes to the in-progress deck for the player to approve or "
             "deny. You cannot modify the deck directly — you must use this tool to "
-            "make proposals. Propose 3-6 changes at a time in a batch. For each "
-            "change, provide clear reasoning the player can evaluate. For 'add' "
-            "actions, the card name will be validated against Scryfall."
+            "make proposals. Aim for about 3-6 CARD adds/removes per batch. A "
+            "'set_commander' action does NOT count toward that batch size — when "
+            "you open a deck by batching the commander together with cards, include "
+            "the full set of cards you intend (e.g. commander + 6 cards is one call "
+            "with 7 changes), not 6 changes total with the commander eating a card "
+            "slot. Whatever number of cards you describe in your reply, emit exactly "
+            "that many 'add' changes here — the count in your prose and the count in "
+            "this call must match. For each change, provide clear reasoning the "
+            "player can evaluate. For 'add' actions, the card name will be validated "
+            "against Scryfall."
         ),
         parameters={
             "type": "object",

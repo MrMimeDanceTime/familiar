@@ -104,6 +104,22 @@ def test_remove_nonexistent_deck_card_returns_false(session):
     assert repo.remove_deck_card(session, deck.id, "Nonexistent Card") is False
 
 
+def test_clear_deck_cards_removes_all_and_returns_count(session):
+    deck = repo.create_deck(session)
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1)
+    repo.add_deck_card(session, deck.id, "Swamp", quantity=34)
+
+    cleared = repo.clear_deck_cards(session, deck.id)
+
+    assert cleared == 2
+    assert repo.list_deck_cards(session, deck.id) == []
+
+
+def test_clear_deck_cards_on_empty_deck_returns_zero(session):
+    deck = repo.create_deck(session)
+    assert repo.clear_deck_cards(session, deck.id) == 0
+
+
 def test_remove_deck_card_explicit_partial_quantity_shrinks_stack(session):
     deck = repo.create_deck(session)
     repo.add_deck_card(session, deck.id, "Swamp", quantity=34)

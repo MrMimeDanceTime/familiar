@@ -49,8 +49,10 @@ export interface Deck {
   cards: DeckCard[]
 }
 
+export type ImportMode = 'merge' | 'replace'
+
 export interface ImportResult extends Deck {
-  _import?: { imported: number; errors: string[] }
+  _import?: { imported: number; errors: string[]; mode?: ImportMode; cleared?: number }
   _source?: {
     provider: string
     url: string | null

@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # beats reasoning depth. Not used by the chat loop, which runs on the default.
     deepseek_model_fast: str = "deepseek-v4-flash"
 
+    # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
+    # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a
+    # slow thinking-mode pipeline call). Cap it so a stalled request fails fast
+    # and surfaces as a tool error the model/user can see, instead of hanging.
+    llm_timeout_seconds: float = 90.0
+
     familiar_db_path: str = "familiar.db"
 
     edhrec_cache_dir: str = "cache/edhrec"

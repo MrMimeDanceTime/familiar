@@ -299,6 +299,21 @@ def add_deck_card(
     return card
 
 
+def clear_deck_cards(session: Session, deck_id: int) -> int:
+    """Delete every card row in *deck_id* and return how many were removed.
+
+    Used by a "replace" import so the incoming list becomes the whole deck
+    rather than merging onto (and duplicating) what's already there. The
+    deck row itself and its commander fields are left untouched — the import
+    re-populates the cards and re-designates commanders afterward.
+    """
+    cards = list_deck_cards(session, deck_id)
+    for card in cards:
+        session.delete(card)
+    session.commit()
+    return len(cards)
+
+
 def remove_deck_card(
     session: Session, deck_id: int, card_name: str, quantity: int | None = None
 ) -> bool:

@@ -11,8 +11,16 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 
 class DeepSeekProvider:
-    def __init__(self, api_key: str, model: str) -> None:
-        self._client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
+    def __init__(self, api_key: str, model: str, timeout: float | None = None) -> None:
+        # Cap the per-request timeout: the SDK default (600s) reads as a total
+        # UI freeze when a call stalls. With a timeout the SDK raises instead,
+        # and dispatch() turns that into a visible tool error. max_retries=1
+        # (down from the SDK default of 2) so a persistent stall doesn't multiply
+        # the timeout into minutes of waiting before it surfaces.
+        self._client = OpenAI(
+            api_key=api_key, base_url=DEEPSEEK_BASE_URL,
+            timeout=timeout, max_retries=1,
+        )
         self._model = model
 
     def send(

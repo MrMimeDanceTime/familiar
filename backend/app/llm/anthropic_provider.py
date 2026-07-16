@@ -8,8 +8,13 @@ from app.llm.base import AssistantTurn, ToolCallRequest, ToolResult, ToolSpec
 
 
 class AnthropicProvider:
-    def __init__(self, api_key: str, model: str) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, api_key: str, model: str, timeout: float | None = None) -> None:
+        # Cap the per-request timeout so a stalled call fails fast instead of
+        # hanging the chat loop (see DeepSeekProvider for the rationale).
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if timeout is not None:
+            client_kwargs["timeout"] = timeout
+        self._client = anthropic.Anthropic(**client_kwargs)
         self._model = model
 
     def send(
