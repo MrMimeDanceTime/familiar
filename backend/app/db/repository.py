@@ -368,6 +368,13 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         n.lower() for n in (deck.commander, deck.partner_commander) if n
     }
 
+    # The authoritative deck size, computed here so every consumer of the
+    # snapshot (including the chat model reading deck_get_current) has the count
+    # without summing the cards array by hand — which is exactly the error the
+    # model makes when left to eyeball the list. Commander(s) are included: they
+    # are cards in the list and count toward the 100.
+    total_cards = sum(c.quantity for c in cards)
+
     return {
         "id": deck.id,
         "name": deck.name,
@@ -377,6 +384,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "power_level": deck.power_level,
         "format": deck.format,
         "conversation_id": linked.id if linked else None,
+        "total_cards": total_cards,
         "cards": [
             {
                 "name": c.card_name,

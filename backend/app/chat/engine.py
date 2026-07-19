@@ -10,6 +10,8 @@ with a tool_call event for the UI's loading indicator).
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Iterator
 
 from sqlmodel import Session
@@ -28,7 +30,15 @@ from app.llm.base import ChatProvider, ToolResult
 from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
 from app.tools.schemas import TOOL_SPECS
 
+logger = logging.getLogger("app.chat.engine")
+
 MAX_TOOL_ITERATIONS = 12
+
+# After a batch is proposed, the only tool the model may still call is
+# withdraw_pending_proposals — so it can TRIM cards it reconsiders, but never
+# add another batch or run more research. This is what stops the
+# propose -> withdraw -> propose churn that used to burn the iteration budget.
+WITHDRAW_ONLY_TOOLS = [t for t in TOOL_SPECS if t.name == "withdraw_pending_proposals"]
 
 
 def _load_history(session: Session, conversation_id: int) -> list[dict[str, Any]]:
@@ -92,31 +102,50 @@ def run_chat_turn(
     # anchor them to that final message so the UI renders the batch inline
     # under the bubble that introduced it, rather than pooling at the bottom.
     proposal_ids_this_turn: list[int] = []
+    # Once a batch of proposals has been emitted this turn, the turn is done
+    # ADDING to the deck — the player reviews via UI buttons. The prompt asks
+    # the model to stop, but it sometimes churns (propose -> withdraw -> propose
+    # ...), burning the iteration budget and dropping the turn. So we ENFORCE a
+    # softer version of "stop": after a batch exists, the model is offered ONLY
+    # withdraw_pending_proposals, so it can trim a card or two it reconsiders but
+    # cannot add another batch or run more research. A pre-proposal withdraw
+    # (clearing a prior turn's stale batch) is untouched.
+    proposals_emitted = False
+    # Deferred reveal: proposals are NOT streamed to the UI the moment they're
+    # created, because the model may still trim some this turn — the player
+    # would otherwise watch cards appear then vanish. Instead we hold the batch
+    # summary and emit ONE deck_proposal event at turn end, carrying only the
+    # proposals still pending after any trims.
+    pending_summary = ""
     try:
-        for _ in range(MAX_TOOL_ITERATIONS):
+        turn_started = time.perf_counter()
+        for iteration in range(MAX_TOOL_ITERATIONS):
             # Thinking mode roughly doubles per-call latency and the chat loop is
             # mostly mechanical tool-dispatch plus narration of decisions already
             # made through the tool sequence — the deep reasoning lives in the
             # tool choices and in the pipeline/nuance calls (which keep thinking
             # on). Turning it off here is the biggest lever on perceived turn lag.
-            turn = provider.send(system_prompt, history, TOOL_SPECS, thinking=False)
+            tools_for_turn = WITHDRAW_ONLY_TOOLS if proposals_emitted else TOOL_SPECS
+            send_started = time.perf_counter()
+            turn = provider.send(system_prompt, history, tools_for_turn, thinking=False)
+            send_dt = time.perf_counter() - send_started
+            tool_names = [c.name for c in turn.tool_calls] if turn.tool_calls else []
+            logger.info(
+                "chat: turn iter %d send done in %.2fs (%s)",
+                iteration, send_dt,
+                f"calls: {', '.join(tool_names)}" if tool_names else "final text",
+            )
 
             if not turn.tool_calls:
-                if turn.text:
-                    yield token_event(turn.text)
-                message = repo.add_message(
-                    session,
-                    conversation_id,
-                    role="assistant",
-                    sequence=sequence,
-                    text_content=turn.text,
-                    provider_native=[turn.raw_assistant_message],
+                logger.info(
+                    "chat: turn complete in %.2fs over %d LLM call(s)",
+                    time.perf_counter() - turn_started, iteration + 1,
                 )
-                repo.anchor_proposals_to_message(
-                    session, proposal_ids_this_turn, message.id
+                yield from _finalize_turn(
+                    session, conversation_id, sequence,
+                    turn.text, turn.raw_assistant_message,
+                    proposal_ids_this_turn, pending_summary,
                 )
-                repo.touch_conversation(session, conversation_id)
-                yield done_event(message.id, conversation_id)
                 return
 
             results: list[ToolResult] = []
@@ -144,10 +173,19 @@ def run_chat_turn(
                 tool_results_log.append({"call_id": call.id, "content": content})
 
                 if result.ok and call.name in PROPOSAL_TOOLS:
-                    for p in result.content.get("proposals", []):
+                    batch = result.content.get("proposals", [])
+                    for p in batch:
                         if p.get("id") is not None:
                             proposal_ids_this_turn.append(p["id"])
-                    yield deck_proposal_event(result.content)
+                    # Only a batch that actually created proposals restricts the
+                    # turn to withdraw-only. An empty batch (e.g. the pipeline
+                    # found nothing) shouldn't strand the model.
+                    if batch:
+                        proposals_emitted = True
+                        pending_summary = result.content.get("summary") or pending_summary
+                    # NB: no deck_proposal event here — the batch is revealed once,
+                    # settled, at turn end (see _settled_proposal_batch). This
+                    # keeps trimmed cards from flashing into the UI and back out.
                 elif result.ok and call.name in DECK_MUTATION_TOOLS and deck_id is not None:
                     yield deck_updated_event(result.content)
 
@@ -183,9 +221,67 @@ def run_chat_turn(
 
             history = new_history
 
-        yield error_event("Reached max tool-call iterations without a final response.")
+        # The loop exhausted its tool-call budget without the model ending on a
+        # text-only turn. Rather than dropping the turn with a bare error, force
+        # one final toolless send: the model must now produce a text response
+        # (it can't call another tool), so it summarizes what it found. This is
+        # what the player expects when the model has effectively finished its
+        # reasoning but kept a trailing tool call attached. Thinking on — this is
+        # the synthesis turn, not mechanical dispatch.
+        logger.warning(
+            "chat: hit MAX_TOOL_ITERATIONS (%d) after %.2fs — forcing toolless wrap-up",
+            MAX_TOOL_ITERATIONS, time.perf_counter() - turn_started,
+        )
+        wrap = provider.send(system_prompt, history, [], thinking=True)
+        yield from _finalize_turn(
+            session, conversation_id, sequence,
+            wrap.text or _MAX_ITER_FALLBACK_TEXT, wrap.raw_assistant_message,
+            proposal_ids_this_turn, pending_summary,
+        )
     except Exception as exc:  # noqa: BLE001 - surface to client instead of crashing the stream
         yield error_event(str(exc))
+
+
+_MAX_ITER_FALLBACK_TEXT = (
+    "I ran out of research steps before wrapping up. Here's where I got to — "
+    "ask me to continue and I'll pick up from here."
+)
+
+
+def _finalize_turn(
+    session: Session,
+    conversation_id: int,
+    sequence: int,
+    text: str | None,
+    raw_assistant_message: dict[str, Any],
+    proposal_ids_this_turn: list[int],
+    pending_summary: str,
+) -> Iterator[str]:
+    """Emit the final assistant message for a turn: stream its text, persist it,
+    anchor this turn's proposals to it, reveal the settled batch, and close the
+    turn. Shared by the normal (model ended on text) path and the max-iteration
+    wrap-up path so both deliver a real response instead of one erroring out."""
+    if text:
+        yield token_event(text)
+    message = repo.add_message(
+        session,
+        conversation_id,
+        role="assistant",
+        sequence=sequence,
+        text_content=text,
+        provider_native=[raw_assistant_message],
+    )
+    repo.anchor_proposals_to_message(session, proposal_ids_this_turn, message.id)
+    # Now that trims are final, reveal the settled batch: only the proposals from
+    # this turn that survived as pending, anchored to the message just written.
+    # Emitted before `done` so the UI has the batch when the turn closes.
+    settled = _settled_proposal_batch(
+        session, proposal_ids_this_turn, pending_summary
+    )
+    if settled["proposals"]:
+        yield deck_proposal_event(settled)
+    repo.touch_conversation(session, conversation_id)
+    yield done_event(message.id, conversation_id)
 
 
 # Maps a deficiency category from deck stats to (knowledge category, query)
@@ -253,6 +349,32 @@ def _deck_grounding(session: Session, deck_id: int | None) -> str:
         )
     except Exception:  # noqa: BLE001 - grounding is best-effort, never fatal
         return ""
+
+
+def _settled_proposal_batch(
+    session: Session, proposal_ids: list[int], summary: str
+) -> dict[str, Any]:
+    """Build the deck_proposal payload revealed at turn end: only this turn's
+    proposals that are STILL pending (trimmed ones were denied and are dropped),
+    in creation order. Same shape propose_deck_changes returns, so the SSE
+    consumer needs no special case."""
+    proposals: list[dict[str, Any]] = []
+    for pid in proposal_ids:
+        p = repo.get_proposal(session, pid)
+        if p is None or p.status != "pending":
+            continue
+        proposals.append({
+            "id": p.id,
+            "deck_id": p.deck_id,
+            "status": p.status,
+            "action": p.action,
+            "card_name": p.card_name,
+            "quantity": p.quantity,
+            "category": p.category,
+            "commander_name": p.commander_name,
+            "reasoning": p.reasoning,
+        })
+    return {"ok": True, "summary": summary, "proposals": proposals}
 
 
 def _serialize(value: Any) -> str:

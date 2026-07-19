@@ -12,12 +12,14 @@ def get_provider(name: str | None = None) -> ChatProvider:
             api_key=settings.anthropic_api_key,
             model=settings.anthropic_model,
             timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.chat_max_tokens,
         )
     if provider_name == "deepseek":
         return DeepSeekProvider(
             api_key=settings.deepseek_api_key,
             model=settings.deepseek_model,
             timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.chat_max_tokens,
         )
 
     raise ValueError(f"Unknown LLM_PROVIDER: {provider_name!r}")

@@ -7,6 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.chat.engine import _derive_title, run_chat_turn
 from app.db import repository as repo
 from app.llm.base import AssistantTurn, ToolCallRequest
+from app.tools.schemas import TOOL_SPECS
 
 
 @pytest.fixture
@@ -24,10 +25,12 @@ class FakeProvider:
         self._turns = list(turns)
         self.sent_history_snapshots = []
         self.thinking_flags = []
+        self.tools_per_send = []
 
     def send(self, system_prompt, history, tools, *, thinking=True):
         self.sent_history_snapshots.append(list(history))
         self.thinking_flags.append(thinking)
+        self.tools_per_send.append(tools)
         return self._turns.pop(0)
 
     def append_tool_results(self, history, assistant_turn, results):
@@ -100,6 +103,60 @@ def test_tool_call_then_final_response(session):
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
     assert messages[1].tool_calls[0]["name"] == "deck_get_current"
+
+
+def test_max_iterations_forces_a_final_text_response(session):
+    """When the loop exhausts its tool-call budget, the engine must force one
+    toolless wrap-up send so the player gets a real summary — not the old bare
+    'reached max iterations' error that discarded a nearly-finished turn."""
+    from app.chat.engine import MAX_TOOL_ITERATIONS
+
+    class NeverStopsProvider:
+        """Returns a tool call on every tool-bearing send (so the loop never
+        terminates naturally), but a final text response when sent no tools —
+        exactly the wrap-up call the engine makes on exhaustion."""
+
+        def __init__(self):
+            self.toolless_sends = 0
+            self.thinking_on_wrap = None
+
+        def send(self, system_prompt, history, tools, *, thinking=True):
+            if not tools:
+                self.toolless_sends += 1
+                self.thinking_on_wrap = thinking
+                return AssistantTurn(text="Here's the summary of what I found.", tool_calls=[])
+            return AssistantTurn(
+                text=None,
+                tool_calls=[ToolCallRequest(id="c", name="deck_get_current", arguments={})],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["c"]},
+            )
+
+        def append_tool_results(self, history, assistant_turn, results):
+            return [*history, {"role": "assistant"}, {"role": "tool"}]
+
+        def append_user_message(self, history, text):
+            return [*history, {"role": "user", "content": text}]
+
+    deck = repo.create_deck(session, name="Loopy")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    provider = NeverStopsProvider()
+
+    events = _collect(
+        run_chat_turn(session, provider, convo.id, "help", deck_id=deck.id)
+    )
+
+    # The player gets a real answer and a clean close, not an error.
+    assert not any(e.startswith("event: error") for e in events)
+    assert any(e.startswith("event: done") for e in events)
+    assert any("summary of what I found" in e for e in events)
+    # Exactly one forced wrap-up, and it ran with thinking on (synthesis turn).
+    assert provider.toolless_sends == 1
+    assert provider.thinking_on_wrap is True
+
+    messages = repo.list_messages(session, convo.id)
+    assert messages[-1].role == "assistant"
+    assert messages[-1].text_content == "Here's the summary of what I found."
 
 
 def test_engine_overrides_model_supplied_deck_id(session):
@@ -284,6 +341,111 @@ def test_proposals_anchored_to_final_text_message(mock_get_client, session):
     assert proposals[0].message_id != tool_call_msg.id
 
 
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_only_withdraw_tool_offered_after_proposals(mock_get_client, session):
+    """After a proposal batch, the engine must offer ONLY withdraw_pending_
+    proposals — so the model can trim but not add another batch or churn."""
+    mock_get_client.return_value.named.return_value = {
+        "name": "Sol Ring", "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_1",
+                        name="propose_deck_changes",
+                        arguments={
+                            "summary": "Ramp",
+                            "changes": [{"action": "add", "card_name": "Sol Ring"}],
+                        },
+                    )
+                ],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+            ),
+            AssistantTurn(text="Here's your ramp batch.", tool_calls=[]),
+        ]
+    )
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(
+        run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id)
+    )
+
+    # First send offered the full tool set; the send AFTER proposals offered
+    # only the withdraw tool.
+    assert provider.tools_per_send[0] == TOOL_SPECS
+    assert [t.name for t in provider.tools_per_send[1]] == ["withdraw_pending_proposals"]
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_proposals_revealed_only_after_trims_settle(mock_get_client, session):
+    """The deck_proposal event must fire ONCE, at turn end, carrying only the
+    proposals that survived trimming — never mid-loop (so trimmed cards don't
+    flash into the UI and back out)."""
+    mock_get_client.return_value.named.side_effect = lambda name, **k: {
+        "name": name, "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider(
+        [
+            # Propose three cards.
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_1",
+                        name="propose_deck_changes",
+                        arguments={
+                            "summary": "Ramp trio",
+                            "changes": [
+                                {"action": "add", "card_name": "Sol Ring"},
+                                {"action": "add", "card_name": "Arcane Signet"},
+                                {"action": "add", "card_name": "Mind Stone"},
+                            ],
+                        },
+                    )
+                ],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+            ),
+            # Trim one of them.
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_2",
+                        name="withdraw_pending_proposals",
+                        arguments={"card_names": ["Mind Stone"]},
+                    )
+                ],
+                raw_assistant_message={"role": "assistant", "tool_calls": ["call_2"]},
+            ),
+            AssistantTurn(text="Two ramp rocks for you.", tool_calls=[]),
+        ]
+    )
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    events = _collect(
+        run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id)
+    )
+
+    proposal_events = [e for e in events if e.startswith("event: deck_proposal")]
+    # Exactly one reveal, at the end.
+    assert len(proposal_events) == 1
+    # It carries only the two survivors, not the trimmed Mind Stone.
+    payload = proposal_events[0]
+    assert "Sol Ring" in payload and "Arcane Signet" in payload
+    assert "Mind Stone" not in payload
+    # The reveal comes before done.
+    done_idx = next(i for i, e in enumerate(events) if e.startswith("event: done"))
+    reveal_idx = next(i for i, e in enumerate(events) if e.startswith("event: deck_proposal"))
+    assert reveal_idx < done_idx
+
+
 def test_tool_failure_does_not_crash_loop_and_model_sees_error(session):
     provider = FakeProvider(
         [
@@ -311,14 +473,19 @@ def test_tool_failure_does_not_crash_loop_and_model_sees_error(session):
     assert "failed" in tool_message.tool_results[0]["content"].lower()
 
 
-def test_max_iterations_safety_valve_emits_error(session):
+def test_max_iterations_safety_valve_wraps_up_instead_of_erroring(session):
+    # Exhausting the tool-call budget must NOT drop the turn with a bare error.
+    # The engine forces a toolless wrap-up send (the 13th here) so the model
+    # delivers a real final response. See test_max_iterations_forces_a_final_
+    # text_response for the thinking-flag/side-effect assertions.
     looping_turn = AssistantTurn(
         text=None,
         tool_calls=[ToolCallRequest(id="call_1", name="deck_get_current", arguments={"deck_id": 1})],
         raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
     )
+    wrap_up = AssistantTurn(text="Here's where I got to.", tool_calls=[])
     deck = repo.create_deck(session)
-    provider = FakeProvider([looping_turn] * 12)
+    provider = FakeProvider([looping_turn] * 12 + [wrap_up])
     convo = repo.create_conversation(session)
     repo.set_conversation_deck(session, convo.id, deck.id)
 
@@ -326,8 +493,9 @@ def test_max_iterations_safety_valve_emits_error(session):
         run_chat_turn(session, provider, convo.id, "loop forever", deck_id=deck.id)
     )
 
-    assert any(e.startswith("event: error") for e in events)
-    assert any("max tool-call iterations" in e for e in events)
+    assert not any(e.startswith("event: error") for e in events)
+    assert any(e.startswith("event: done") for e in events)
+    assert any("Here's where I got to." in e for e in events)
 
 
 def test_derive_title_truncates_long_text():

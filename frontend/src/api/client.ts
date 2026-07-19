@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, ImportMode, ImportResult, UserPreferences } from '../types/api'
+import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, ImportMode, ImportResult, UserPreferences } from '../types/api'
 
 async function asJson<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -85,6 +85,9 @@ export const api = {
 
   getDeckStats: (deckId: number): Promise<DeckStats> =>
     fetch(`/api/decks/${deckId}/stats`).then((r) => asJson<DeckStats>(r)),
+
+  getDeckStatsNuance: (deckId: number): Promise<DeckStatsNuance> =>
+    fetch(`/api/decks/${deckId}/stats/nuance`).then((r) => asJson<DeckStatsNuance>(r)),
 
   applyProposal: (proposalId: number): Promise<Deck> =>
     fetch(`/api/decks/proposals/${proposalId}/apply`, { method: 'POST' }).then((r) => asJson<Deck>(r)),

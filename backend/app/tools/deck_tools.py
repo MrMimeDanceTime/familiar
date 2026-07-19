@@ -487,28 +487,37 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
     """
     cards = repo.list_deck_cards(session, deck_id)
 
-    # Backfill any card missing oracle_id or tags (from before those columns existed)
+    # Backfill any card missing oracle_id or tags (from before those columns
+    # existed). Best-effort: a Scryfall hiccup here must NOT sink the whole
+    # stats call — the deterministic count/curve/bracket the model relies on to
+    # know the deck size still comes from stored data. A failed backfill just
+    # leaves some cards untagged (already surfaced via the "untagged" list and
+    # the floor caveat), which is strictly better than the tool erroring out and
+    # the model falling back to counting the list by hand.
     missing = [c for c in cards if not c.oracle_id or not c.tags]
     if missing:
         from app.knowledge.tag_lookup import get_tags_for_card
         from app.tools.scryfall_client import get_scryfall_client
-        scryfall = get_scryfall_client()
-        result = scryfall.collection([c.card_name for c in missing])
-        found_map = {c["name"]: c for c in result["found"]}
-        for c in missing:
-            if c.card_name in found_map:
-                fc = found_map[c.card_name]
-                oid = c.oracle_id or fc.get("oracle_id")
-                if not c.type_line:
-                    c.type_line = fc.get("type_line")
-                if not c.oracle_text:
-                    c.oracle_text = fc.get("oracle_text", "")
-                if not c.oracle_id:
-                    c.oracle_id = oid
-                if not c.tags:
-                    c.tags = get_tags_for_card(oid)
-                session.add(c)
-        session.commit()
+        try:
+            scryfall = get_scryfall_client()
+            result = scryfall.collection([c.card_name for c in missing])
+            found_map = {c["name"]: c for c in result["found"]}
+            for c in missing:
+                if c.card_name in found_map:
+                    fc = found_map[c.card_name]
+                    oid = c.oracle_id or fc.get("oracle_id")
+                    if not c.type_line:
+                        c.type_line = fc.get("type_line")
+                    if not c.oracle_text:
+                        c.oracle_text = fc.get("oracle_text", "")
+                    if not c.oracle_id:
+                        c.oracle_id = oid
+                    if not c.tags:
+                        c.tags = get_tags_for_card(oid)
+                    session.add(c)
+            session.commit()
+        except Exception:  # noqa: BLE001 - enrichment is optional, never fatal
+            session.rollback()
 
     total_cards = sum(c.quantity for c in cards)
     if total_cards == 0:
@@ -602,9 +611,15 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
         land_count, ramp_count, draw_count, removal_count,
     )
 
-    power_level, power_nuance_adj, power_nuance_reason = _resolve_power_nuance(
-        session, deck, deck_id, power_base, power_factors, provider,
-    )
+    # Nuance is a bonus on top of the deterministic base; a provider/DB failure
+    # here must never sink the stats call (see the backfill rationale above).
+    try:
+        power_level, power_nuance_adj, power_nuance_reason = _resolve_power_nuance(
+            session, deck, deck_id, power_base, power_factors, provider,
+        )
+    except Exception:  # noqa: BLE001 - fall back to the deterministic base score
+        session.rollback()
+        power_level, power_nuance_adj, power_nuance_reason = power_base, 0.0, ""
     if power_nuance_adj:
         sign = "+" if power_nuance_adj > 0 else ""
         power_factors = [
@@ -1049,19 +1064,32 @@ def propose_deck_changes(
 
 
 def withdraw_pending_proposals(
-    session: Session, deck_id: int, include_commander: bool = False
+    session: Session,
+    deck_id: int,
+    include_commander: bool = False,
+    card_names: list[str] | None = None,
 ) -> dict:
-    """Mark pending proposals for *deck_id* as denied because the player
-    changed direction.
+    """Mark pending proposals for *deck_id* as denied.
+
+    Two modes:
+    - ``card_names`` given: withdraw ONLY those cards (case-insensitive match on
+      the proposal's card name), leaving the rest of the batch pending. This is
+      how the model trims a card or two out of a batch it just proposed without
+      nuking the whole thing.
+    - ``card_names`` omitted: withdraw the whole pending batch — used when the
+      player changes direction entirely.
 
     A pending ``set_commander`` proposal is the deck's identity, not a card
     batch that gets churned during review — so it is preserved by default.
     Clearing a stale card batch before proposing the next one must never
     silently cancel an unapproved commander. Pass ``include_commander=True``
     only when the player has actually decided against the proposed commander.
+    (A commander named explicitly in ``card_names`` is only withdrawn when
+    ``include_commander`` is also true.)
 
-    Returns a count of how many were withdrawn, and how many commander
-    proposals were preserved so the caller can surface that.
+    Returns a count of how many were withdrawn, how many commander proposals
+    were preserved, and the names that matched nothing (so the model can tell
+    it misnamed a card rather than silently no-op).
     """
     from sqlmodel import select
 
@@ -1070,18 +1098,35 @@ def withdraw_pending_proposals(
         DeckProposal.status == "pending",
     )
     proposals = list(session.exec(statement))
+
+    target_lower: set[str] | None = (
+        {n.strip().lower() for n in card_names if n and n.strip()}
+        if card_names is not None
+        else None
+    )
+    matched: set[str] = set()
+
     withdrawn = 0
     preserved_commander = 0
     for p in proposals:
+        name_lower = (p.card_name or p.commander_name or "").lower()
+        if target_lower is not None and name_lower not in target_lower:
+            continue  # selective withdraw: skip cards not named
         if p.action == "set_commander" and not include_commander:
             preserved_commander += 1
             continue
         p.status = "denied"
         session.add(p)
         withdrawn += 1
+        matched.add(name_lower)
     session.commit()
+
+    not_found = (
+        sorted(target_lower - matched) if target_lower is not None else []
+    )
     return {
         "ok": True,
         "withdrawn": withdrawn,
         "preserved_commander": preserved_commander,
+        "not_found": not_found,
     }

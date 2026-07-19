@@ -216,10 +216,14 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name="withdraw_pending_proposals",
         description=(
-            "Withdraw (deny) pending CARD proposals for the deck. Use this "
-            "when the player changes direction, rejects a batch in favour of "
-            "a different approach, or explicitly asks to cancel the current "
-            "proposals. Call this BEFORE proposing a replacement batch. "
+            "Withdraw (deny) pending proposals for the deck. Two uses: "
+            "(1) TRIM — right after you propose a batch, remove one or a few "
+            "cards you decided against by passing their names in `card_names`; "
+            "the rest of the batch stays. This is how you refine a batch you "
+            "just made without cancelling it. "
+            "(2) CLEAR — omit `card_names` to withdraw the WHOLE pending batch, "
+            "for when the player changes direction or rejects the batch entirely; "
+            "call that BEFORE proposing a replacement batch. "
             "A pending set_commander proposal is NOT cleared by this — it is "
             "the deck's identity, not a batch, and must never be cancelled as "
             "a side effect of swapping card batches. Only set "
@@ -230,6 +234,15 @@ TOOL_SPECS: list[ToolSpec] = [
             "type": "object",
             "properties": {
                 "deck_id": {"type": "integer"},
+                "card_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Withdraw only these cards from the pending batch (exact "
+                        "card names, as proposed). Omit to withdraw the entire "
+                        "pending batch."
+                    ),
+                },
                 "include_commander": {
                     "type": "boolean",
                     "description": (

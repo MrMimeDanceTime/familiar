@@ -57,6 +57,7 @@ function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('conversations')
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null)
   const [deckStats, setDeckStats] = useState<DeckStats | null>(null)
+  const [nuanceLoading, setNuanceLoading] = useState(false)
   const [proposalBatches, setProposalBatches] = useState<ProposalBatch[]>([])
   const [prefsOpen, setPrefsOpen] = useState(false)
   const { deck, setDeck, loadDeck, clearDeck } = useDeck()
@@ -118,8 +119,28 @@ function App() {
     api.listDecks().then(setDecks).catch(() => {})
   }, [])
 
+  // The deck whose stats are currently wanted. Every stats/nuance response is
+  // checked against this before it's applied, so a slow response for a deck the
+  // user has already navigated away from is dropped instead of overwriting the
+  // current deck's panel (the "click deck A, see deck B's numbers" race).
+  const statsDeckRef = useRef<number | null>(null)
+
   const loadStats = useCallback((deckId: number) => {
-    api.getDeckStats(deckId).then(setDeckStats).catch(() => setDeckStats(null))
+    statsDeckRef.current = deckId
+    setNuanceLoading(true)
+    // Deterministic stats: fast, no LLM. Paints the panel immediately.
+    api.getDeckStats(deckId)
+      .then((s) => { if (statsDeckRef.current === deckId) setDeckStats(s) })
+      .catch(() => { if (statsDeckRef.current === deckId) setDeckStats(null) })
+    // LLM-refined power level: separate request, covered by its own spinner.
+    // Merged into the existing stats so only the power fields swap when it lands.
+    api.getDeckStatsNuance(deckId)
+      .then((n) => {
+        if (statsDeckRef.current !== deckId) return
+        setDeckStats((prev) => (prev ? { ...prev, ...n } : prev))
+      })
+      .catch(() => {})
+      .finally(() => { if (statsDeckRef.current === deckId) setNuanceLoading(false) })
   }, [])
 
   useEffect(() => {
@@ -131,7 +152,9 @@ function App() {
     if (deck) {
       loadStats(deck.id)
     } else {
+      statsDeckRef.current = null
       setDeckStats(null)
+      setNuanceLoading(false)
     }
   }, [deck, loadStats])
 
@@ -379,6 +402,7 @@ function App() {
           <DeckDetail
             deck={deck}
             stats={deckStats}
+            nuanceLoading={nuanceLoading}
             onDeckUpdated={handleDeckUpdated}
             onStartConversation={navigateToDeckConversation}
             onSelectConversation={handleSelectConversation}
@@ -482,6 +506,7 @@ function App() {
               <DeckDetail
                 deck={deck}
                 stats={deckStats}
+                nuanceLoading={nuanceLoading}
                 onDeckUpdated={handleDeckUpdated}
                 onStartConversation={navigateToDeckConversation}
                 onSelectConversation={handleSelectConversation}

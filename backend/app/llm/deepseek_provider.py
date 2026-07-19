@@ -11,7 +11,10 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 
 class DeepSeekProvider:
-    def __init__(self, api_key: str, model: str, timeout: float | None = None) -> None:
+    def __init__(
+        self, api_key: str, model: str, timeout: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         # Cap the per-request timeout: the SDK default (600s) reads as a total
         # UI freeze when a call stalls. With a timeout the SDK raises instead,
         # and dispatch() turns that into a visible tool error. max_retries=1
@@ -22,6 +25,11 @@ class DeepSeekProvider:
             timeout=timeout, max_retries=1,
         )
         self._model = model
+        # Bound send() output. Unbounded generation is the measured dominant
+        # cause of slow turns (DeepSeek ~40 tok/s, so a 2000-token answer ~50s).
+        # None means no cap. Only send() applies it; complete_json (pipeline)
+        # sets its own limits.
+        self._max_tokens = max_tokens
 
     def send(
         self,
@@ -45,11 +53,22 @@ class DeepSeekProvider:
 
         messages = [{"role": "system", "content": system_prompt}, *history]
 
+        # Omit `tools` entirely when empty — some OpenAI-compatible backends
+        # reject an empty tools array. The engine passes no tools to force a
+        # text-only wrap-up turn (e.g. after a proposal batch), and deck naming
+        # calls send() toolless too.
+        tool_kwargs: dict[str, Any] = {"tools": openai_tools} if openai_tools else {}
+
+        max_kwargs: dict[str, Any] = (
+            {"max_tokens": self._max_tokens} if self._max_tokens else {}
+        )
+
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
-                tools=openai_tools,
+                **max_kwargs,
+                **tool_kwargs,
                 # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
                 # default to non-thinking. Thinking is slow, so the engine turns it
                 # OFF for intermediate tool-dispatch iterations (mechanical "which

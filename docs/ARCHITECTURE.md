@@ -142,10 +142,15 @@ restructure, or intentionally dropping data.
 
 `token`, `tool_call`, `deck_proposal`, `deck_updated`, `done`, `error` —
 formatted in `app/chat/streaming.py`, consumed by
-`frontend/src/hooks/useChatStream.ts`. When the model calls a proposal tool
-(`propose_deck_changes` or `suggest_cards`), the engine emits a `deck_proposal`
-event carrying the pending batch and anchors those proposals to the turn's final
-assistant message; the player approves/denies them through the
+`frontend/src/hooks/useChatStream.ts`. A proposal tool
+(`propose_deck_changes` or `suggest_cards`) creates the pending proposals
+mid-turn, but the engine does NOT stream them immediately. Once any batch is
+created, the model is restricted to `withdraw_pending_proposals` (it can trim
+cards but not add another batch), and the `deck_proposal` event is emitted once
+at turn end carrying only the proposals still pending after trims, anchored to
+the turn's final assistant message. This deferred, settled reveal keeps trimmed
+cards from flashing into the UI and back out, and stops the
+propose→withdraw→propose churn. The player approves/denies through the
 `/api/decks/proposals/{id}/apply|deny` REST endpoints.
 
 ## Subsystems
@@ -161,6 +166,9 @@ I add" requests — see below), and `deck_update_notes`. Specs live in
 misuse rather than adding code.
 
 ### Retrieval pipeline (`app/pipeline/`)
+See [PIPELINE.md](PIPELINE.md) for the full walkthrough (stages, model/thinking
+policy, deck-aware selection, timing/timeout diagnostics).
+
 Inverts control of card suggestion: instead of the model driving retrieval by
 electing to call Scryfall/EDHREC turn-by-turn (which misfired often — the model
 would answer from training data), deterministic Python owns the flow and the

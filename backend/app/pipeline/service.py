@@ -19,10 +19,31 @@ decision); the Flash seam exists but nothing routes to it here.
 
 from __future__ import annotations
 
+import logging
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlmodel import Session
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _timed(stage: str, timings: dict[str, float]):
+    """Time a pipeline stage and record it. Logs a WARNING if a single stage
+    runs long (>20s) so an intermittent stall is obvious in the console and
+    points at exactly which stage hung."""
+    start = time.monotonic()
+    logger.info("pipeline: %s start", stage)
+    try:
+        yield
+    finally:
+        dt = time.monotonic() - start
+        timings[stage] = round(dt, 2)
+        level = logging.WARNING if dt > 20 else logging.INFO
+        logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
 
 from app.db import repository as repo
 from app.knowledge.tag_lookup import get_tag_lookup
@@ -197,27 +218,38 @@ def build_suggestions(
     if select_thinking is None:
         select_thinking = True
 
+    timings: dict[str, float] = {}
+    overall_start = time.monotonic()
+    logger.info(
+        "pipeline: build_suggestions deck=%s intent=%r model=%s",
+        deck_id, user_intent[:80], model,
+    )
+
     snapshot = repo.deck_snapshot(session, deck_id)
     identity = _commander_identity(snapshot, scryfall)
     ctx = DeckContext.from_snapshot(snapshot, identity)
 
-    spec = spec_stage.generate_query_spec(
-        provider, user_intent, identity,
-        model=model, max_queries=max_queries, thinking=spec_thinking,
-    )
+    with _timed("stage1_spec", timings):
+        spec = spec_stage.generate_query_spec(
+            provider, user_intent, identity,
+            model=model, max_queries=max_queries, thinking=spec_thinking,
+        )
 
-    pool = candidates_stage.gather_candidates(
-        spec, snapshot.get("commander"),
-        scryfall=scryfall, edhrec=edhrec,
-    )
+    with _timed("stage2_candidates", timings):
+        pool = candidates_stage.gather_candidates(
+            spec, snapshot.get("commander"),
+            scryfall=scryfall, edhrec=edhrec,
+        )
 
-    shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
+    with _timed("stage3_shape", timings):
+        shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
-    selection = selection_stage.select(
-        provider, shaped, user_intent,
-        model=model, max_picks=max_picks, thinking=select_thinking,
-        deck_context=_render_deck_context(snapshot),
-    )
+    with _timed("stage4_select", timings):
+        selection = selection_stage.select(
+            provider, shaped, user_intent,
+            model=model, max_picks=max_picks, thinking=select_thinking,
+            deck_context=_render_deck_context(snapshot),
+        )
 
     debug = {
         "queries": spec.queries,
@@ -226,16 +258,26 @@ def build_suggestions(
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),
         "pick_count": len(selection.picks),
+        "timings": timings,
     }
 
     if conversation_id is None:
+        logger.info(
+            "pipeline: done (preview) in %.2fs timings=%s",
+            time.monotonic() - overall_start, timings,
+        )
         return SuggestionResult(
             summary=selection.summary, proposals=[], selection=selection, debug=debug,
         )
 
-    result = validate_to_proposals(
-        session, deck_id, selection,
-        conversation_id=conversation_id, message_id=message_id,
+    with _timed("stage5_validate", timings):
+        result = validate_to_proposals(
+            session, deck_id, selection,
+            conversation_id=conversation_id, message_id=message_id,
+        )
+    logger.info(
+        "pipeline: done in %.2fs timings=%s",
+        time.monotonic() - overall_start, timings,
     )
     return SuggestionResult(
         summary=result["summary"],

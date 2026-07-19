@@ -9,18 +9,26 @@ Familiar supports two LLM providers behind the `ChatProvider` Protocol in
 
 `LLM_PROVIDER=deepseek` and `DEEPSEEK_MODEL=deepseek-v4-pro` are the
 defaults in both `.env` and `.env.example`, and `Settings.llm_provider`
-defaults to `"deepseek"` in `backend/app/config.py`. We default to Pro
-everywhere: V4 pricing makes the Flash/Pro gap negligible, so we pay for the
-better model unless a call genuinely benefits from Flash (bulk extraction).
-`DEEPSEEK_MODEL_FAST=deepseek-v4-flash` is the Flash seam — a per-call model
-override the retrieval pipeline can pass to `complete_json`; the chat loop
-always runs on `DEEPSEEK_MODEL`.
+defaults to `"deepseek"` in `backend/app/config.py`. The chat loop runs on
+`DEEPSEEK_MODEL` (Pro): V4 pricing makes the Flash/Pro gap negligible, so we
+pay for the better model on the conversational path.
+`DEEPSEEK_MODEL_FAST=deepseek-v4-flash` (`get_fast_model()`) is the Flash
+seam. The retrieval pipeline routes both its LLM stages to Flash by default —
+query planning with thinking off, deck-aware selection with thinking on —
+because Python already owns retrieval/legality there, so the stages are
+bounded and Flash keeps them fast (see [PIPELINE.md](PIPELINE.md)). Pass a
+`model` override to `send`/`complete_json` to opt a call back onto Pro.
 
 The old `deepseek-reasoner` ID stopped working after 2026-07-24. In V4,
 reasoning is decoupled from the model ID — the v4 IDs default to
-non-thinking, so `DeepSeekProvider.send` and `complete_json` pass
-`extra_body={"thinking": {"type": "enabled"}}` to preserve the always-on
-reasoning that `deepseek-reasoner` used to give.
+non-thinking, so `DeepSeekProvider.send` and `complete_json` take a
+`thinking` flag and pass `extra_body={"thinking": {"type": "enabled"}}` when
+it's set, preserving the always-on reasoning that `deepseek-reasoner` used to
+give. The chat loop and pipeline pick the flag per call.
+
+LLM API calls have a request timeout (`LLM_TIMEOUT_SECONDS`, default 90s,
+applied to both providers via the factory) with `max_retries=1`, so a stalled
+provider call fails visibly instead of hanging on the SDK's 600s default.
 
 This deployment's owner pays for DeepSeek API usage directly and does not
 have a paid Anthropic API key configured (they use Claude via a separate

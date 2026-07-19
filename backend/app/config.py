@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     # and surfaces as a tool error the model/user can see, instead of hanging.
     llm_timeout_seconds: float = 90.0
 
+    # Cap on the chat model's response length. DeepSeek generates at ~40 tok/s,
+    # so an unbounded final answer of 2000+ tokens takes ~50s purely to write —
+    # measured as the dominant cause of slow turns. Bounding output both caps
+    # worst-case latency and pushes the model toward concise, scannable replies.
+    # Pipeline stages set their own limits and are unaffected.
+    chat_max_tokens: int = 1000
+
+    # App log level. INFO surfaces the pipeline's per-stage timing logs, which
+    # are how a slow/stuck suggest_cards call gets diagnosed.
+    log_level: str = "INFO"
+
     familiar_db_path: str = "familiar.db"
 
     edhrec_cache_dir: str = "cache/edhrec"

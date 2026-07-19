@@ -111,6 +111,30 @@ def test_compute_deck_stats_surfaces_untagged_cards(mock_scry, session):
     assert stats["untagged"] == ["Brand New Card"]
 
 
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_compute_deck_stats_survives_scryfall_backfill_failure(mock_scry, session):
+    from app.tools.deck_tools import compute_deck_stats
+    from app.tools.scryfall_client import ScryfallError
+
+    # A card missing tags triggers the backfill lookup; make Scryfall blow up.
+    # The deterministic count/curve the model relies on to know the deck size
+    # must still come back — a backfill failure must NOT sink the whole tool
+    # (which would force the model to count the list by hand and drift).
+    mock_scry.return_value.collection.side_effect = ScryfallError("boom")
+
+    deck = repo.create_deck(session, format="commander")
+    repo.add_deck_card(session, deck.id, "Sol Ring", type_line="Artifact",
+                       mana_value=1, oracle_id="oid-sol", tags=["ramp"])
+    repo.add_deck_card(session, deck.id, "Brand New Card", type_line="Creature",
+                       mana_value=3, oracle_id=None, tags=[])
+    repo.add_deck_card(session, deck.id, "Forest", quantity=30,
+                       type_line="Basic Land — Forest", oracle_id="oid-forest", tags=[])
+
+    stats = compute_deck_stats(session, deck.id)
+    assert stats["total_cards"] == 32
+    assert stats["land_count"] == 30
+
+
 @patch("app.knowledge.tag_lookup.get_tag_lookup", lambda: {})
 @patch("app.tools.deck_tools.get_scryfall_client")
 def test_compute_deck_stats_reports_deficiencies(mock_scry, session):
@@ -256,6 +280,58 @@ def test_withdraw_include_commander_cancels_it(session):
     assert result["withdrawn"] == 1
     assert result["preserved_commander"] == 0
     assert _status(session, cmd.id) == "denied"
+
+
+def test_withdraw_specific_cards_only(session):
+    # Trimming: withdraw named cards, leave the rest of the batch pending.
+    deck = repo.create_deck(session)
+    convo = repo.create_conversation(session)
+    a = _pending(session, convo.id, deck.id, "add", "Sol Ring")
+    b = _pending(session, convo.id, deck.id, "add", "Arcane Signet")
+    c = _pending(session, convo.id, deck.id, "add", "Mind Stone")
+
+    result = deck_tools.withdraw_pending_proposals(
+        session, deck.id, card_names=["Mind Stone"]
+    )
+
+    assert result["withdrawn"] == 1
+    assert result["not_found"] == []
+    assert _status(session, a.id) == "pending"
+    assert _status(session, b.id) == "pending"
+    assert _status(session, c.id) == "denied"
+
+
+def test_withdraw_specific_cards_reports_unmatched_names(session):
+    deck = repo.create_deck(session)
+    convo = repo.create_conversation(session)
+    _pending(session, convo.id, deck.id, "add", "Sol Ring")
+
+    result = deck_tools.withdraw_pending_proposals(
+        session, deck.id, card_names=["sol ring", "Nonexistent Card"]
+    )
+
+    # Case-insensitive match hits Sol Ring; the bogus name is reported back.
+    assert result["withdrawn"] == 1
+    assert result["not_found"] == ["nonexistent card"]
+
+
+def test_withdraw_specific_cards_does_not_touch_commander(session):
+    # Trimming a card batch by name must never catch the commander proposal
+    # unless include_commander is set.
+    deck = repo.create_deck(session)
+    convo = repo.create_conversation(session)
+    cmd = _pending(session, convo.id, deck.id, "set_commander", "Judith, the Scourge Diva")
+    card = _pending(session, convo.id, deck.id, "add", "Sol Ring")
+
+    result = deck_tools.withdraw_pending_proposals(
+        session, deck.id,
+        card_names=["Judith, the Scourge Diva", "Sol Ring"],
+    )
+
+    # Sol Ring withdrawn; the commander is preserved despite being named.
+    assert _status(session, card.id) == "denied"
+    assert _status(session, cmd.id) == "pending"
+    assert result["preserved_commander"] == 1
 
 
 @patch("app.tools.dispatch.get_scryfall_client")

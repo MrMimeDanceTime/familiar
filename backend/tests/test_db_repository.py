@@ -79,6 +79,19 @@ def test_add_deck_card_and_snapshot(session):
     assert len(snapshot["cards"]) == 2
     names = {c["name"] for c in snapshot["cards"]}
     assert names == {"Sol Ring", "Sakura-Tribe Elder"}
+    assert snapshot["total_cards"] == 2
+
+
+def test_deck_snapshot_total_cards_sums_quantities(session):
+    # total_cards must sum quantities, not count rows — a card with quantity 2
+    # (e.g. basics) is where hand-counting the list goes wrong.
+    deck = repo.create_deck(session)
+    repo.add_deck_card(session, deck.id, "Swamp", quantity=34, category="land")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1, category="ramp")
+
+    snapshot = repo.deck_snapshot(session, deck.id)
+    assert len(snapshot["cards"]) == 2
+    assert snapshot["total_cards"] == 35
 
 
 def test_add_deck_card_upserts_on_duplicate_name(session):

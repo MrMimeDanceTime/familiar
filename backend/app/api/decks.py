@@ -229,17 +229,43 @@ def start_conversation(deck_id: int):
 
 @router.get("/{deck_id}/stats")
 def get_deck_stats(deck_id: int):
+    """Deterministic deck stats — no LLM call, always fast.
+
+    The panel loads this on deck-select and paints immediately. The LLM-refined
+    power-level nuance is fetched separately via /stats/nuance so a cold nuance
+    cache never makes this endpoint (and the whole panel) hang. If a fresh
+    nuance is already cached, compute_deck_stats folds it in for free; if not,
+    the base power level is returned and /stats/nuance sharpens it."""
     with Session(get_engine()) as session:
         if not repo.get_deck(session, deck_id):
             raise HTTPException(status_code=404, detail=f"Deck {deck_id} not found")
-        # Pass the provider so the panel shows the nuanced power level. The
-        # content-hash cache makes this free after the first read per deck edit,
-        # so the endpoint stays fast on repeated panel refreshes.
+        return compute_deck_stats(session, deck_id)
+
+
+@router.get("/{deck_id}/stats/nuance")
+def get_deck_stats_nuance(deck_id: int):
+    """The LLM-refined power level, resolved on request (cache-first).
+
+    Split out from /stats so the panel can render deterministic stats instantly
+    and show a small loading state on just the power level while this call
+    runs. A cache hit returns immediately; only a cold miss pays the LLM
+    round-trip, which the frontend spinner covers. Returns just the power-level
+    fields the panel needs to swap the base number for the nuanced one."""
+    with Session(get_engine()) as session:
+        if not repo.get_deck(session, deck_id):
+            raise HTTPException(status_code=404, detail=f"Deck {deck_id} not found")
         try:
             provider = get_llm_provider()
         except Exception:
             provider = None
-        return compute_deck_stats(session, deck_id, provider)
+        stats = compute_deck_stats(session, deck_id, provider)
+        return {
+            "power_level": stats["power_level"],
+            "power_level_base": stats["power_level_base"],
+            "power_nuance_adj": stats["power_nuance_adj"],
+            "power_nuance_reason": stats["power_nuance_reason"],
+            "power_factors": stats["power_factors"],
+        }
 
 
 def _autoname_deck(deck_id: int) -> None:

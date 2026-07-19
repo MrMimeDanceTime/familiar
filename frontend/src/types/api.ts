@@ -9,6 +9,14 @@ export interface DeckCard {
   notes: string | null
 }
 
+export interface DeckStatsNuance {
+  power_level: number
+  power_level_base: number
+  power_nuance_adj: number
+  power_nuance_reason: string
+  power_factors: string[]
+}
+
 export interface DeckStats {
   mana_curve: { mv: string; count: number }[]
   avg_mv: number

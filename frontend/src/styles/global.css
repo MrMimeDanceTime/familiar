@@ -1465,6 +1465,28 @@ body.has-pinned-tray .deck-detail {
   cursor: pointer;
 }
 
+/* Small spinner shown beside the power level while the LLM nuance refines it.
+   The base level renders immediately; this indicates it may still sharpen. */
+.metric-strip__nuance-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: metric-strip-spin 700ms linear infinite;
+}
+
+@keyframes metric-strip-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metric-strip__nuance-spinner { animation-duration: 1400ms; }
+}
+
 /* ── "why?" breakdown panel (power level / bracket) ── */
 .why-panel {
   margin: 12px 22px 0;

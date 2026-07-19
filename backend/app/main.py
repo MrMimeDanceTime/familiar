@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,9 +9,21 @@ from starlette.responses import Response
 
 from app.api import chat, conversations, decks, preferences
 from app.backup import run_startup_backup
+from app.config import settings
 from app.db.session import init_db
 from app.knowledge.models import _ensure_fts
 from app.knowledge.seed import seed_knowledge_base
+
+
+# Configure app logging once, at import time, so module loggers (pipeline
+# timings, EDHREC/Scryfall warnings) actually reach the console. Without this
+# the root logger defaults to WARNING with no handler and INFO logs vanish —
+# which is why intermittent pipeline stalls left nothing to inspect. Level comes
+# from LOG_LEVEL in .env (default INFO).
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager
