@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -99,12 +100,17 @@ class EdhrecClient:
             headers={"User-Agent": "familiar/0.1", "Accept": "application/json"},
             timeout=15.0,
         )
+        # Shared singleton across the threadpool (get_edhrec_client); guard the
+        # shared httpx.Client so concurrent requests don't race it. Cache hits
+        # (the common path) don't reach here — only live fetches take the lock.
+        self._lock = threading.Lock()
 
     def close(self) -> None:
         self._client.close()
 
     def _fetch_commander_page(self, slug: str) -> dict[str, Any]:
-        response = self._client.get(f"/pages/commanders/{slug}.json")
+        with self._lock:
+            response = self._client.get(f"/pages/commanders/{slug}.json")
         if response.status_code in (403, 404):
             raise EdhrecNotFoundError(f"No EDHREC page found for commander slug '{slug}'")
         if response.status_code >= 400:

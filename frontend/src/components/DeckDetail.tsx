@@ -223,6 +223,7 @@ const FORMAT_OPTIONS: { value: string; label: string }[] = [
 interface DeckDetailProps {
   deck: Deck
   stats: DeckStats | null
+  nuanceLoading?: boolean
   onDeckUpdated: (deck: Deck) => void
   onStartConversation: (deckId: number) => void
   onSelectConversation: (conversationId: number) => void
@@ -285,7 +286,7 @@ function buildContextPrompt(deck: Deck, stats: DeckStats | null, focus: string):
   return lines.join('\n')
 }
 
-export function DeckDetail({ deck, stats, onDeckUpdated, onStartConversation, onSelectConversation, onQuickStart }: DeckDetailProps) {
+export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, onStartConversation, onSelectConversation, onQuickStart }: DeckDetailProps) {
   const [renaming, setRenaming] = useState(false)
   const [draftName, setDraftName] = useState('')
   const [showImport, setShowImport] = useState(false)
@@ -559,6 +560,13 @@ export function DeckDetail({ deck, stats, onDeckUpdated, onStartConversation, on
               <div className="micro-label">Power level</div>
               <div className="metric-strip__power-tier">
                 {POWER_TIER(stats.power_level)} <span className="metric-strip__muted">· {stats.power_level}/10</span>
+                {nuanceLoading && (
+                  <span
+                    className="metric-strip__nuance-spinner"
+                    title="Refining power level…"
+                    aria-label="Refining power level"
+                  />
+                )}
               </div>
               {stats.power_factors?.length > 0 && (
                 <button

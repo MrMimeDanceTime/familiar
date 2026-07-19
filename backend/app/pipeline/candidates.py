@@ -13,6 +13,7 @@ no EDHREC page still gets a Scryfall-driven pool.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from app.pipeline.spec import QuerySpec
@@ -75,12 +76,21 @@ def gather_candidates(
     scryfall = scryfall or get_scryfall_client()
     edhrec = edhrec or get_edhrec_client()
 
+    edhrec_start = time.monotonic()
     synergy = _edhrec_synergy_map(commander_name, edhrec)
+    edhrec_dt = time.monotonic() - edhrec_start
+    if edhrec_dt > 5:
+        logger.warning("EDHREC lookup for %r took %.2fs", commander_name, edhrec_dt)
 
     seen: set[str] = set()
     merged: list[dict[str, Any]] = []
     for query in spec.queries:
-        for card in scryfall.search_pipeline(query, limit=per_query_limit):
+        q_start = time.monotonic()
+        hits = scryfall.search_pipeline(query, limit=per_query_limit)
+        q_dt = time.monotonic() - q_start
+        if q_dt > 5:
+            logger.warning("Scryfall query took %.2fs: %s", q_dt, query)
+        for card in hits:
             oid = card.get("oracle_id")
             if oid is not None:
                 if oid in seen:

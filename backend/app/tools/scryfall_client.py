@@ -6,6 +6,7 @@ No auth required. Self-throttles to stay within Scryfall's documented
 
 from __future__ import annotations
 
+import threading
 import time
 from functools import lru_cache
 from typing import Any
@@ -72,6 +73,12 @@ class ScryfallClient:
             timeout=10.0,
         )
         self._last_request_time: float = 0.0
+        # This client is a process-wide singleton (get_scryfall_client) shared
+        # across FastAPI's threadpool. httpx.Client isn't safe for concurrent
+        # use across threads, and _last_request_time is unsynchronized state, so
+        # serialize each request. The lock is held only for the throttle sleep +
+        # the HTTP call, which are already serial by the rate limit anyway.
+        self._lock = threading.Lock()
 
     def close(self) -> None:
         self._client.close()
@@ -82,6 +89,10 @@ class ScryfallClient:
             time.sleep(MIN_REQUEST_INTERVAL - elapsed)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        with self._lock:
+            return self._request_locked(method, path, **kwargs)
+
+    def _request_locked(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
             self._throttle()

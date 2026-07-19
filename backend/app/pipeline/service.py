@@ -19,10 +19,31 @@ decision); the Flash seam exists but nothing routes to it here.
 
 from __future__ import annotations
 
+import logging
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlmodel import Session
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _timed(stage: str, timings: dict[str, float]):
+    """Time a pipeline stage and record it. Logs a WARNING if a single stage
+    runs long (>20s) so an intermittent stall is obvious in the console and
+    points at exactly which stage hung."""
+    start = time.monotonic()
+    logger.info("pipeline: %s start", stage)
+    try:
+        yield
+    finally:
+        dt = time.monotonic() - start
+        timings[stage] = round(dt, 2)
+        level = logging.WARNING if dt > 20 else logging.INFO
+        logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
 
 from app.db import repository as repo
 from app.knowledge.tag_lookup import get_tag_lookup
@@ -90,6 +111,57 @@ def _commander_identity(snapshot: dict[str, Any], scryfall: Any | None = None) -
     return frozenset(letters)
 
 
+def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
+    """A compact description of the deck for the selection stage: commander(s)
+    with oracle text (the key combo/fit signal), the current cards grouped by
+    category (names only — full oracle text for 99 cards would blow up the
+    prompt), and any strategy notes. Small on purpose so it adds context without
+    the latency of dumping the whole deck's rules text."""
+    lines: list[str] = []
+
+    commander = snapshot.get("commander")
+    partner = snapshot.get("partner_commander")
+    cards = snapshot.get("cards", [])
+    by_name = {(c.get("name") or "").lower(): c for c in cards}
+
+    def _commander_line(name: str) -> str:
+        card = by_name.get(name.lower())
+        text = (card.get("oracle_text") or "").strip() if card else ""
+        text = " ".join(text.split())  # collapse newlines for compactness
+        return f"- {name}: {text}" if text else f"- {name}"
+
+    if commander:
+        lines.append("Commander:")
+        lines.append(_commander_line(commander))
+        if partner:
+            lines.append(_commander_line(partner))
+    else:
+        lines.append("Commander: not set yet.")
+
+    commander_lower = {n.lower() for n in (commander, partner) if n}
+    body = [c for c in cards if (c.get("name") or "").lower() not in commander_lower]
+    if body:
+        by_category: dict[str, list[str]] = {}
+        for c in body[:max_cards]:
+            cat = c.get("category") or "Other"
+            by_category.setdefault(cat, []).append(c.get("name") or "")
+        lines.append("")
+        lines.append(f"Current deck ({len(body)} cards):")
+        for cat in sorted(by_category):
+            names = ", ".join(n for n in by_category[cat] if n)
+            lines.append(f"- {cat}: {names}")
+    else:
+        lines.append("")
+        lines.append("Current deck: empty (just the commander so far).")
+
+    notes = (snapshot.get("notes") or "").strip()
+    if notes:
+        lines.append("")
+        lines.append(f"Strategy notes: {notes}")
+
+    return "\n".join(lines)
+
+
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
     cards. Reads the shared tag cache once; a card absent from it gets no tags
@@ -112,6 +184,8 @@ def build_suggestions(
     conversation_id: int | None = None,
     message_id: int | None = None,
     model: str | None = None,
+    spec_thinking: bool | None = None,
+    select_thinking: bool | None = None,
     max_queries: int = 6,
     pool_cap: int = 60,
     max_picks: int = 10,
@@ -123,26 +197,59 @@ def build_suggestions(
     When ``conversation_id`` is given, the selection is turned into pending
     proposals (stage 5); without it, the result carries the raw selection for
     preview and ``proposals`` stays empty. ``scryfall``/``edhrec`` are injectable
-    for testing; ``model`` overrides the provider model for both LLM stages.
+    for testing.
+
+    Model/thinking policy — the two LLM stages are NOT symmetric:
+      * Stage 1 (query planning) is a mechanical intent->Scryfall-query mapping;
+        the harness enforces legality regardless of what it writes. So it runs
+        FAST model, thinking OFF.
+      * Stage 4 (selection) is where deck-aware FIT judgment happens — the one
+        thing Python can't do. It gets the commander + current deck as context
+        (see _render_deck_context) and runs with thinking ON so it can actually
+        reason about combos/synergy, still on the FAST model to stay responsive.
+    Defaults trigger this policy; pass ``model``/``spec_thinking``/
+    ``select_thinking`` to override (e.g. tests pin a fake provider).
     """
+    if model is None:
+        from app.llm.factory import get_fast_model
+        model = get_fast_model()
+    if spec_thinking is None:
+        spec_thinking = False
+    if select_thinking is None:
+        select_thinking = True
+
+    timings: dict[str, float] = {}
+    overall_start = time.monotonic()
+    logger.info(
+        "pipeline: build_suggestions deck=%s intent=%r model=%s",
+        deck_id, user_intent[:80], model,
+    )
+
     snapshot = repo.deck_snapshot(session, deck_id)
     identity = _commander_identity(snapshot, scryfall)
     ctx = DeckContext.from_snapshot(snapshot, identity)
 
-    spec = spec_stage.generate_query_spec(
-        provider, user_intent, identity, model=model, max_queries=max_queries
-    )
+    with _timed("stage1_spec", timings):
+        spec = spec_stage.generate_query_spec(
+            provider, user_intent, identity,
+            model=model, max_queries=max_queries, thinking=spec_thinking,
+        )
 
-    pool = candidates_stage.gather_candidates(
-        spec, snapshot.get("commander"),
-        scryfall=scryfall, edhrec=edhrec,
-    )
+    with _timed("stage2_candidates", timings):
+        pool = candidates_stage.gather_candidates(
+            spec, snapshot.get("commander"),
+            scryfall=scryfall, edhrec=edhrec,
+        )
 
-    shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
+    with _timed("stage3_shape", timings):
+        shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
-    selection = selection_stage.select(
-        provider, shaped, user_intent, model=model, max_picks=max_picks
-    )
+    with _timed("stage4_select", timings):
+        selection = selection_stage.select(
+            provider, shaped, user_intent,
+            model=model, max_picks=max_picks, thinking=select_thinking,
+            deck_context=_render_deck_context(snapshot),
+        )
 
     debug = {
         "queries": spec.queries,
@@ -151,16 +258,26 @@ def build_suggestions(
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),
         "pick_count": len(selection.picks),
+        "timings": timings,
     }
 
     if conversation_id is None:
+        logger.info(
+            "pipeline: done (preview) in %.2fs timings=%s",
+            time.monotonic() - overall_start, timings,
+        )
         return SuggestionResult(
             summary=selection.summary, proposals=[], selection=selection, debug=debug,
         )
 
-    result = validate_to_proposals(
-        session, deck_id, selection,
-        conversation_id=conversation_id, message_id=message_id,
+    with _timed("stage5_validate", timings):
+        result = validate_to_proposals(
+            session, deck_id, selection,
+            conversation_id=conversation_id, message_id=message_id,
+        )
+    logger.info(
+        "pipeline: done in %.2fs timings=%s",
+        time.monotonic() - overall_start, timings,
     )
     return SuggestionResult(
         summary=result["summary"],

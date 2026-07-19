@@ -46,6 +46,41 @@ def test_get_deck_404(client):
     assert resp.status_code == 404
 
 
+def test_stats_endpoint_never_calls_llm(client, monkeypatch):
+    # /stats must stay fast: it computes deterministic stats only and must not
+    # reach for the LLM provider (that's what /stats/nuance is for). If it did,
+    # a cold nuance cache would hang the whole panel.
+    def _boom():
+        raise AssertionError("/stats must not construct the LLM provider")
+
+    monkeypatch.setattr(decks, "get_llm_provider", _boom)
+    deck = client.post("/api/decks", json={"name": "S", "commander": "Korvold"}).json()
+
+    resp = client.get(f"/api/decks/{deck['id']}/stats")
+    assert resp.status_code == 200
+    assert "total_cards" in resp.json()
+
+
+def test_stats_endpoints_404_for_missing_deck(client):
+    assert client.get("/api/decks/999/stats").status_code == 404
+    assert client.get("/api/decks/999/stats/nuance").status_code == 404
+
+
+def test_nuance_endpoint_returns_power_fields(client, monkeypatch):
+    # With no provider available the endpoint still returns the (base) power
+    # fields rather than erroring, so the frontend can merge them safely.
+    monkeypatch.setattr(decks, "get_llm_provider", lambda: (_ for _ in ()).throw(RuntimeError("no provider")))
+    deck = client.post("/api/decks", json={"name": "N", "commander": "Korvold"}).json()
+
+    resp = client.get(f"/api/decks/{deck['id']}/stats/nuance")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {
+        "power_level", "power_level_base", "power_nuance_adj",
+        "power_nuance_reason", "power_factors",
+    }
+
+
 def test_patch_deck(client):
     deck = client.post("/api/decks", json={"name": "Old"}).json()
     resp = client.patch(f"/api/decks/{deck['id']}", json={"name": "New", "power_level": "casual"})

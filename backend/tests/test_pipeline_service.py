@@ -5,7 +5,11 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.db import repository as repo
-from app.pipeline.service import _commander_identity, build_suggestions
+from app.pipeline.service import (
+    _commander_identity,
+    _render_deck_context,
+    build_suggestions,
+)
 
 
 @pytest.fixture
@@ -157,6 +161,56 @@ def test_build_suggestions_end_to_end_creates_proposals(mock_sf, session):
     # debug reflects the shaping: 3 in pool, only Bedevil legal
     assert result.debug["pool_size"] == 3
     assert result.debug["legal_shaped"] == 1
+
+
+def test_render_deck_context_includes_commander_and_current_cards():
+    snapshot = {
+        "commander": "Judith, the Scourge Diva",
+        "partner_commander": None,
+        "notes": "Aristocrats — sacrifice for value.",
+        "cards": [
+            {"name": "Judith, the Scourge Diva", "category": "Commander",
+             "oracle_text": "Other creatures you control get +1/+0. Whenever a "
+                            "nontoken creature you control dies, Judith deals 1 damage."},
+            {"name": "Blood Artist", "category": "Drain", "oracle_text": "..."},
+            {"name": "Carrion Feeder", "category": "Sacrifice", "oracle_text": "..."},
+        ],
+    }
+    ctx = _render_deck_context(snapshot)
+    # Commander is named with its oracle text (the fit/combo signal).
+    assert "Judith, the Scourge Diva" in ctx
+    assert "nontoken creature you control dies" in ctx
+    # Current non-commander cards are listed by category (names only).
+    assert "Blood Artist" in ctx and "Carrion Feeder" in ctx
+    # Strategy notes carry through.
+    assert "Aristocrats" in ctx
+    # The commander is not double-listed under a body category.
+    assert ctx.count("Judith, the Scourge Diva") == 1
+
+
+def test_render_deck_context_no_commander():
+    ctx = _render_deck_context({"commander": None, "cards": []})
+    assert "not set yet" in ctx
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_selection_prompt_receives_deck_context(mock_sf, session):
+    """The stage-4 (selection) call must carry the commander so the model can
+    judge fit against this specific deck, not just match the intent."""
+    mock_sf.return_value.named.return_value = {"name": "Bedevil"}
+    deck = _rakdos_deck(session)
+    sf = FakeScryfall([_pool_card("Bedevil", "bedevil", rank=50)])
+    provider = TwoStageProvider(
+        stage1={"queries": ["otag:removal"]},
+        stage4={"summary": "s", "picks": [{"name": "Bedevil", "reason": "x"}]},
+    )
+    build_suggestions(session, deck.id, "removal", provider,
+                      scryfall=sf, edhrec=FakeEdhrec())
+
+    # calls[0] is stage 1 (query planner), calls[1] is stage 4 (selector).
+    selection_user_prompt = provider.calls[1]["user"]
+    assert "Judith, the Scourge Diva" in selection_user_prompt
+    assert "Current deck" in selection_user_prompt
 
 
 def test_build_suggestions_preview_mode_no_conversation(session):

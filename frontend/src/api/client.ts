@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, ImportResult, UserPreferences } from '../types/api'
+import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, ImportMode, ImportResult, UserPreferences } from '../types/api'
 
 async function asJson<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -50,21 +50,21 @@ export const api = {
       body: JSON.stringify(body),
     }).then((r) => asJson<Deck>(r)),
 
-  importDecklist: (deckId: number, text: string): Promise<ImportResult> =>
+  importDecklist: (deckId: number, text: string, mode: ImportMode = 'merge'): Promise<ImportResult> =>
     fetch(`/api/decks/${deckId}/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, mode }),
     }).then((r) => asJson<ImportResult>(r)),
 
   listProviders: (): Promise<{ providers: DeckProvider[] }> =>
     fetch('/api/decks/providers').then((r) => asJson<{ providers: DeckProvider[] }>(r)),
 
-  fetchDeckFrom: (deckId: number, provider: string, ref: string): Promise<ImportResult> =>
+  fetchDeckFrom: (deckId: number, provider: string, ref: string, mode: ImportMode = 'merge'): Promise<ImportResult> =>
     fetch(`/api/decks/${deckId}/fetch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, ref }),
+      body: JSON.stringify({ provider, ref, mode }),
     }).then((r) => asJson<ImportResult>(r)),
 
   pushDeckTo: (deckId: number, provider: string): Promise<{ url: string; external_id: string }> =>
@@ -85,6 +85,9 @@ export const api = {
 
   getDeckStats: (deckId: number): Promise<DeckStats> =>
     fetch(`/api/decks/${deckId}/stats`).then((r) => asJson<DeckStats>(r)),
+
+  getDeckStatsNuance: (deckId: number): Promise<DeckStatsNuance> =>
+    fetch(`/api/decks/${deckId}/stats/nuance`).then((r) => asJson<DeckStatsNuance>(r)),
 
   applyProposal: (proposalId: number): Promise<Deck> =>
     fetch(`/api/decks/proposals/${proposalId}/apply`, { method: 'POST' }).then((r) => asJson<Deck>(r)),

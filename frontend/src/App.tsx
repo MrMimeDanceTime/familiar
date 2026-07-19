@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api/client'
 import { CardPinProvider, useCardPins } from './components/CardPinContext'
 import { ChatView } from './components/ChatView'
@@ -57,6 +57,7 @@ function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('conversations')
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null)
   const [deckStats, setDeckStats] = useState<DeckStats | null>(null)
+  const [nuanceLoading, setNuanceLoading] = useState(false)
   const [proposalBatches, setProposalBatches] = useState<ProposalBatch[]>([])
   const [prefsOpen, setPrefsOpen] = useState(false)
   const { deck, setDeck, loadDeck, clearDeck } = useDeck()
@@ -118,8 +119,28 @@ function App() {
     api.listDecks().then(setDecks).catch(() => {})
   }, [])
 
+  // The deck whose stats are currently wanted. Every stats/nuance response is
+  // checked against this before it's applied, so a slow response for a deck the
+  // user has already navigated away from is dropped instead of overwriting the
+  // current deck's panel (the "click deck A, see deck B's numbers" race).
+  const statsDeckRef = useRef<number | null>(null)
+
   const loadStats = useCallback((deckId: number) => {
-    api.getDeckStats(deckId).then(setDeckStats).catch(() => setDeckStats(null))
+    statsDeckRef.current = deckId
+    setNuanceLoading(true)
+    // Deterministic stats: fast, no LLM. Paints the panel immediately.
+    api.getDeckStats(deckId)
+      .then((s) => { if (statsDeckRef.current === deckId) setDeckStats(s) })
+      .catch(() => { if (statsDeckRef.current === deckId) setDeckStats(null) })
+    // LLM-refined power level: separate request, covered by its own spinner.
+    // Merged into the existing stats so only the power fields swap when it lands.
+    api.getDeckStatsNuance(deckId)
+      .then((n) => {
+        if (statsDeckRef.current !== deckId) return
+        setDeckStats((prev) => (prev ? { ...prev, ...n } : prev))
+      })
+      .catch(() => {})
+      .finally(() => { if (statsDeckRef.current === deckId) setNuanceLoading(false) })
   }, [])
 
   useEffect(() => {
@@ -131,7 +152,9 @@ function App() {
     if (deck) {
       loadStats(deck.id)
     } else {
+      statsDeckRef.current = null
       setDeckStats(null)
+      setNuanceLoading(false)
     }
   }, [deck, loadStats])
 
@@ -261,8 +284,27 @@ function App() {
         })),
       )
       loadStats(updatedDeck.id)
+      // Deck auto-naming now runs server-side in the background (it's a slow LLM
+      // call), so a freshly-committed commander leaves the deck "Untitled Deck"
+      // in this response. Poll the deck a few times to pick up the generated
+      // name once it lands, then refresh the sidebar list.
+      if (updatedDeck.name === 'Untitled Deck' && updatedDeck.commander) {
+        let tries = 0
+        const poll = async () => {
+          tries += 1
+          const fresh = await api.getDeck(updatedDeck.id).catch(() => null)
+          if (fresh && fresh.name !== 'Untitled Deck') {
+            // Only replace the panel deck if the user is still viewing this one.
+            setDeck((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+            refreshDecks()
+          } else if (tries < 6) {
+            setTimeout(poll, 2000)
+          }
+        }
+        setTimeout(poll, 2000)
+      }
     },
-    [setDeck, loadStats],
+    [setDeck, loadStats, refreshDecks],
   )
 
   const handleDenyProposal = useCallback(
@@ -321,7 +363,21 @@ function App() {
   // ── Derived state ──────────────────────────────────────────────────────
 
   const showDeckDetail = sidebarTab === 'decks' && deck !== null
-  const cardNames = deck?.cards.map((c) => c.name) ?? []
+  // Card names to make hoverable/pinnable in chat: everything in the deck PLUS
+  // every card named in a proposal this conversation. Cards Familiar suggests
+  // live in proposals before (and whether or not) they're added to the deck, so
+  // without the proposal names its in-chat suggestions were never pinnable.
+  const cardNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const c of deck?.cards ?? []) names.add(c.name)
+    for (const b of proposalBatches) {
+      for (const p of b.proposals) {
+        if (p.card_name) names.add(p.card_name)
+        if (p.commander_name) names.add(p.commander_name)
+      }
+    }
+    return [...names]
+  }, [deck, proposalBatches])
 
   return (
     <CardPinProvider>
@@ -346,6 +402,7 @@ function App() {
           <DeckDetail
             deck={deck}
             stats={deckStats}
+            nuanceLoading={nuanceLoading}
             onDeckUpdated={handleDeckUpdated}
             onStartConversation={navigateToDeckConversation}
             onSelectConversation={handleSelectConversation}
@@ -449,6 +506,7 @@ function App() {
               <DeckDetail
                 deck={deck}
                 stats={deckStats}
+                nuanceLoading={nuanceLoading}
                 onDeckUpdated={handleDeckUpdated}
                 onStartConversation={navigateToDeckConversation}
                 onSelectConversation={handleSelectConversation}

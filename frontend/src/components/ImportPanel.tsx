@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '../api/client'
-import type { DeckProvider, ImportResult } from '../types/api'
+import type { DeckProvider, ImportMode, ImportResult } from '../types/api'
 
 interface ImportPanelProps {
   deckId: number
@@ -19,6 +19,7 @@ const POP_WIDTH = 300
 export function ImportPanel({ deckId, anchorRef, onImported, onClose }: ImportPanelProps) {
   const [providers, setProviders] = useState<DeckProvider[]>([])
   const [source, setSource] = useState<Source>(null)
+  const [mode, setMode] = useState<ImportMode>('merge')
   const [text, setText] = useState('')
   const [ref, setRef] = useState('')
   const [busy, setBusy] = useState(false)
@@ -96,6 +97,34 @@ export function ImportPanel({ deckId, anchorRef, onImported, onClose }: ImportPa
     ? providers.find((p) => p.name === source)?.display_name ?? source
     : ''
 
+  // Merge vs Replace: merge adds onto the deck's current cards, replace wipes
+  // them first so the imported list becomes the whole deck. Reuses the source
+  // chips' segmented styling.
+  const modeToggle = (
+    <div className="import-pop__chips" role="radiogroup" aria-label="Import mode">
+      <button
+        className={`import-pop__chip ${mode === 'merge' ? 'import-pop__chip--active' : ''}`}
+        role="radio"
+        aria-checked={mode === 'merge'}
+        onClick={() => setMode('merge')}
+      >
+        Merge
+      </button>
+      <button
+        className={`import-pop__chip ${mode === 'replace' ? 'import-pop__chip--active' : ''}`}
+        role="radio"
+        aria-checked={mode === 'replace'}
+        onClick={() => setMode('replace')}
+      >
+        Replace
+      </button>
+    </div>
+  )
+
+  const modeHint = mode === 'replace'
+    ? 'Replaces this deck — existing cards are cleared first.'
+    : 'Merges into this deck — quantities add to existing cards.'
+
   const popover = (
     <div
       className="import-pop"
@@ -132,13 +161,15 @@ export function ImportPanel({ deckId, anchorRef, onImported, onClose }: ImportPa
             rows={6}
             autoFocus
           />
+          {modeToggle}
           <button
             className="import-pop__go"
-            onClick={() => run(() => api.importDecklist(deckId, text))}
+            onClick={() => run(() => api.importDecklist(deckId, text, mode))}
             disabled={busy || !text.trim()}
           >
-            {busy ? 'Importing…' : 'Import cards'}
+            {busy ? 'Importing…' : mode === 'replace' ? 'Replace deck' : 'Import cards'}
           </button>
+          <div className="import-pop__hint">{modeHint}</div>
         </div>
       )}
 
@@ -149,17 +180,18 @@ export function ImportPanel({ deckId, anchorRef, onImported, onClose }: ImportPa
             placeholder={`${providerLabel} deck URL or id`}
             value={ref}
             onChange={(e) => setRef(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && ref.trim() && !busy) run(() => api.fetchDeckFrom(deckId, source, ref.trim())) }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && ref.trim() && !busy) run(() => api.fetchDeckFrom(deckId, source, ref.trim(), mode)) }}
             autoFocus
           />
+          {modeToggle}
           <button
             className="import-pop__go"
-            onClick={() => run(() => api.fetchDeckFrom(deckId, source, ref.trim()))}
+            onClick={() => run(() => api.fetchDeckFrom(deckId, source, ref.trim(), mode))}
             disabled={busy || !ref.trim()}
           >
             {busy ? 'Fetching…' : `Fetch from ${providerLabel}`}
           </button>
-          <div className="import-pop__hint">Merges into this deck; maybeboard is skipped.</div>
+          <div className="import-pop__hint">{modeHint} Maybeboard is skipped.</div>
         </div>
       )}
 

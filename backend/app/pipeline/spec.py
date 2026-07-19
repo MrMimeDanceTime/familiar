@@ -178,8 +178,13 @@ def generate_query_spec(
     *,
     model: str | None = None,
     max_queries: int = 6,
+    thinking: bool = True,
 ) -> QuerySpec:
-    """Run stage 1: prompt the provider, parse+repair its JSON into a QuerySpec."""
+    """Run stage 1: prompt the provider, parse+repair its JSON into a QuerySpec.
+
+    Turning intent into a few Scryfall queries is a mechanical mapping, not deep
+    reasoning, so callers can pass ``thinking=False`` (with Flash) for speed —
+    see build_suggestions."""
     system, user = build_prompt(user_intent, identity, max_queries=max_queries)
-    raw = provider.complete_json(system, user, model=model)
+    raw = provider.complete_json(system, user, model=model, thinking=thinking)
     return parse_spec(raw, identity, max_queries=max_queries)

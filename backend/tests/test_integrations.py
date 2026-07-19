@@ -243,3 +243,81 @@ def test_fetch_into_deck_imports_and_sets_commanders(session):
     # Maybeboard card must not have been imported.
     names = {c["name"] for c in result["cards"]}
     assert "Cut This One" not in names
+
+
+def _fake_scry():
+    """Context managers that mock Scryfall resolution used by import_decklist,
+    so import tests hit no network. Batch-resolves via collection()."""
+    def fake_card(name):
+        return {
+            "name": name, "cmc": 0.0, "color_identity": [],
+            "type_line": "Land", "oracle_text": "", "oracle_id": f"oid-{name}",
+        }
+
+    def fake_collection(names):
+        return {"found": [fake_card(n) for n in names], "not_found": []}
+
+    scry_ctx = patch("app.tools.deck_tools.get_scryfall_client")
+    tag_ctx = patch("app.tools.deck_tools.get_tags_for_card", return_value=[])
+    return fake_collection, scry_ctx, tag_ctx
+
+
+def test_import_decklist_merge_adds_onto_existing(session):
+    deck = repo.create_deck(session, format="commander")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1)
+
+    fake_collection, scry_ctx, tag_ctx = _fake_scry()
+    with scry_ctx as scry, tag_ctx:
+        scry.return_value.collection.side_effect = fake_collection
+        from app.tools.deck_tools import import_decklist
+        result = import_decklist(session, deck.id, "1 Sol Ring\n1 Arcane Signet", mode="merge")
+
+    by_name = {c["name"]: c for c in result["cards"]}
+    # Merge stacks the imported copy onto the existing one.
+    assert by_name["Sol Ring"]["quantity"] == 2
+    assert "Arcane Signet" in by_name
+    assert result["_import"]["mode"] == "merge"
+    assert result["_import"]["cleared"] == 0
+
+
+def test_import_decklist_replace_wipes_existing_first(session):
+    deck = repo.create_deck(session, format="commander")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1)
+    repo.add_deck_card(session, deck.id, "Old Card", quantity=1)
+
+    fake_collection, scry_ctx, tag_ctx = _fake_scry()
+    with scry_ctx as scry, tag_ctx:
+        scry.return_value.collection.side_effect = fake_collection
+        from app.tools.deck_tools import import_decklist
+        result = import_decklist(session, deck.id, "1 Sol Ring\n1 Arcane Signet", mode="replace")
+
+    names = {c["name"]: c for c in result["cards"]}
+    # Old Card is gone; Sol Ring is back to a single copy (not doubled).
+    assert "Old Card" not in names
+    assert names["Sol Ring"]["quantity"] == 1
+    assert "Arcane Signet" in names
+    assert result["_import"]["mode"] == "replace"
+    assert result["_import"]["cleared"] == 2
+
+
+def test_import_decklist_replace_empty_list_leaves_deck_intact(session):
+    deck = repo.create_deck(session, format="commander")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1)
+
+    fake_collection, scry_ctx, tag_ctx = _fake_scry()
+    with scry_ctx as scry, tag_ctx:
+        scry.return_value.collection.side_effect = fake_collection
+        from app.tools.deck_tools import import_decklist
+        # A paste that parses to zero cards must not nuke the deck.
+        result = import_decklist(session, deck.id, "\n\n", mode="replace")
+
+    names = {c["name"] for c in result["cards"]}
+    assert "Sol Ring" in names
+    assert result["_import"]["cleared"] == 0
+
+
+def test_import_decklist_rejects_unknown_mode(session):
+    deck = repo.create_deck(session, format="commander")
+    from app.tools.deck_tools import import_decklist
+    with pytest.raises(ValueError):
+        import_decklist(session, deck.id, "1 Sol Ring", mode="obliterate")

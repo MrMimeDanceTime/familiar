@@ -163,9 +163,16 @@ TOOL_SPECS: list[ToolSpec] = [
         description=(
             "Propose changes to the in-progress deck for the player to approve or "
             "deny. You cannot modify the deck directly — you must use this tool to "
-            "make proposals. Propose 3-6 changes at a time in a batch. For each "
-            "change, provide clear reasoning the player can evaluate. For 'add' "
-            "actions, the card name will be validated against Scryfall."
+            "make proposals. Aim for about 3-6 CARD adds/removes per batch. A "
+            "'set_commander' action does NOT count toward that batch size — when "
+            "you open a deck by batching the commander together with cards, include "
+            "the full set of cards you intend (e.g. commander + 6 cards is one call "
+            "with 7 changes), not 6 changes total with the commander eating a card "
+            "slot. Whatever number of cards you describe in your reply, emit exactly "
+            "that many 'add' changes here — the count in your prose and the count in "
+            "this call must match. For each change, provide clear reasoning the "
+            "player can evaluate. For 'add' actions, the card name will be validated "
+            "against Scryfall."
         ),
         parameters={
             "type": "object",
@@ -209,10 +216,14 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name="withdraw_pending_proposals",
         description=(
-            "Withdraw (deny) pending CARD proposals for the deck. Use this "
-            "when the player changes direction, rejects a batch in favour of "
-            "a different approach, or explicitly asks to cancel the current "
-            "proposals. Call this BEFORE proposing a replacement batch. "
+            "Withdraw (deny) pending proposals for the deck. Two uses: "
+            "(1) TRIM — right after you propose a batch, remove one or a few "
+            "cards you decided against by passing their names in `card_names`; "
+            "the rest of the batch stays. This is how you refine a batch you "
+            "just made without cancelling it. "
+            "(2) CLEAR — omit `card_names` to withdraw the WHOLE pending batch, "
+            "for when the player changes direction or rejects the batch entirely; "
+            "call that BEFORE proposing a replacement batch. "
             "A pending set_commander proposal is NOT cleared by this — it is "
             "the deck's identity, not a batch, and must never be cancelled as "
             "a side effect of swapping card batches. Only set "
@@ -223,6 +234,15 @@ TOOL_SPECS: list[ToolSpec] = [
             "type": "object",
             "properties": {
                 "deck_id": {"type": "integer"},
+                "card_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Withdraw only these cards from the pending batch (exact "
+                        "card names, as proposed). Omit to withdraw the entire "
+                        "pending batch."
+                    ),
+                },
                 "include_commander": {
                     "type": "boolean",
                     "description": (

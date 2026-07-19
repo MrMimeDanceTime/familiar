@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -56,6 +56,7 @@ class UpdateDeckIn(BaseModel):
 
 class ImportDecklistIn(BaseModel):
     text: str
+    mode: str = "merge"  # "merge" onto existing cards, or "replace" the deck
 
 
 class SetCommandersIn(BaseModel):
@@ -66,6 +67,7 @@ class SetCommandersIn(BaseModel):
 class FetchDeckIn(BaseModel):
     provider: str
     ref: str  # deck URL or id on the provider
+    mode: str = "merge"  # "merge" onto existing cards, or "replace" the deck
 
 
 class PushDeckIn(BaseModel):
@@ -134,7 +136,7 @@ def import_deck(deck_id: int, body: ImportDecklistIn):
         if not repo.get_deck(session, deck_id):
             raise HTTPException(status_code=404, detail=f"Deck {deck_id} not found")
         try:
-            return import_decklist(session, deck_id, body.text)
+            return import_decklist(session, deck_id, body.text, mode=body.mode)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -152,7 +154,7 @@ def fetch_deck(deck_id: int, body: FetchDeckIn):
                 detail=f"{provider.display_name} does not support fetching decks.",
             )
         try:
-            return fetch_into_deck(session, deck_id, body.provider, body.ref)
+            return fetch_into_deck(session, deck_id, body.provider, body.ref, mode=body.mode)
         except ProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
 
@@ -227,42 +229,83 @@ def start_conversation(deck_id: int):
 
 @router.get("/{deck_id}/stats")
 def get_deck_stats(deck_id: int):
+    """Deterministic deck stats — no LLM call, always fast.
+
+    The panel loads this on deck-select and paints immediately. The LLM-refined
+    power-level nuance is fetched separately via /stats/nuance so a cold nuance
+    cache never makes this endpoint (and the whole panel) hang. If a fresh
+    nuance is already cached, compute_deck_stats folds it in for free; if not,
+    the base power level is returned and /stats/nuance sharpens it."""
     with Session(get_engine()) as session:
         if not repo.get_deck(session, deck_id):
             raise HTTPException(status_code=404, detail=f"Deck {deck_id} not found")
-        # Pass the provider so the panel shows the nuanced power level. The
-        # content-hash cache makes this free after the first read per deck edit,
-        # so the endpoint stays fast on repeated panel refreshes.
+        return compute_deck_stats(session, deck_id)
+
+
+@router.get("/{deck_id}/stats/nuance")
+def get_deck_stats_nuance(deck_id: int):
+    """The LLM-refined power level, resolved on request (cache-first).
+
+    Split out from /stats so the panel can render deterministic stats instantly
+    and show a small loading state on just the power level while this call
+    runs. A cache hit returns immediately; only a cold miss pays the LLM
+    round-trip, which the frontend spinner covers. Returns just the power-level
+    fields the panel needs to swap the base number for the nuanced one."""
+    with Session(get_engine()) as session:
+        if not repo.get_deck(session, deck_id):
+            raise HTTPException(status_code=404, detail=f"Deck {deck_id} not found")
         try:
             provider = get_llm_provider()
         except Exception:
             provider = None
-        return compute_deck_stats(session, deck_id, provider)
+        stats = compute_deck_stats(session, deck_id, provider)
+        return {
+            "power_level": stats["power_level"],
+            "power_level_base": stats["power_level_base"],
+            "power_nuance_adj": stats["power_nuance_adj"],
+            "power_nuance_reason": stats["power_nuance_reason"],
+            "power_factors": stats["power_factors"],
+        }
+
+
+def _autoname_deck(deck_id: int) -> None:
+    """Generate and store a deck name via the LLM. Runs as a background task
+    after apply_proposal has already responded, because the naming call takes
+    several seconds and must not block the player's "Approve" click. Opens its
+    own session — the request's session is closed by the time this runs.
+    Best-effort: any failure just leaves the deck named "Untitled Deck"."""
+    try:
+        with Session(get_engine()) as session:
+            snapshot = repo.deck_snapshot(session, deck_id)
+            # Re-check under the fresh session: a racing edit may have already
+            # named it, or removed the commander.
+            if snapshot.get("name") != "Untitled Deck" or not snapshot.get("commander"):
+                return
+            provider = get_llm_provider()
+            user_intent = _deck_user_intent(session, deck_id)
+            new_name = _generate_deck_name(
+                provider, snapshot, snapshot.get("format", "commander"),
+                user_intent=user_intent,
+            )
+            repo.update_deck(session, deck_id, name=new_name)
+    except Exception:
+        pass
 
 
 @router.post("/proposals/{proposal_id}/apply")
-def apply_proposal(proposal_id: int):
+def apply_proposal(proposal_id: int, background_tasks: BackgroundTasks):
     with Session(get_engine()) as session:
         result = repo.apply_proposal(session, proposal_id)
         if result is None:
             raise HTTPException(status_code=404, detail="Proposal not found or not pending")
 
-        # Auto-name an "Untitled Deck" once it has a commander — that's when
-        # the deck's identity and strategy become meaningful enough to name.
+        # Auto-name an "Untitled Deck" once it has a commander — that's when the
+        # deck's identity becomes meaningful. The naming is a multi-second LLM
+        # call, so it runs AFTER this response is sent (BackgroundTasks) rather
+        # than blocking the Approve click; the client picks up the new name on
+        # its next deck refresh.
         if result.get("name") == "Untitled Deck" and result.get("commander"):
-            try:
-                provider = get_llm_provider()
-                user_intent = _deck_user_intent(session, result["id"])
-                new_name = _generate_deck_name(
-                    provider,
-                    result,
-                    result.get("format", "commander"),
-                    user_intent=user_intent,
-                )
-                repo.update_deck(session, result["id"], name=new_name)
-                result = repo.deck_snapshot(session, result["id"])
-            except Exception:
-                pass  # best-effort, never fail the proposal application
+            background_tasks.add_task(_autoname_deck, result["id"])
 
         return result
 
