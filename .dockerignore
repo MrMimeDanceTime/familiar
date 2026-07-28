@@ -1,0 +1,31 @@
+# Keep the build context small and never let local state into the image.
+
+.git/
+.claude/
+
+# Local state — the container's lives on /data. Copying the dev DB in would both
+# bloat the image and silently ship real deck data.
+backend/familiar.db
+backend/*.db.bak*
+backend/cache/
+backend/oracle_tags_cache.json
+backend/.venv/
+backend/*.egg-info/
+
+# Secrets. Komodo writes the real .env from Infisical at deploy time.
+.env
+*.env.local
+
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Reference material and docs, not runtime inputs.
+design-package/
+docs/
+run.ps1
