@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.config import settings
+
 SCRYFALL_BULK = "https://api.scryfall.com/bulk-data/oracle_tags"
 
 # Where the cached tags JSON lives.
-_CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "oracle_tags_cache.json"
+_CACHE_PATH = settings.oracle_tags_path
 
 # Map Scryfall tag slugs to our internal role names.
 def _tag_to_role(tag: str) -> str | None:

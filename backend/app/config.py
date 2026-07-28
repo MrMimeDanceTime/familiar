@@ -50,6 +50,21 @@ class Settings(BaseSettings):
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24
 
+    # Scryfall oracle-tags bulk cache (~18MB, refetched every 24h). Split out as
+    # a setting so a container can place it on the mounted volume; otherwise it
+    # lands in the image layer and is re-downloaded on every deploy.
+    oracle_tags_cache_path: str = "oracle_tags_cache.json"
+
+    # Browser origins allowed to call the API. Only needed when the frontend is
+    # served from somewhere other than this app (the Vite dev server, or a
+    # reverse proxy on a different name); same-origin requests don't use CORS.
+    cors_allow_origins: list[str] = ["http://localhost:5173"]
+
+    # Built frontend to serve at "/". Empty means "use the repo layout"
+    # (../../frontend/dist), which is wrong in a container that flattens the
+    # tree, so the image sets this explicitly.
+    frontend_dist_path: str = ""
+
     # Automatic DB backup on app startup. Modes:
     #   "off"    — disabled
     #   "folder" — write the snapshot into backup_dir (default). Point that at
@@ -82,6 +97,19 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = BACKEND_DIR / path
         return path
+
+    @property
+    def oracle_tags_path(self) -> Path:
+        path = Path(self.oracle_tags_cache_path)
+        if not path.is_absolute():
+            path = BACKEND_DIR / path
+        return path
+
+    @property
+    def frontend_dist(self) -> Path:
+        if self.frontend_dist_path:
+            return Path(self.frontend_dist_path)
+        return BACKEND_DIR.parent / "frontend" / "dist"
 
 
 settings = Settings()

@@ -1,6 +1,5 @@
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +41,7 @@ app = FastAPI(title="Familiar", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_allow_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -52,7 +51,7 @@ app.include_router(decks.router)
 app.include_router(conversations.router)
 app.include_router(preferences.router)
 
-FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+FRONTEND_DIST = settings.frontend_dist
 if FRONTEND_DIST.is_dir():
     # index.html must never be cached: its asset references are content-hashed,
     # so a stale index.html points the browser at an old JS bundle after a

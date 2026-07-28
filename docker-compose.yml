@@ -1,0 +1,58 @@
+# Familiar deploy stack (MtG Commander deckbuilding assistant).
+#
+# Self-contained: this compose lives in the familiar source repo, so Komodo clones THIS
+# repo into /data/stacks/familiar and `build: context: .` finds the Dockerfile beside it
+# (same in-tree build pattern as agno and ingress). The komodo.toml entry in
+# infrastructure-docker points this stack at MrMimeDanceTime/familiar with the
+# build-from-source flags.
+#
+# State: SQLite + caches on a bind mount under /data/config/familiar, so it rides the
+# host's /data backup. The app also takes its own startup snapshot into
+# /data/config/familiar/backups (BACKUP_MODE=folder).
+#
+# Secrets: ${VAR} injected by Komodo pre_deploy (infisical export -> .env).
+#
+# Access: published on host port 8420; the ingress Caddy vhost familiar.lab.mime.works
+# reverse-proxies to it. The app has NO authentication of its own, so it must stay on
+# the internal name only — no cloudflared route, no public *.mime.works vhost.
+
+services:
+  familiar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: familiar:latest
+    container_name: familiar
+    environment:
+      - TZ=America/Chicago
+
+      - LLM_PROVIDER=${FAMILIAR_LLM_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_MODEL=${FAMILIAR_DEEPSEEK_MODEL:-deepseek-v4-pro}
+      - DEEPSEEK_MODEL_FAST=${FAMILIAR_DEEPSEEK_MODEL_FAST:-deepseek-v4-flash}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LLM_TIMEOUT_SECONDS=90
+      - CHAT_MAX_TOKENS=1000
+      - LOG_LEVEL=INFO
+
+      # Everything writable is under the bind mount; nothing lands in the image layer.
+      - FAMILIAR_DB_PATH=/data/familiar.db
+      - EDHREC_CACHE_DIR=/data/cache/edhrec
+      - ORACLE_TAGS_CACHE_PATH=/data/oracle_tags_cache.json
+      - FRONTEND_DIST_PATH=/app/frontend/dist
+
+      # The app serves its own frontend same-origin, so CORS is unused in normal
+      # operation. Set to the ingress name so a browser hitting the API directly
+      # from that origin isn't rejected.
+      - CORS_ALLOW_ORIGINS=["https://familiar.lab.mime.works"]
+
+      - BACKUP_MODE=folder
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP=10
+    volumes:
+      - /data/config/familiar:/data
+    ports:
+      # Host-published so the host-networked ingress Caddy reaches it. 8420 is the
+      # app's native port and is unused elsewhere in the stack set.
+      - "8420:8420"
+    restart: unless-stopped
