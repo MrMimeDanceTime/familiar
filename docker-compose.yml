@@ -23,6 +23,11 @@ services:
       dockerfile: Dockerfile
     image: familiar:latest
     container_name: familiar
+    # Matches the homelab's uid/gid convention (the *arr stacks' PUID/PGID, playback's
+    # `user:`) and, critically, the owner of the bind-mounted host directory. A mount
+    # brings the host's ownership with it, so a mismatch here is an unwritable /data
+    # and a "unable to open database file" crash at startup.
+    user: "1000:1000"
     environment:
       - TZ=America/Chicago
 

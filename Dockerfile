@@ -44,9 +44,12 @@ ENV FAMILIAR_DB_PATH=/data/familiar.db \
     ORACLE_TAGS_CACHE_PATH=/data/oracle_tags_cache.json \
     FRONTEND_DIST_PATH=/app/frontend/dist
 
-# Non-root. /data is chowned so the volume is writable when Docker creates it
-# empty on first run; a pre-existing host directory must match this uid.
-RUN useradd --create-home --uid 10001 familiar \
+# Non-root, uid/gid 1000 to match the rest of the homelab (the *arr stacks' PUID/PGID
+# and playback's `user:`). A bind mount carries the HOST's ownership into the container
+# and overrides anything chowned here at build time, so the uid must line up with the
+# owner of /data/config/familiar on the host rather than the other way round.
+RUN groupadd --gid 1000 familiar \
+    && useradd --create-home --uid 1000 --gid 1000 familiar \
     && mkdir -p /data \
     && chown -R familiar:familiar /data /app
 USER familiar
