@@ -12,8 +12,9 @@ backend/familiar.db.bak*
 backend/*.db.bak*
 backend/cache/edhrec/*.json
 !backend/cache/edhrec/.gitkeep
-# Regenerable Scryfall oracle-tags bulk cache (~18MB, re-downloaded every 24h)
-backend/oracle_tags_cache.json
+# Regenerable Scryfall oracle-tags bulk cache (~6MB, re-downloaded every 24h).
+# Glob covers the pre-August-2026 .json name and the current .jsonl.gz.
+backend/oracle_tags_cache.*
 
 # Env
 .env

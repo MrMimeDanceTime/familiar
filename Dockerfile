@@ -41,7 +41,7 @@ COPY --from=frontend /build/dist ./frontend/dist
 # contract is visible at the deploy site rather than only here.
 ENV FAMILIAR_DB_PATH=/data/familiar.db \
     EDHREC_CACHE_DIR=/data/cache/edhrec \
-    ORACLE_TAGS_CACHE_PATH=/data/oracle_tags_cache.json \
+    ORACLE_TAGS_CACHE_PATH=/data/oracle_tags_cache.jsonl.gz \
     FRONTEND_DIST_PATH=/app/frontend/dist
 
 # Non-root, uid/gid 1000 to match the rest of the homelab (the *arr stacks' PUID/PGID

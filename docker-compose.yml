@@ -43,7 +43,7 @@ services:
       # Everything writable is under the bind mount; nothing lands in the image layer.
       - FAMILIAR_DB_PATH=/data/familiar.db
       - EDHREC_CACHE_DIR=/data/cache/edhrec
-      - ORACLE_TAGS_CACHE_PATH=/data/oracle_tags_cache.json
+      - ORACLE_TAGS_CACHE_PATH=/data/oracle_tags_cache.jsonl.gz
       - FRONTEND_DIST_PATH=/app/frontend/dist
 
       # The app serves its own frontend same-origin, so CORS is unused in normal
