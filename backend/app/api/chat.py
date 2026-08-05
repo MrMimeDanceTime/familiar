@@ -1,14 +1,27 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from app.chat.engine import run_chat_turn
+from app.chat.streaming import error_event, format_sse
+from app.chat.turn_bus import get_event_bus
+from app.chat.turn_runner import new_turn_id, submit_turn
 from app.db import repository as repo
+from app.db.models import SINGLE_USER_ID, TURN_RUNNING
 from app.db.session import get_engine
-from app.llm.factory import get_provider
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+def current_owner_id(request: Request) -> int:
+    """Who owns the turns this request may see.
+
+    Familiar has no auth, so this is a constant. It exists as a function, and is
+    called on the paths that matter, so that adding real users means changing
+    this one body rather than auditing every query for the one that forgot to
+    scope itself. See models.SINGLE_USER_ID.
+    """
+    return SINGLE_USER_ID
 
 
 class ChatIn(BaseModel):
@@ -17,39 +30,97 @@ class ChatIn(BaseModel):
     deck_id: int | None = None  # when "new", optionally link to an existing deck
 
 
-@router.post("")
-def post_chat(body: ChatIn):
-    session = Session(get_engine())
+class ChatAccepted(BaseModel):
+    turn_id: str
+    conversation_id: int
 
-    if body.conversation_id == "new":
-        if body.deck_id is not None:
-            deck = repo.get_deck(session, body.deck_id)
-            if not deck:
-                session.close()
-                raise HTTPException(status_code=404, detail=f"Deck {body.deck_id} not found")
+
+@router.post("", response_model=ChatAccepted)
+def post_chat(body: ChatIn, request: Request):
+    """Start a turn and return its id. Does not stream.
+
+    The turn executes independently of this request; the client reads it back
+    from the events endpoint below. That separation is the fix for turns dying
+    when a mobile browser suspends a backgrounded tab.
+    """
+    with Session(get_engine()) as session:
+        if body.conversation_id == "new":
+            if body.deck_id is not None:
+                deck = repo.get_deck(session, body.deck_id)
+                if not deck:
+                    raise HTTPException(status_code=404, detail=f"Deck {body.deck_id} not found")
+            else:
+                deck = repo.create_deck(session)
+            conversation = repo.create_conversation(session)
+            repo.set_conversation_deck(session, conversation.id, deck.id)
+            conversation_id = conversation.id
+            deck_id = deck.id
         else:
-            deck = repo.create_deck(session)
-        conversation = repo.create_conversation(session)
-        repo.set_conversation_deck(session, conversation.id, deck.id)
-        conversation_id = conversation.id
-        deck_id = deck.id
-    else:
-        conversation_id = int(body.conversation_id)
-        conversation = repo.get_conversation(session, conversation_id)
-        if not conversation:
-            session.close()
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        deck_id = conversation.deck_id
+            conversation_id = int(body.conversation_id)
+            conversation = repo.get_conversation(session, conversation_id)
+            if not conversation:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            deck_id = conversation.deck_id
 
-    provider = get_provider()
+        turn_id = new_turn_id()
+        repo.create_turn(
+            session,
+            turn_id,
+            conversation_id,
+            owner_id=current_owner_id(request),
+        )
+
+    submit_turn(turn_id, conversation_id, body.message, deck_id)
+    return ChatAccepted(turn_id=turn_id, conversation_id=conversation_id)
+
+
+@router.get("/turns/{turn_id}/events")
+def get_turn_events(turn_id: str, request: Request, after: int = 0):
+    """Replay a turn's events from `after`, then follow it live.
+
+    Pure reader: no side effects, safe to call repeatedly. A client that
+    disconnects and comes back sends the last seq it saw and receives exactly
+    what it missed, so reconnect, refresh, and cold load are one code path.
+    """
+    owner_id = current_owner_id(request)
+    with Session(get_engine()) as session:
+        turn = repo.get_turn(session, turn_id, owner_id=owner_id)
+        if turn is None:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        status, error = turn.status, turn.error
+
+    bus = get_event_bus()
 
     def event_stream():
-        try:
-            for event in run_chat_turn(
-                session, provider, conversation_id, body.message, deck_id
-            ):
-                yield event
-        finally:
-            session.close()
+        for event in bus.subscribe(turn_id, after=after):
+            yield format_sse(event.event, {**event.data, "seq": event.seq})
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+        # A turn that failed before writing its own error event (a crash between
+        # the last event and finish_turn) would otherwise end the stream with no
+        # explanation. Re-read the row so the client always learns the outcome.
+        with Session(get_engine()) as session:
+            final = repo.get_turn(session, turn_id, owner_id=owner_id)
+        if final is not None and final.status != TURN_RUNNING and final.error:
+            yield error_event(final.error)
+
+    # no-transform stops a proxy from buffering the stream and defeating SSE.
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/turns/{turn_id}")
+def get_turn_status(turn_id: str, request: Request):
+    """Cheap status check, for a client deciding whether to resume a turn."""
+    with Session(get_engine()) as session:
+        turn = repo.get_turn(session, turn_id, owner_id=current_owner_id(request))
+        if turn is None:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        return {
+            "turn_id": turn.id,
+            "conversation_id": turn.conversation_id,
+            "status": turn.status,
+            "error": turn.error,
+        }

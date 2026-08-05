@@ -1,8 +1,21 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
-from app.db.models import Conversation, Deck, DeckCard, DeckProposal, Message, UserPreferences
+from app.db.models import (
+    SINGLE_USER_ID,
+    TURN_DONE,
+    TURN_ERROR,
+    TURN_RUNNING,
+    Conversation,
+    Deck,
+    DeckCard,
+    DeckProposal,
+    Message,
+    Turn,
+    TurnEvent,
+    UserPreferences,
+)
 
 
 def _utcnow() -> datetime:
@@ -528,3 +541,122 @@ def update_preferences(
     session.commit()
     session.refresh(prefs)
     return prefs
+
+
+# --- Turns & turn events ---------------------------------------------------
+
+
+def create_turn(
+    session: Session,
+    turn_id: str,
+    conversation_id: int,
+    owner_id: int = SINGLE_USER_ID,
+) -> Turn:
+    turn = Turn(id=turn_id, conversation_id=conversation_id, owner_id=owner_id)
+    session.add(turn)
+    session.commit()
+    session.refresh(turn)
+    return turn
+
+
+def get_turn(session: Session, turn_id: str, owner_id: int = SINGLE_USER_ID) -> Turn | None:
+    """Fetch a turn, scoped to its owner.
+
+    The owner filter is a no-op while SINGLE_USER_ID is the only owner, but it
+    runs on every read so the authorization path is exercised rather than
+    bolted on later. See models.SINGLE_USER_ID.
+    """
+    turn = session.get(Turn, turn_id)
+    if turn is None or turn.owner_id != owner_id:
+        return None
+    return turn
+
+
+def finish_turn(
+    session: Session, turn_id: str, status: str, error: str | None = None
+) -> None:
+    turn = session.get(Turn, turn_id)
+    if turn is None:
+        return
+    turn.status = status
+    turn.error = error
+    turn.updated_at = _utcnow()
+    session.add(turn)
+    session.commit()
+
+
+def append_turn_event(
+    session: Session, turn_id: str, event: str, data: dict
+) -> TurnEvent:
+    """Append one event to a turn's log, assigning the next per-turn seq.
+
+    Safe because a single worker executes any given turn, so there is exactly
+    one writer per turn_id. The unique index on (turn_id, seq) turns any future
+    violation of that assumption into a loud error instead of a duplicated or
+    silently-dropped event.
+    """
+    last = session.exec(
+        select(TurnEvent.seq)
+        .where(TurnEvent.turn_id == turn_id)
+        .order_by(TurnEvent.seq.desc())
+        .limit(1)
+    ).first()
+    row = TurnEvent(turn_id=turn_id, seq=(last or 0) + 1, event=event, data=data)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def list_turn_events(session: Session, turn_id: str, after: int = 0) -> list[TurnEvent]:
+    """Every event for a turn with seq > after, in order."""
+    return list(
+        session.exec(
+            select(TurnEvent)
+            .where(TurnEvent.turn_id == turn_id, TurnEvent.seq > after)
+            .order_by(TurnEvent.seq)
+        )
+    )
+
+
+def fail_orphaned_turns(session: Session) -> int:
+    """Mark still-`running` turns as errored. Called once at startup.
+
+    A process restart mid-turn (a redeploy, a crash) leaves a turn row claiming
+    to be running with nothing executing it. Without this sweep a reconnecting
+    client tails that turn forever. Returns how many were swept.
+    """
+    orphans = list(session.exec(select(Turn).where(Turn.status == TURN_RUNNING)))
+    for turn in orphans:
+        turn.status = TURN_ERROR
+        turn.error = "Server restarted while this turn was running."
+        turn.updated_at = _utcnow()
+        session.add(turn)
+    if orphans:
+        session.commit()
+    return len(orphans)
+
+
+def purge_old_turn_events(session: Session, max_age_hours: int = 24) -> int:
+    """Drop the replay buffer for terminal turns older than max_age_hours.
+
+    Conversation history lives in `message`; these rows exist only so a client
+    can catch up on a turn in flight. Keeping them past that is pure growth.
+    The `turn` rows themselves are left alone — they are small and make a past
+    failure explicable.
+    """
+    cutoff = _utcnow() - timedelta(hours=max_age_hours)
+    stale = list(
+        session.exec(
+            select(Turn.id).where(
+                Turn.status.in_([TURN_DONE, TURN_ERROR]), Turn.updated_at < cutoff
+            )
+        )
+    )
+    if not stale:
+        return 0
+    rows = list(session.exec(select(TurnEvent).where(TurnEvent.turn_id.in_(stale))))
+    for row in rows:
+        session.delete(row)
+    session.commit()
+    return len(rows)

@@ -1,11 +1,19 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Familiar is single-user today: there is no auth and no per-user ownership on
+# Conversation/Deck/Message. Rather than pretend ownership doesn't exist, every
+# owner-scoped row carries this constant, and reads filter on it. The filter is
+# a no-op now but is exercised on every request, so when real users arrive only
+# `current_owner_id()` changes — not every query that forgot to scope itself.
+SINGLE_USER_ID = 1
 
 
 class Conversation(SQLModel, table=True):
@@ -92,3 +100,59 @@ class UserPreferences(SQLModel, table=True):
     budget: str | None = None
     rule0_notes: str | None = None
     build_preferences: str | None = None
+
+
+# Turn statuses. A turn is terminal when it is not RUNNING.
+TURN_RUNNING = "running"
+TURN_DONE = "done"
+TURN_ERROR = "error"
+
+
+class Turn(SQLModel, table=True):
+    """One execution of the agentic chat loop.
+
+    A turn exists independently of the HTTP request that started it. That is the
+    whole point: `run_chat_turn` is a lazy generator, so when it was consumed
+    directly by StreamingResponse a client that stopped reading (a backgrounded
+    mobile tab) stalled the turn mid-flight and Starlette then closed it. The
+    turn row plus its event log let execution outlive any one connection.
+
+    `status` is what lets a reader tell "nothing has happened yet" from "the
+    turn is over", without inferring it from a timeout.
+    """
+
+    id: str = Field(primary_key=True)  # uuid4 hex
+    conversation_id: int = Field(foreign_key="conversation.id", index=True)
+    owner_id: int = Field(default=SINGLE_USER_ID, index=True)
+    status: str = Field(default=TURN_RUNNING, index=True)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class TurnEvent(SQLModel, table=True):
+    """A single replayable event within a turn.
+
+    Ordered by `seq`, which is per-turn and monotonic from 1. Clients resume by
+    sending the last seq they saw; the reader returns everything above it. That
+    one cursor covers reconnect, refresh, and cold load identically.
+
+    This is a replay buffer, not history — durable conversation history lives in
+    `message`. Rows are swept once their turn is terminal and old (see
+    `repository.purge_old_turn_events`).
+    """
+
+    __tablename__ = "turn_event"
+    __table_args__ = (
+        # The replay contract depends on (turn_id, seq) being unique and gapless.
+        # As an index it also serves the `WHERE turn_id = ? AND seq > ?` read,
+        # which is the only query this table ever serves.
+        UniqueConstraint("turn_id", "seq", name="uq_turn_event_turn_seq"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    turn_id: str = Field(foreign_key="turn.id", index=True)
+    seq: int
+    event: str
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow)
