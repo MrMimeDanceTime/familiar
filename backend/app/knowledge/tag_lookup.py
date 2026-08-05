@@ -4,19 +4,29 @@ Downloads the Oracle Tags bulk-data file from Scryfall (community-vetted
 functional tags — ramp, draw, removal, board-wipe, etc.) and builds an
 in-memory ``oracle_id → set of tag slugs`` dictionary.  The file is cached
 to disk and refreshed at most once every 24 hours.
+
+The bulk file is gzipped JSONL: one tag object per line, each with a
+``slug`` and a list of ``taggings``.  It is streamed to disk rather than
+held in memory — the compressed download is ~6MB and expands well past
+that.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import time
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 
 from app.config import settings
 
 SCRYFALL_BULK = "https://api.scryfall.com/bulk-data/oracle_tags"
+
+
+class TagLookupError(RuntimeError):
+    """Raised when the oracle-tag bulk data cannot be fetched or parsed."""
 
 # Where the cached tags JSON lives.
 _CACHE_PATH = settings.oracle_tags_path
@@ -86,53 +96,59 @@ _LAND_TAGS = {"land"}
 _lookup: dict[str, set[str]] | None = None
 
 
-def _download_tags() -> dict[str, Any]:
-    """Fetch the bulk-data download URL, download the file, cache it."""
-    client = httpx.Client(timeout=30.0)
+def _resolve_download_url(data: dict[str, Any]) -> str:
+    """Pull the bulk-file URL out of a Scryfall bulk-data response.
+
+    Scryfall moved from ``download_uri`` (a plain JSON array) to
+    ``jsonl_download_uri`` (gzipped JSONL) in August 2026.  The old key is
+    still accepted so a stale mirror or a rollback keeps working.
+    """
+    url = data.get("jsonl_download_uri") or data.get("download_uri")
+    if not url:
+        raise TagLookupError(
+            "Scryfall bulk-data response carried no download URI "
+            f"(keys: {sorted(data)})"
+        )
+    return url
+
+
+def _download_tags() -> None:
+    """Fetch the bulk file and stream it to the on-disk cache."""
+    client = httpx.Client(timeout=30.0, follow_redirects=True)
     try:
         # Get the download URL (changes daily)
         resp = client.get(SCRYFALL_BULK)
         resp.raise_for_status()
-        data = resp.json()
-        download_url = data["download_uri"]
+        download_url = _resolve_download_url(resp.json())
 
-        # Download the actual tags file
-        resp = client.get(download_url)
-        resp.raise_for_status()
-        tags_data = resp.json()
+        # Stream the gzipped JSONL straight to disk. Writing to a temp file
+        # first keeps a failed download from leaving a truncated cache that
+        # later reads would treat as valid.
+        tmp_path = _CACHE_PATH.with_suffix(_CACHE_PATH.suffix + ".part")
+        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with client.stream("GET", download_url) as resp:
+            resp.raise_for_status()
+            with tmp_path.open("wb") as fh:
+                for chunk in resp.iter_bytes():
+                    fh.write(chunk)
+        tmp_path.replace(_CACHE_PATH)
     finally:
         client.close()
 
-    # Cache to disk
-    _CACHE_PATH.write_text(json.dumps(tags_data), encoding="utf-8")
-    return tags_data
+
+def _iter_cached_records() -> Iterator[dict[str, Any]]:
+    """Yield tag objects from the gzipped JSONL cache, one line at a time."""
+    with gzip.open(_CACHE_PATH, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
 
 
-def _load_tags() -> dict[str, set[str]]:
-    """Load the oracle_id → tag-slugs mapping, refreshing if stale."""
-    global _lookup
-
-    # Try cache first
-    if _CACHE_PATH.exists():
-        age = time.time() - _CACHE_PATH.stat().st_mtime
-        if age < 86400:  # 24 hours
-            tags_data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-            lookup: dict[str, set[str]] = {}
-            for entry in tags_data:
-                tag_slug = entry.get("slug", "")
-                if not entry.get("taggings"):
-                    continue
-                for t in entry["taggings"]:
-                    oid = t.get("oracle_id")
-                    if oid:
-                        lookup.setdefault(oid, set()).add(tag_slug)
-            _lookup = lookup
-            return lookup
-
-    # Download fresh
-    tags_data = _download_tags()
-    lookup = {}
-    for entry in tags_data:
+def _build_lookup() -> dict[str, set[str]]:
+    """Parse the cached bulk file into ``oracle_id → set of tag slugs``."""
+    lookup: dict[str, set[str]] = {}
+    for entry in _iter_cached_records():
         tag_slug = entry.get("slug", "")
         if not entry.get("taggings"):
             continue
@@ -140,6 +156,31 @@ def _load_tags() -> dict[str, set[str]]:
             oid = t.get("oracle_id")
             if oid:
                 lookup.setdefault(oid, set()).add(tag_slug)
+    return lookup
+
+
+def _load_tags() -> dict[str, set[str]]:
+    """Load the oracle_id → tag-slugs mapping, refreshing if stale."""
+    global _lookup
+
+    fresh = (
+        _CACHE_PATH.exists()
+        and (time.time() - _CACHE_PATH.stat().st_mtime) < 86400  # 24 hours
+    )
+    if not fresh:
+        _download_tags()
+
+    try:
+        lookup = _build_lookup()
+    except (OSError, gzip.BadGzipFile, json.JSONDecodeError) as exc:
+        # A corrupt cache is recoverable: drop it and pull a clean copy once.
+        if fresh:
+            _CACHE_PATH.unlink(missing_ok=True)
+            _download_tags()
+            lookup = _build_lookup()
+        else:
+            raise TagLookupError(f"Could not parse oracle-tag bulk data: {exc}") from exc
+
     _lookup = lookup
     return lookup
 

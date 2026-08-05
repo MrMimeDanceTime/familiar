@@ -1,8 +1,6 @@
-import json
-
 import pytest
 
-from app.knowledge.tag_lookup import _CACHE_PATH, _tag_to_role
+from app.knowledge.tag_lookup import _CACHE_PATH, _iter_cached_records, _tag_to_role
 from app.pipeline import roles
 
 
@@ -102,8 +100,10 @@ def test_fallthrough_is_total_over_real_cached_tags():
     # Guards against cache drift silently dropping cards out of the stats.
     if not _CACHE_PATH.exists():
         pytest.skip("oracle tag cache not present")
-    data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-    slugs = {e.get("slug", "") for e in data if e.get("slug")}
+    # Read through the module's own reader so the test tracks the cache format
+    # instead of re-implementing it (it was a plain JSON array until Scryfall
+    # moved to gzipped JSONL in August 2026).
+    slugs = {e.get("slug", "") for e in _iter_cached_records() if e.get("slug")}
     misses = []
     for slug in slugs:
         coarse = _tag_to_role(slug)

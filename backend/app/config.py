@@ -50,10 +50,11 @@ class Settings(BaseSettings):
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24
 
-    # Scryfall oracle-tags bulk cache (~18MB, refetched every 24h). Split out as
-    # a setting so a container can place it on the mounted volume; otherwise it
-    # lands in the image layer and is re-downloaded on every deploy.
-    oracle_tags_cache_path: str = "oracle_tags_cache.json"
+    # Scryfall oracle-tags bulk cache (~6MB gzipped, refetched every 24h). Split
+    # out as a setting so a container can place it on the mounted volume;
+    # otherwise it lands in the image layer and is re-downloaded on every deploy.
+    # Stored exactly as downloaded — gzipped JSONL — hence the extension.
+    oracle_tags_cache_path: str = "oracle_tags_cache.jsonl.gz"
 
     # Browser origins allowed to call the API. Only needed when the frontend is
     # served from somewhere other than this app (the Vite dev server, or a
