@@ -126,7 +126,12 @@ def _suggest_cards(
     return {"ok": True, "summary": result.summary, "proposals": result.proposals}
 
 
-# Tools that additionally need the LLM provider injected after `session`.
+# Tools that additionally need the LLM provider injected alongside `session`.
+# The provider is passed BY KEYWORD (see dispatch below), so a tool here only
+# has to declare a `provider` parameter — its position in the signature is its
+# own business. Injecting positionally broke deck_get_stats, whose provider
+# comes after deck_id: the provider bound to deck_id and the real deck_id then
+# collided as a duplicate keyword.
 PROVIDER_SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "suggest_cards": _suggest_cards,
     "deck_get_stats": deck_tools.deck_get_stats,
@@ -152,7 +157,7 @@ def dispatch(
                 return DispatchResult(
                     ok=False, content=f"Tool '{name}' requires an LLM provider but none was supplied."
                 )
-            result = PROVIDER_SESSION_TOOLS[name](session, provider, **arguments)
+            result = PROVIDER_SESSION_TOOLS[name](session, provider=provider, **arguments)
         elif name in SESSION_TOOLS:
             result = SESSION_TOOLS[name](session, **arguments)
         else:

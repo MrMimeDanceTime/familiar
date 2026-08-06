@@ -35,12 +35,24 @@ interface ActiveTurn {
   turnId: string
   assistantId: string
   lastSeq: number
+  // Text rendered so far. Kept alongside the cursor so a refresh resumes the
+  // bubble where it was rather than re-streaming the turn from seq 0. The pair
+  // must stay consistent: `text` is exactly the tokens up to `lastSeq`.
+  text: string
 }
 
 function loadActiveTurn(): ActiveTurn | null {
   try {
     const raw = sessionStorage.getItem(ACTIVE_TURN_KEY)
-    return raw ? (JSON.parse(raw) as ActiveTurn) : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<ActiveTurn>
+    if (!parsed.turnId || typeof parsed.lastSeq !== 'number') return null
+    return {
+      turnId: parsed.turnId,
+      assistantId: parsed.assistantId ?? 'local-assistant',
+      lastSeq: parsed.lastSeq,
+      text: parsed.text ?? '',
+    }
   } catch {
     return null
   }
@@ -51,8 +63,9 @@ function saveActiveTurn(turn: ActiveTurn | null) {
     if (turn) sessionStorage.setItem(ACTIVE_TURN_KEY, JSON.stringify(turn))
     else sessionStorage.removeItem(ACTIVE_TURN_KEY)
   } catch {
-    // sessionStorage can be unavailable (private mode, quota). Resume is a
-    // nicety; the turn still completes server-side regardless.
+    // sessionStorage can be unavailable (private mode, quota) or full. Resume
+    // is a nicety; the turn still completes server-side regardless, and a
+    // failed write just means resuming replays from seq 0 as before.
   }
 }
 
@@ -72,6 +85,25 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   const optionsRef = useRef(options)
   optionsRef.current = options
 
+  const persistAt = useRef(0)
+
+  /**
+   * Write the resume record (cursor + rendered text) at most every 250ms.
+   *
+   * Tokens arrive in ~120ms batches, so an unthrottled write would stringify
+   * the whole accumulated message several times a second. Losing the last
+   * fraction of a second costs nothing: the seq saved with it is equally stale,
+   * so a resume just replays those few events from the log and re-renders them.
+   */
+  const persistTurn = useCallback((force = false) => {
+    const turn = activeTurn.current
+    if (!turn) return
+    const now = Date.now()
+    if (!force && now - persistAt.current < 250) return
+    persistAt.current = now
+    saveActiveTurn({ ...turn, text: assistantText.current })
+  }, [])
+
   const reset = useCallback((initial: DisplayMessage[] = []) => {
     setMessages(initial)
     nextId.current = initial.length
@@ -84,7 +116,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     if (turn && typeof evt.seq === 'number') {
       if (evt.seq <= turn.lastSeq) return
       turn.lastSeq = evt.seq
-      saveActiveTurn(turn)
+      // NB: the resume record is written at the END of this function, once the
+      // text for this event has been applied. Saving here would pair the new
+      // seq with the previous text, and a resume would then start after tokens
+      // it never rendered — losing them permanently.
     }
     const assistantId = turn?.assistantId ?? 'local-assistant'
 
@@ -121,7 +156,11 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     } else if (evt.event === 'error') {
       setError(evt.data.message)
     }
-  }, [])
+
+    // Cursor and text are saved together, after both have been updated, so the
+    // pair is always consistent: `text` is exactly the tokens through `lastSeq`.
+    persistTurn()
+  }, [persistTurn])
 
   /** Read a turn from its cursor until it ends. Safe to call repeatedly. */
   const consumeTurn = useCallback(
@@ -164,8 +203,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
       try {
         const started = await startTurn(conversationId, text)
-        activeTurn.current = { turnId: started.turn_id, assistantId, lastSeq: 0 }
-        saveActiveTurn(activeTurn.current)
+        activeTurn.current = { turnId: started.turn_id, assistantId, lastSeq: 0, text: '' }
+        persistTurn(true)
         await consumeTurn(started.turn_id, 0)
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
@@ -180,14 +219,21 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   // body, so the reader dies even though the turn keeps running server-side;
   // reconnecting from the cursor replays whatever was missed.
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible') return
+    const onVisibilityChange = () => {
       const turn = activeTurn.current
-      if (turn) void consumeTurn(turn.turnId, turn.lastSeq)
+      if (!turn) return
+      if (document.visibilityState === 'visible') {
+        void consumeTurn(turn.turnId, turn.lastSeq)
+      } else {
+        // Going away is the moment the throttled write matters: a backgrounded
+        // tab can be discarded outright, and this is the last chance to record
+        // where the render got to.
+        persistTurn(true)
+      }
     }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [consumeTurn])
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [consumeTurn, persistTurn])
 
   // Resume across a full refresh, using the pointer left in sessionStorage.
   useEffect(() => {
@@ -198,14 +244,25 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       try {
         const status = await getTurnStatus(stored.turnId)
         if (cancelled) return
-        if (status.status === 'running') {
-          activeTurn.current = stored
-          assistantText.current = ''
-          // Replay from scratch: the rendered bubble did not survive the reload.
-          void consumeTurn(stored.turnId, 0)
-        } else {
+        if (status.status !== 'running') {
+          // Already finished while away. The message is in conversation history,
+          // which the view loads on its own, so there is nothing to resume.
           saveActiveTurn(null)
+          return
         }
+        activeTurn.current = stored
+        // Restore the bubble instead of re-streaming from seq 0. The text and
+        // the cursor were written together, so picking up at stored.lastSeq
+        // continues exactly where the render left off.
+        assistantText.current = stored.text
+        if (stored.text) {
+          setMessages((prev) =>
+            prev.some((m) => m.id === stored.assistantId)
+              ? prev
+              : [...prev, { id: stored.assistantId, role: 'assistant', text: stored.text }],
+          )
+        }
+        void consumeTurn(stored.turnId, stored.lastSeq)
       } catch {
         saveActiveTurn(null)
       }
