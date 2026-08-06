@@ -17,7 +17,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.chat import turn_runner
-from app.chat.turn_bus import PollingEventBus
+from app.chat.turn_bus import HEARTBEAT, PollingEventBus
 from app.db import repository as repo
 from app.db.models import TURN_DONE, TURN_ERROR, TURN_RUNNING
 
@@ -271,7 +271,58 @@ def test_bus_picks_up_events_written_after_it_started(session):
     writer = threading.Thread(target=write_later)
     writer.start()
     bus = PollingEventBus(poll_interval=0.01, max_stream_seconds=5)
-    seen = [e.data.get("text") for e in bus.subscribe(turn_id, after=0)]
+    # Heartbeats interleave while the turn is quiet; only real events count.
+    seen = [
+        e.data.get("text")
+        for e in bus.subscribe(turn_id, after=0)
+        if e is not HEARTBEAT
+    ]
     writer.join()
 
     assert seen == ["first", "second"]
+
+
+# --- heartbeat -------------------------------------------------------------
+
+
+def test_bus_emits_heartbeats_while_a_turn_is_silent(session):
+    """A running turn that produces nothing must still signal liveness.
+
+    Without this the socket carries no bytes during a slow tool call, and an
+    intermediary or the browser can reap the connection — which reaches the user
+    as an "error in input stream" rather than a quiet wait.
+    """
+    import threading
+
+    from app.chat.turn_bus import HEARTBEAT
+
+    turn_id = _make_turn(session)  # running, no events
+    engine = session.get_bind()
+
+    def finish_later():
+        time.sleep(0.2)
+        with Session(engine) as s:
+            repo.append_turn_event(s, turn_id, "done", {"message_id": 1})
+            repo.finish_turn(s, turn_id, TURN_DONE)
+
+    worker = threading.Thread(target=finish_later)
+    worker.start()
+    bus = PollingEventBus(poll_interval=0.01, max_stream_seconds=5)
+    seen = list(bus.subscribe(turn_id, after=0))
+    worker.join()
+
+    assert any(e is HEARTBEAT for e in seen), "no heartbeat during the silent window"
+    # The real event still arrives, and the stream still terminates.
+    assert [getattr(e, "event", None) for e in seen if e is not HEARTBEAT] == ["done"]
+
+
+def test_no_heartbeat_once_the_turn_is_terminal(session):
+    """A finished turn ends the stream rather than heartbeating forever."""
+    from app.chat.turn_bus import HEARTBEAT
+
+    turn_id = _make_turn(session, events=[("done", {})], status=TURN_DONE)
+    bus = PollingEventBus(poll_interval=0.01, max_stream_seconds=5)
+    seen = list(bus.subscribe(turn_id, after=0))
+
+    assert not any(e is HEARTBEAT for e in seen)
+    assert [e.event for e in seen] == ["done"]

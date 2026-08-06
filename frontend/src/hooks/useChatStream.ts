@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
+import { StreamInterrupted, getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
 import type { Deck, DeckProposal } from '../types/api'
 
 export interface DisplayMessage {
@@ -30,6 +30,11 @@ interface UseChatStreamOptions {
 // Survives a refresh, so a turn started before the reload can be resumed. The
 // server is executing it either way; this is just the pointer back to it.
 const ACTIVE_TURN_KEY = 'familiar.activeTurn'
+
+// Foreground reconnect attempts before giving up and telling the user. Six
+// attempts with exponential backoff spans roughly 15s, which comfortably
+// outlasts a network blip without spinning forever on a genuinely dead server.
+const MAX_RECONNECT_ATTEMPTS = 6
 
 interface ActiveTurn {
   turnId: string
@@ -162,17 +167,55 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     persistTurn()
   }, [persistTurn])
 
-  /** Read a turn from its cursor until it ends. Safe to call repeatedly. */
+  /**
+   * Read a turn from its cursor until it ends, reconnecting through drops.
+   *
+   * A backgrounded tab or a sleeping phone kills the response body, which the
+   * browser reports as a generic TypeError. That is not a failure worth showing
+   * anyone — the turn is still executing server-side — so an interrupted read
+   * reconnects from the last applied seq instead of surfacing an error. Only a
+   * genuine failure (a 404 for the turn, a parse error) reaches setError.
+   *
+   * Safe to call repeatedly: it aborts any previous reader first, and the seq
+   * cursor makes overlapping reads idempotent.
+   */
   const consumeTurn = useCallback(
     async (turnId: string, from: number) => {
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
       setIsStreaming(true)
+
+      let cursor = from
+      let attempt = 0
+
       try {
-        await streamTurnEvents(turnId, from, handleEvent, controller.signal)
+        while (!controller.signal.aborted) {
+          try {
+            await streamTurnEvents(turnId, cursor, handleEvent, controller.signal)
+            break // ran to the end of the turn
+          } catch (err) {
+            if (controller.signal.aborted) return
+            if (!(err instanceof StreamInterrupted)) throw err
+
+            // Resume from wherever the render actually got to, which may be
+            // well past `from` if the drop happened late in the turn.
+            cursor = activeTurn.current?.lastSeq ?? cursor
+
+            // A backgrounded tab cannot run timers reliably, so this loop is
+            // really for foreground blips; visibilitychange handles the rest.
+            if (document.visibilityState !== 'visible') return
+
+            attempt += 1
+            if (attempt > MAX_RECONNECT_ATTEMPTS) {
+              setError('Lost connection to the assistant. It may still be working — reopen this conversation to catch up.')
+              return
+            }
+            const delay = Math.min(250 * 2 ** (attempt - 1), 4000)
+            await new Promise((r) => setTimeout(r, delay))
+          }
+        }
       } catch (err) {
-        // An aborted read is a tab-switch or a new turn, not a failure.
         if (!controller.signal.aborted) {
           setError(err instanceof Error ? err.message : String(err))
         }
@@ -183,6 +226,8 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           setActiveTool(null)
         }
       }
+
+      if (controller.signal.aborted) return
       // The stream ends when the turn is terminal, so the resume pointer has
       // done its job.
       activeTurn.current = null
@@ -223,6 +268,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       const turn = activeTurn.current
       if (!turn) return
       if (document.visibilityState === 'visible') {
+        // Coming back is a fresh attempt: drop any "lost connection" notice
+        // from the previous drop so a successful resume doesn't sit under a
+        // stale error.
+        setError(null)
         void consumeTurn(turn.turnId, turn.lastSeq)
       } else {
         // Going away is the moment the throttled write matters: a backgrounded

@@ -1,16 +1,22 @@
+import time
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.chat.streaming import error_event, format_sse
-from app.chat.turn_bus import get_event_bus
+from app.chat.turn_bus import HEARTBEAT, get_event_bus
 from app.chat.turn_runner import new_turn_id, submit_turn
 from app.db import repository as repo
 from app.db.models import SINGLE_USER_ID, TURN_RUNNING
 from app.db.session import get_engine
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# How often to write a keep-alive comment on an otherwise silent stream. Well
+# under the 60s idle timeouts intermediaries typically apply.
+HEARTBEAT_SECONDS = 15.0
 
 
 def current_owner_id(request: Request) -> int:
@@ -92,7 +98,23 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
     bus = get_event_bus()
 
     def event_stream():
+        # An SSE comment, which clients ignore. A turn can be silent for a long
+        # time (a slow tool call, a thinking-mode provider request), and a
+        # connection with no bytes on it is liable to be reaped by an
+        # intermediary or the browser itself — surfacing to the client as a
+        # dropped stream rather than a quiet one. This keeps it demonstrably
+        # alive.
+        yield ": open\n\n"
+        last_beat = time.monotonic()
+
         for event in bus.subscribe(turn_id, after=after):
+            if event is HEARTBEAT:
+                now = time.monotonic()
+                if now - last_beat >= HEARTBEAT_SECONDS:
+                    last_beat = now
+                    yield ": ping\n\n"
+                continue
+            last_beat = time.monotonic()
             yield format_sse(event.event, {**event.data, "seq": event.seq})
 
         # A turn that failed before writing its own error event (a crash between
