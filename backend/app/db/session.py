@@ -1,9 +1,12 @@
+import logging
 from functools import lru_cache
 
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
+
+logger = logging.getLogger("app.db.session")
 
 # Additive, non-destructive schema patches for existing DBs. SQLModel's
 # create_all only creates missing tables/columns on a fresh DB; it never adds a
@@ -30,8 +33,29 @@ def _apply_additive_columns(engine) -> None:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))
 
 
+def _enable_wal(engine) -> None:
+    """Put SQLite in WAL mode so readers don't block on the writer.
+
+    Under the default `delete` journal a write transaction blocks every reader
+    for its duration. That was invisible while a chat turn was one serialized
+    generator, but durable turns add a background writer running concurrently
+    with SSE readers tailing the event log — precisely the pattern rollback
+    journaling handles worst, and a reliable source of `database is locked`.
+
+    WAL allows concurrent readers alongside a single writer. The setting is a
+    property of the database file and persists, so this is idempotent.
+    """
+    with engine.begin() as conn:
+        mode = conn.execute(text("PRAGMA journal_mode=WAL")).scalar()
+    if mode is not None and str(mode).lower() != "wal":
+        # Don't fail startup: the app is still correct under `delete`, just more
+        # lock-prone. Surface it so a locked-up deploy has a breadcrumb.
+        logger.warning("Could not enable WAL journal mode; got %r", mode)
+
+
 def init_db() -> None:
     engine = get_engine()
+    _enable_wal(engine)
     SQLModel.metadata.create_all(engine)
     _apply_additive_columns(engine)
 

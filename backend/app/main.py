@@ -6,10 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
+from sqlmodel import Session
+
 from app.api import chat, conversations, decks, preferences
 from app.backup import run_startup_backup
 from app.config import settings
-from app.db.session import init_db
+from app.db import repository as repo
+from app.db.session import get_engine, init_db
 from app.knowledge.models import _ensure_fts
 from app.knowledge.seed import seed_knowledge_base
 
@@ -24,6 +27,31 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+logger = logging.getLogger("app.main")
+
+
+def _reconcile_turns() -> None:
+    """Clean up the turn log after a restart.
+
+    Nothing survives a process restart mid-turn, so any turn still marked
+    `running` is orphaned: no thread is driving it, and a reconnecting client
+    would tail it forever. Mark those failed, then drop the replay buffer for
+    turns old enough that nobody is coming back for them.
+
+    Fully guarded — this is housekeeping, and it must never stop the app from
+    serving.
+    """
+    try:
+        with Session(get_engine()) as session:
+            orphaned = repo.fail_orphaned_turns(session)
+            purged = repo.purge_old_turn_events(session)
+        if orphaned:
+            logger.info("Marked %d orphaned turn(s) as failed after restart", orphaned)
+        if purged:
+            logger.info("Purged %d stale turn event(s)", purged)
+    except Exception:  # noqa: BLE001
+        logger.exception("Turn reconciliation failed; continuing startup")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +62,7 @@ async def lifespan(app: FastAPI):
     # so it captures the prior session even after a hard crash; fully guarded
     # so a backup failure never blocks the app from serving.
     run_startup_backup()
+    _reconcile_turns()
     yield
 
 
