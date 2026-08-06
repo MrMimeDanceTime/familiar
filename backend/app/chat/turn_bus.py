@@ -31,11 +31,34 @@ POLL_INTERVAL_SECONDS = 0.2
 MAX_STREAM_SECONDS = 900
 
 
+class _Heartbeat:
+    """Sentinel yielded while a turn is running but has produced nothing.
+
+    A turn can be silent for many seconds (a slow tool call, a thinking-mode
+    request). The transport needs to put *something* on the socket in that
+    window or an intermediary may reap the connection, which the client then
+    reports as a dropped stream. The bus signals liveness; the endpoint decides
+    how often to actually write.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<HEARTBEAT>"
+
+
+HEARTBEAT = _Heartbeat()
+
+
 class TurnEventBus(Protocol):
     """Delivers a turn's events in seq order, starting after a cursor."""
 
-    def subscribe(self, turn_id: str, after: int = 0) -> Iterator[TurnEvent]:
-        """Yield events with seq > after, then follow the turn until it ends."""
+    def subscribe(self, turn_id: str, after: int = 0) -> Iterator[TurnEvent | _Heartbeat]:
+        """Yield events with seq > after, then follow the turn until it ends.
+
+        May also yield HEARTBEAT while the turn is running but silent, so the
+        transport can keep the connection alive.
+        """
         ...
 
 
@@ -56,7 +79,7 @@ class PollingEventBus:
         self._poll_interval = poll_interval
         self._max_stream_seconds = max_stream_seconds
 
-    def subscribe(self, turn_id: str, after: int = 0) -> Iterator[TurnEvent]:
+    def subscribe(self, turn_id: str, after: int = 0) -> Iterator[TurnEvent | _Heartbeat]:
         cursor = after
         started = time.monotonic()
 
@@ -76,9 +99,16 @@ class PollingEventBus:
                     # client has seen everything there will ever be.
                     if turn is None or turn.status != TURN_RUNNING:
                         return
+                    idle = True
+                else:
+                    idle = False
 
             if time.monotonic() - started > self._max_stream_seconds:
                 return
+
+            if idle:
+                # Running but quiet: let the transport keep the socket warm.
+                yield HEARTBEAT
 
             time.sleep(self._poll_interval)
 
