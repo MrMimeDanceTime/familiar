@@ -112,7 +112,14 @@ export async function streamTurnEvents(
         else if (line.startsWith('data: ')) dataLine = line.slice('data: '.length)
       }
       if (!eventName || !dataLine) continue
-      onEvent({ event: eventName, data: JSON.parse(dataLine) } as SseEvent & { seq: number })
+
+      // The server folds `seq` into the data payload, so lift it onto the
+      // envelope the caller reads. Without this `evt.seq` is undefined, the
+      // cursor never advances, and every reconnect replays the turn from 0 —
+      // duplicating text the client had already rendered.
+      const data = JSON.parse(dataLine) as Record<string, unknown>
+      const seq = typeof data.seq === 'number' ? data.seq : undefined
+      onEvent({ event: eventName, data, seq } as unknown as SseEvent & { seq: number })
     }
   }
 }
