@@ -54,9 +54,24 @@ Always run the full suite after engine or provider changes — `app/chat/engine.
 and the provider shape contract (see [PROVIDER_SHAPES.md](PROVIDER_SHAPES.md))
 are the highest-risk area in this codebase.
 
-Frontend has no test suite yet; verify with `npx tsc --noEmit` and
-`npm run build` from `frontend/`, and a live smoke test in-browser for any
-UI behavior change (not just type-checking).
+Frontend tests run with vitest from `frontend/`:
+
+```
+npm test            # once
+npm run test:watch  # while iterating
+npm run test:coverage
+```
+
+Coverage is deliberately focused on `src/api/` and `src/hooks/` — the streaming
+and reconnect path, where every shipped bug in the chat transport has lived.
+Components are not covered; a live smoke test in-browser is still the check for
+UI behavior changes. Also run `npm run build`, which type-checks.
+
+The tests that matter most simulate a **dropped connection**: `killStream()` in
+`src/test/sseFixture.ts` destroys the response body mid-read the way a
+backgrounded mobile tab does, which the browser reports as a generic
+`TypeError` rather than an abort. That distinction is not reachable by
+type-checking or by clicking around, and it is where the bugs were.
 
 ## Code layout
 
