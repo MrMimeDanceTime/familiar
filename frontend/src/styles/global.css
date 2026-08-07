@@ -2193,6 +2193,37 @@ body.has-pinned-tray .deck-detail {
     display: flex;
     gap: 6px;
     flex: 0 0 auto;
+    align-items: center;
+  }
+
+  /* Theme and preferences, which otherwise live only in the desktop sidebar.
+     44px is the minimum comfortable touch target; the icon inside is 15px. */
+  .mobile-header__icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 8px;
+  }
+
+  .mobile-header__icon-btn:active {
+    background: var(--bg-soft);
+    color: var(--text);
+  }
+
+  /* The panel is a centered overlay with two textareas; on a short screen, or
+     one with the keyboard up, it would otherwise run off the bottom with no way
+     to reach Save. */
+  .preferences-panel {
+    max-height: 85dvh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   /* ── Bottom nav ─────────────────────────────────────────────────────── */
