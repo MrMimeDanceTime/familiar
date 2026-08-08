@@ -6,6 +6,7 @@ import { Sidebar } from './components/ConversationSidebar'
 import type { SidebarTab } from './components/ConversationSidebar'
 import { DeckDetail } from './components/DeckDetail'
 import { DeckPanel } from './components/DeckPanel'
+import { GearIcon, MoonIcon, SunIcon } from './components/icons'
 import { MobileHeader } from './components/MobileHeader'
 import type { MobileTab } from './components/MobileNav'
 import { MobileNav } from './components/MobileNav'
@@ -14,6 +15,7 @@ import { PreferencesPanel } from './components/PreferencesPanel'
 import { useChatStream } from './hooks/useChatStream'
 import type { ProposalBatch } from './hooks/useChatStream'
 import { useDeck } from './hooks/useDeck'
+import { useTheme } from './hooks/useTheme'
 import type { Conversation, Deck, DeckProposal, DeckStats } from './types/api'
 import './styles/global.css'
 
@@ -60,6 +62,7 @@ function App() {
   const [nuanceLoading, setNuanceLoading] = useState(false)
   const [proposalBatches, setProposalBatches] = useState<ProposalBatch[]>([])
   const [prefsOpen, setPrefsOpen] = useState(false)
+  const { isDark, toggle: toggleTheme } = useTheme()
   const { deck, setDeck, loadDeck, clearDeck } = useDeck()
   const { messages, sendMessage, reset, activeTool, isStreaming, error } = useChatStream({
     onDeckUpdated: setDeck,
@@ -363,6 +366,10 @@ function App() {
   // ── Derived state ──────────────────────────────────────────────────────
 
   const showDeckDetail = sidebarTab === 'decks' && deck !== null
+  // The mobile list views have header room to spare; chat and deck-detail spend
+  // theirs on the back button and title.
+  const isMobileListView =
+    mobileView === 'chats-list' || mobileView === 'decks-list' || mobileView === 'pins'
   // Card names to make hoverable/pinnable in chat: everything in the deck PLUS
   // every card named in a proposal this conversation. Cards Familiar suggests
   // live in proposals before (and whether or not) they're added to the deck, so
@@ -446,6 +453,31 @@ function App() {
               <button className="btn btn--ghost btn--mono" onClick={handleNewDeck}>
                 + New
               </button>
+            )}
+            {/* Theme and preferences otherwise live only in the desktop
+                sidebar, which is display:none under the mobile breakpoint —
+                so on a phone they were unreachable rather than merely hidden.
+                Shown on list views only; the chat and deck-detail views need
+                their header room for the back button and title. */}
+            {isMobileListView && (
+              <>
+                <button
+                  className="mobile-header__icon-btn"
+                  onClick={toggleTheme}
+                  title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+                  aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+                >
+                  {isDark ? <SunIcon /> : <MoonIcon />}
+                </button>
+                <button
+                  className="mobile-header__icon-btn"
+                  onClick={() => setPrefsOpen(true)}
+                  title="Preferences"
+                  aria-label="Preferences"
+                >
+                  <GearIcon />
+                </button>
+              </>
             )}
           </MobileHeader>
 
