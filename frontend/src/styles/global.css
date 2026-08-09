@@ -1145,6 +1145,66 @@ body.has-pinned-tray .deck-panel__cards {
   object-fit: cover;
 }
 
+/* Tap-to-preview (touch devices). A phone has no hover, so the first tap on a
+   card name opens this and the second pins. Centered rather than anchored to
+   the name: a 244px image beside text on a ~390px screen has nowhere to go and
+   would cover the text that was just tapped. */
+.card-tap-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.62);
+  animation: card-tap-preview-in 120ms ease-out;
+}
+
+@keyframes card-tap-preview-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-tap-preview {
+    animation: none;
+  }
+}
+
+.card-tap-preview__frame {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.card-tap-preview__img {
+  display: block;
+  /* Bounded on BOTH axes so a tall card fits a short landscape viewport
+     instead of running off the top and bottom. */
+  max-width: min(88vw, 420px);
+  max-height: 78dvh;
+  width: auto;
+  height: auto;
+  border-radius: 4.75% / 3.5%;
+  box-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.8);
+}
+
+.card-tap-preview__hint {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.82);
+  text-align: center;
+}
+
+.card-preview-anchor--open {
+  background: var(--bg-soft);
+}
+
 /* ── Pinned tray (compare multiple cards) ──────────────────────────────── */
 .pinned-tray {
   position: fixed;
