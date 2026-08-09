@@ -3,10 +3,18 @@ import { createPortal } from 'react-dom'
 import { cardImageUrl } from '../api/cardImage'
 import { useCardPins } from './CardPinContext'
 
-// A card name that reveals the card's image on hover and pins it (into the
-// shared bottom tray) on click. The hover image is portaled to <body> and
-// positioned beside the name, clamped to the viewport. Pinning is app-level
-// state (see CardPinContext) so multiple cards can be pinned for comparison.
+// A card name that reveals the card's image and pins it (into the shared bottom
+// tray) for comparison. Pinning is app-level state (see CardPinContext) so
+// multiple cards can be pinned at once.
+//
+// Two interaction models, because a phone has no hover:
+//
+//   Pointer (mouse):  hover shows the image, click pins.
+//   Touch:            first tap shows the image, a second tap on the same name
+//                     pins it. Tapping anywhere else dismisses.
+//
+// Without the touch path a phone could pin a card but never see it, which is
+// backwards — the image is the whole point of the preview.
 
 // Scryfall "normal" images are 488×680 (aspect ~0.717). We render at a fixed
 // width and let height follow the aspect so the box is sized before the image
@@ -14,6 +22,11 @@ import { useCardPins } from './CardPinContext'
 const PREVIEW_W = 244
 const PREVIEW_H = Math.round(PREVIEW_W / 0.717)
 const HOVER_DELAY_MS = 120
+
+/** True when the primary input can't hover — phones, most tablets. */
+function isTouchPrimary(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches
+}
 
 interface CardPreviewProps {
   name: string
@@ -28,6 +41,8 @@ export function CardPreview({ name, className }: CardPreviewProps) {
   const [hovering, setHovering] = useState(false)
   const [failed, setFailed] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  // Touch only: this name is showing its preview, so the next tap pins it.
+  const [tapOpen, setTapOpen] = useState(false)
 
   const place = useCallback(() => {
     const el = anchorRef.current
@@ -71,21 +86,57 @@ export function CardPreview({ name, className }: CardPreviewProps) {
 
   const onClick = useCallback(() => {
     window.clearTimeout(showTimer.current)
-    setHovering(false) // hand off to the tray; drop the floating hover preview
+
+    if (isTouchPrimary() && !pinned && !tapOpen) {
+      // First tap on a touch device: reveal the card rather than pinning it
+      // sight-unseen. The second tap (below) pins.
+      setFailed(false)
+      setTapOpen(true)
+      return
+    }
+
+    setTapOpen(false)
+    setHovering(false) // hand off to the tray; drop the floating preview
     toggle(name)
-  }, [name, toggle])
+  }, [name, toggle, pinned, tapOpen])
+
+  // Dismiss a tap-opened preview on the next tap anywhere else, on scroll, or
+  // on Escape. Registered only while open so it costs nothing at rest.
+  useEffect(() => {
+    if (!tapOpen) return
+    const dismiss = (event: Event) => {
+      // A tap on the anchor itself is the "pin it" tap — onClick owns that.
+      if (event.target instanceof Node && anchorRef.current?.contains(event.target)) return
+      setTapOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTapOpen(false)
+    }
+    // Deferred so the tap that opened this doesn't immediately close it.
+    const id = window.setTimeout(() => {
+      document.addEventListener('pointerdown', dismiss)
+      document.addEventListener('keydown', onKey)
+      window.addEventListener('scroll', () => setTapOpen(false), { once: true, capture: true })
+    }, 0)
+    return () => {
+      window.clearTimeout(id)
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [tapOpen])
 
   // Clean up a scheduled show on unmount.
   useEffect(() => () => window.clearTimeout(showTimer.current), [])
 
-  // Only float the hover preview when not pinned — pinned cards live in the tray.
+  // Pinned cards live in the tray, so the floating hover preview stands down.
   const showImage = hovering && !pinned && !failed
+  const showTapImage = tapOpen && !failed
 
   return (
     <>
       <span
         ref={anchorRef}
-        className={`card-preview-anchor ${pinned ? 'card-preview-anchor--pinned' : ''} ${className ?? ''}`}
+        className={`card-preview-anchor ${pinned ? 'card-preview-anchor--pinned' : ''} ${tapOpen ? 'card-preview-anchor--open' : ''} ${className ?? ''}`}
         onMouseEnter={show}
         onMouseLeave={hide}
         onClick={onClick}
@@ -93,6 +144,7 @@ export function CardPreview({ name, className }: CardPreviewProps) {
       >
         {name}
       </span>
+
       {showImage && pos &&
         createPortal(
           <div
@@ -107,6 +159,27 @@ export function CardPreview({ name, className }: CardPreviewProps) {
               height={PREVIEW_H}
               onError={() => setFailed(true)}
             />
+          </div>,
+          document.body,
+        )}
+
+      {/* Touch: a centered overlay. Anchoring beside the name has nowhere to go
+          on a ~390px screen — it would clamp to an edge and cover the text you
+          just tapped. */}
+      {showTapImage &&
+        createPortal(
+          <div className="card-tap-preview" onClick={() => setTapOpen(false)}>
+            <figure className="card-tap-preview__frame">
+              <img
+                className="card-tap-preview__img"
+                src={cardImageUrl(name, 'large')}
+                alt={name}
+                onError={() => setFailed(true)}
+              />
+              <figcaption className="card-tap-preview__hint">
+                {pinned ? 'Tap the name again to unpin' : 'Tap the name again to pin'}
+              </figcaption>
+            </figure>
           </div>,
           document.body,
         )}
