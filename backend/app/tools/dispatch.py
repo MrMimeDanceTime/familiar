@@ -7,6 +7,7 @@ are flagged so the chat engine knows to emit a deck_updated SSE event.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -17,6 +18,8 @@ from app.knowledge.tag_lookup import get_tags_for_card
 from app.tools import deck_tools
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
 from app.tools.scryfall_client import ScryfallError, get_scryfall_client
+
+logger = logging.getLogger("app.tools.dispatch")
 
 DECK_MUTATION_TOOLS = {
     "deck_add_card",
@@ -74,7 +77,95 @@ def _scryfall_card_collection(names: list[str]) -> dict:
 
 
 def _edhrec_commander_recs(commander_name: str) -> dict:
-    return get_edhrec_client().commander_recs(commander_name)
+    """EDHREC's recommendations, enriched with each card's real rules text.
+
+    EDHREC returns names plus synergy numbers and nothing else. Handing the
+    model a bare list of names is an invitation to fill in what those cards do
+    from training data, which is where the misremembered rules text came from —
+    the model would then theorise a line of play around a card that doesn't
+    work that way. The retrieval pipeline (suggest_cards) already ships oracle
+    text with its candidates; this closes the same gap on the EDHREC path.
+
+    One batched Scryfall call covers the whole payload. Enrichment is
+    best-effort: if Scryfall is unreachable the recommendations still return,
+    because losing them entirely is worse than losing the rules text.
+    """
+    recs = get_edhrec_client().commander_recs(commander_name)
+    return _enrich_recs_with_card_text(recs)
+
+
+# Enrichment resolves ~300 names, which the Scryfall client chunks at 75 per
+# request and self-throttles to ~9 req/s — roughly 10s wall time. EDHREC's own
+# response is disk-cached for 24h, but this runs after that cache, so without a
+# memo every repeat call in a session pays the full cost again. Keyed by the
+# card names actually present, so a stale EDHREC cache refresh invalidates it.
+_ENRICHED_RECS: dict[tuple[str, ...], dict[str, Any]] = {}
+_ENRICHED_RECS_MAX = 16
+
+
+# Cards per category to resolve. EDHREC returns ~290 across 13 categories, but
+# the bulk ones (creatures 50, lands 50, instants 35) are browse lists — the
+# model reasons from the curated heads (high synergy, top cards, game changers).
+# Resolving everything costs ~11s of Scryfall time (4 chunks, self-throttled)
+# on a tool that runs mid-conversation. Enriching the heads keeps the useful
+# grounding at roughly a third of the latency; the tail is explicitly marked so
+# the model knows to look a card up rather than assume it knows the text.
+_ENRICH_PER_CATEGORY = 12
+
+
+def _enrich_recs_with_card_text(recs: dict) -> dict:
+    """Attach oracle text, type line, and cost to the recommended cards.
+
+    Enriches the head of each category (see _ENRICH_PER_CATEGORY); everything
+    beyond that is flagged ``needs_lookup`` so an unenriched name is never
+    mistaken for a card whose text the model already has.
+    """
+    categories = recs.get("categories") or {}
+    names: list[str] = []
+    for category in categories.values():
+        cards = category.get("cards") or []
+        for card in cards[:_ENRICH_PER_CATEGORY]:
+            name = card.get("name")
+            if name:
+                names.append(name)
+        for card in cards[_ENRICH_PER_CATEGORY:]:
+            card["needs_lookup"] = True
+    if not names:
+        return recs
+
+    unique = list(dict.fromkeys(names))
+
+    memo_key = tuple(unique)
+    cached = _ENRICHED_RECS.get(memo_key)
+    if cached is not None:
+        return cached
+
+    try:
+        found = get_scryfall_client().collection(unique)
+    except Exception:  # noqa: BLE001 - grounding is best-effort, recs are not
+        logger.warning("EDHREC enrichment failed; returning names only", exc_info=True)
+        return recs
+
+    by_name = {c["name"].lower(): c for c in found.get("found", [])}
+    for category in categories.values():
+        for card in (category.get("cards") or [])[:_ENRICH_PER_CATEGORY]:
+            match = by_name.get((card.get("name") or "").lower())
+            if match is None:
+                # Never leave a card bare and unmarked: an unannotated name is
+                # exactly the state that invites the model to invent its text.
+                card["unverified"] = True
+                continue
+            card["oracle_text"] = match.get("oracle_text") or ""
+            card["type_line"] = match.get("type_line")
+            card["mana_cost"] = match.get("mana_cost")
+            card["cmc"] = match.get("cmc")
+            card["color_identity"] = match.get("color_identity")
+            card["tags"] = get_tags_for_card(match.get("oracle_id"))
+
+    if len(_ENRICHED_RECS) >= _ENRICHED_RECS_MAX:
+        _ENRICHED_RECS.pop(next(iter(_ENRICHED_RECS)))
+    _ENRICHED_RECS[memo_key] = recs
+    return recs
 
 
 def _edhrec_card_synergy(card_name: str, commander_name: str) -> dict | None:

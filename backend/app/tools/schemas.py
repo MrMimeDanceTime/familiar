@@ -62,7 +62,14 @@ TOOL_SPECS: list[ToolSpec] = [
             "category (high synergy cards, top cards, creatures, instants, etc.), "
             "each with a synergy score and inclusion rate across decks on EDHREC. "
             "Treat this as inspiration/grounding data, not a constraint — inclusion "
-            "rate reflects popularity, not correctness, especially for off-meta builds."
+            "rate reflects popularity, not correctness, especially for off-meta "
+            "builds. The head of each category arrives WITH oracle_text, type_line, "
+            "mana_cost and tags, so reason about those cards from the text in the "
+            "payload rather than from memory. Cards further down a long list carry "
+            "\"needs_lookup\": true and have NO rules text here — look one up with "
+            "scryfall_card_by_name before describing what it does. A card marked "
+            "\"unverified\": true could not be resolved against Scryfall at all; "
+            "do not build around it."
         ),
         parameters={
             "type": "object",
