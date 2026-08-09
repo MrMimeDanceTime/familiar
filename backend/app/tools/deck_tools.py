@@ -871,7 +871,9 @@ def _estimate_bracket(card_names: set[str], avg_mv: float, land_count: int,
         factors.append(f"Fast mana: {', '.join(sorted(fast))}")
 
     gc_count = len(gc)
-    tutor_count = len(tutors)
+    # Tutors are still surfaced as a factor (useful context for the player and
+    # the model) but no longer drive the bracket — see the October 2025 note in
+    # the Bracket 3 block below.
     has_mld = bool(mld)
     fast_mana_count = len(fast)
 
@@ -889,24 +891,31 @@ def _estimate_bracket(card_names: set[str], avg_mv: float, land_count: int,
         factors.insert(0, f"Bracket 4: fast combo profile ({gc_count} GCs, MV {avg_mv}, {fast_mana_count} fast mana)")
         return 4, factors
 
-    # Bracket 3
+    # Bracket 3 — up to 3 Game Changers is the defining allowance.
     if gc_count >= 1:
-        factors.insert(0, f"Bracket 3: {gc_count} Game Changer(s) present")
+        factors.insert(0, f"Bracket 3: {gc_count} Game Changer(s) present (Bracket 3 allows up to 3)")
         return 3, factors
-    if tutor_count >= 3 or (avg_mv <= 2.5 and ramp_count >= 10 and interaction_count >= 10):
-        factors.insert(0, f"Bracket 3: tuned fundamentals ({tutor_count} tutors, MV {avg_mv})")
+    # NB: tutor COUNT is deliberately not a bracket driver. Tutor limits were
+    # removed from every bracket in the October 2025 update — only tutors that
+    # are themselves on the Game Changers list (Demonic Tutor, Vampiric Tutor,
+    # Imperial Seal, Crop Rotation) move a deck, and they do it through
+    # gc_count above. Counting plain tutors (Diabolic Tutor, Expedition Map,
+    # Fabricate) dragged thematic decks up two brackets and made the tool quote
+    # a retired rule back at the player.
+    if avg_mv <= 2.5 and ramp_count >= 10 and interaction_count >= 10:
+        factors.insert(
+            0,
+            f"Bracket 3: tuned fundamentals (MV {avg_mv}, {ramp_count} ramp, {interaction_count} interaction)",
+        )
         return 3, factors
 
     # Bracket 2
-    if tutor_count >= 1:
-        factors.insert(0, f"Bracket 2: {tutor_count} tutor(s), precon-level")
-        return 2, factors
     if land_count >= 35 and ramp_count >= 8 and avg_mv <= 3.5:
         factors.insert(0, "Bracket 2: solid precon fundamentals")
         return 2, factors
 
     # Bracket 1
-    factors.insert(0, "Bracket 1: exhibition — no game changers, no tutors")
+    factors.insert(0, "Bracket 1: exhibition — no Game Changers")
     return 1, factors
 
 
