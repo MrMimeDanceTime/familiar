@@ -415,6 +415,46 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
             }
             for c in cards
         ],
+        # What is STILL awaiting the player's decision, read live from the DB.
+        #
+        # Approve/deny happens over REST, a path the chat loop never observes,
+        # so the model's transcript keeps showing its original propose_deck_
+        # changes result as pending long after the player has worked through it.
+        # That is where "the N cards I proposed" comes from when nothing is on
+        # screen. Reporting the real set on every deck read is what lets the
+        # model notice its own memory is stale.
+        #
+        # Deliberately NOT folded into `cards` or `total_cards`: a proposal is
+        # not deck contents, and counting it would make the deck look bigger
+        # than it is.
+        "pending_proposals": _pending_proposals_payload(session, deck_id),
+    }
+
+
+def _pending_proposals_payload(session: Session, deck_id: int) -> dict:
+    """The deck's outstanding proposals, in creation order."""
+    pending = list(
+        session.exec(
+            select(DeckProposal)
+            .where(
+                DeckProposal.deck_id == deck_id,
+                DeckProposal.status == "pending",
+            )
+            .order_by(DeckProposal.created_at.asc())
+        )
+    )
+    return {
+        "count": len(pending),
+        "proposals": [
+            {
+                "id": p.id,
+                "action": p.action,
+                "card_name": p.card_name,
+                "quantity": p.quantity,
+                "commander_name": p.commander_name,
+            }
+            for p in pending
+        ],
     }
 
 
