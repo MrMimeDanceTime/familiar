@@ -136,7 +136,18 @@ TOOL_SPECS: list[ToolSpec] = [
     ),
     ToolSpec(
         name="deck_get_current",
-        description="Get the current in-progress deck: commander, card list, quantities, categories, and notes.",
+        description=(
+            "Get the current in-progress deck: commander, card list, quantities, "
+            "categories, and notes. Also returns pending_proposals — the batch "
+            "still awaiting the player's approve/deny, read live from the "
+            "database. That field is the ONLY accurate source for what is "
+            "outstanding: the player approves and denies in the UI, which this "
+            "conversation never sees, so an earlier propose_deck_changes result "
+            "in your history may name cards that were resolved long ago. Trust "
+            "pending_proposals over your own memory of what you proposed. Note "
+            "pending cards are NOT counted in total_cards — a proposal is not "
+            "yet part of the deck."
+        ),
         parameters={
             "type": "object",
             "properties": {"deck_id": {"type": "integer"}},
