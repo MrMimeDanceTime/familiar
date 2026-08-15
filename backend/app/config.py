@@ -47,6 +47,11 @@ class Settings(BaseSettings):
 
     familiar_db_path: str = "familiar.db"
 
+    # Refresh the local Scryfall card index on startup, in a background thread.
+    # Turned off under test so the suite never reaches the network; a test that
+    # needs an index builds one explicitly.
+    card_index_refresh_on_startup: bool = True
+
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24
 
