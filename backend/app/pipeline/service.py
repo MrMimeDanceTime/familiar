@@ -45,6 +45,8 @@ def _timed(stage: str, timings: dict[str, float]):
         level = logging.WARNING if dt > 20 else logging.INFO
         logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
 
+from app.cards import schema as card_schema
+from app.cards import store as card_store
 from app.db import repository as repo
 from app.knowledge.tag_lookup import get_tag_lookup
 from app.pipeline import candidates as candidates_stage
@@ -164,15 +166,26 @@ def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
 
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
-    cards. Reads the shared tag cache once; a card absent from it gets no tags
-    (shaping still assigns the land role from its type line)."""
+    cards.
+
+    Reads the local card index, which stores taggings as rows, so this touches
+    the few dozen cards in the pool instead of rebuilding a ~229k-entry dict in
+    memory on first call. Falls back to the legacy gzip-backed lookup when the
+    index hasn't been built yet (first run, or a failed refresh) so a cold start
+    still produces roles rather than an untagged pool.
+    """
+    oracle_ids = [c.get("oracle_id") for c in pool if c.get("oracle_id")]
+    if not oracle_ids:
+        return {}
+
+    try:
+        if card_schema.tag_count() > 0:
+            return card_store.tags_for_many(oracle_ids)
+    except Exception as exc:  # noqa: BLE001 — index problems must not sink retrieval
+        logger.warning("card index tag lookup failed, falling back to bulk cache: %s", exc)
+
     lookup = get_tag_lookup()
-    tags: dict[str, set[str]] = {}
-    for card in pool:
-        oid = card.get("oracle_id")
-        if oid and oid not in tags:
-            tags[oid] = lookup.get(oid, set())
-    return tags
+    return {oid: lookup.get(oid, set()) for oid in oracle_ids}
 
 
 def build_suggestions(
@@ -236,10 +249,11 @@ def build_suggestions(
         )
 
     with _timed("stage2_candidates", timings):
-        pool = candidates_stage.gather_candidates(
+        gathered = candidates_stage.gather_candidates_detailed(
             spec, snapshot.get("commander"),
             scryfall=scryfall, edhrec=edhrec,
         )
+        pool = gathered.cards
 
     with _timed("stage3_shape", timings):
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
@@ -254,6 +268,7 @@ def build_suggestions(
     debug = {
         "queries": spec.queries,
         "intent_summary": spec.intent_summary,
+        "broadened": gathered.broadened,
         "pool_size": len(pool),
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),

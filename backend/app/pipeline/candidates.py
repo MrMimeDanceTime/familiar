@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
+from app.pipeline.broaden import search_with_broadening
 from app.pipeline.spec import QuerySpec
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
 from app.tools.scryfall_client import get_scryfall_client
@@ -56,6 +58,19 @@ def _edhrec_synergy_map(commander_name: str | None, client: Any) -> dict[str, di
     return out
 
 
+@dataclass
+class CandidateResult:
+    """The stage-2 pool plus how it was obtained.
+
+    ``broadened`` maps an original query to the relaxed queries that were tried
+    after it underfilled, so a suggestion that quietly widened its search is
+    inspectable in debug output rather than only in the logs.
+    """
+
+    cards: list[dict[str, Any]]
+    broadened: dict[str, list[str]] = field(default_factory=dict)
+
+
 def gather_candidates(
     spec: QuerySpec,
     commander_name: str | None = None,
@@ -64,7 +79,32 @@ def gather_candidates(
     edhrec: Any | None = None,
     per_query_limit: int = 50,
     cap: int = 120,
+    min_hits: int = 8,
+    broaden: bool = True,
 ) -> list[dict[str, Any]]:
+    """Backward-compatible wrapper returning just the card pool.
+
+    Prefer ``gather_candidates_detailed`` when the caller wants the broadening
+    trail; this keeps the original signature for existing callers and tests.
+    """
+    return gather_candidates_detailed(
+        spec, commander_name, scryfall=scryfall, edhrec=edhrec,
+        per_query_limit=per_query_limit, cap=cap, min_hits=min_hits,
+        broaden=broaden,
+    ).cards
+
+
+def gather_candidates_detailed(
+    spec: QuerySpec,
+    commander_name: str | None = None,
+    *,
+    scryfall: Any | None = None,
+    edhrec: Any | None = None,
+    per_query_limit: int = 50,
+    cap: int = 120,
+    min_hits: int = 8,
+    broaden: bool = True,
+) -> CandidateResult:
     """Run the spec's queries, merge/dedupe/annotate/cap into a raw candidate pool.
 
     Dedupe is by oracle_id, keeping the first occurrence — since each query is
@@ -72,6 +112,12 @@ def gather_candidates(
     best-ranked. The merged pool is sorted by EDHREC rank (most-played first,
     unranked last) and capped. Each card is annotated with an ``edhrec`` dict
     (synergy/inclusion/category) when the commander's page lists it.
+
+    An underfilled query is retried with one constraint relaxed (see
+    ``pipeline.broaden``). Stage 1 emits queries blind — it never sees a result
+    count — so without this an over-tight query silently contributes nothing and
+    nothing downstream can recover. Broadening never touches colour identity or
+    format, so it cannot leak an illegal card into the pool.
     """
     scryfall = scryfall or get_scryfall_client()
     edhrec = edhrec or get_edhrec_client()
@@ -84,9 +130,19 @@ def gather_candidates(
 
     seen: set[str] = set()
     merged: list[dict[str, Any]] = []
+    broadened: dict[str, list[str]] = {}
     for query in spec.queries:
         q_start = time.monotonic()
-        hits = scryfall.search_pipeline(query, limit=per_query_limit)
+        if broaden:
+            hits, trail = search_with_broadening(
+                lambda q: scryfall.search_pipeline(q, limit=per_query_limit),
+                query,
+                min_hits=min_hits,
+            )
+            if len(trail) > 1:
+                broadened[query] = trail[1:]
+        else:
+            hits = scryfall.search_pipeline(query, limit=per_query_limit)
         q_dt = time.monotonic() - q_start
         if q_dt > 5:
             logger.warning("Scryfall query took %.2fs: %s", q_dt, query)
@@ -103,4 +159,6 @@ def gather_candidates(
     merged.sort(
         key=lambda c: c["edhrec_rank"] if c.get("edhrec_rank") is not None else _RANK_LAST
     )
-    return merged[:cap]
+    if broadened:
+        logger.info("broadened %d of %d queries", len(broadened), len(spec.queries))
+    return CandidateResult(cards=merged[:cap], broadened=broadened)

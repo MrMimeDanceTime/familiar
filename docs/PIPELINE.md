@@ -64,8 +64,8 @@ exact shape `propose_deck_changes` returns.
 | Stage | File | What it does |
 |---|---|---|
 | 1 spec | `pipeline/spec.py` | Turns intent + colour identity into a few Scryfall queries. The harness **enforces** `id<=<identity>` and `f:commander` on every query (`enforce_query`) regardless of what the model wrote, so legality can't leak. Parse is tolerant (`parse_spec`): coerces/repairs, drops blanks/dupes, caps count. |
-| 2 candidates | `pipeline/candidates.py` | Runs each query via `scryfall.search_pipeline` (EDHREC-ordered, deduped printings), merges keeping the best-ranked first, annotates each card with EDHREC synergy/inclusion where the commander's page has it, sorts by EDHREC rank, caps the pool. EDHREC failure degrades to an empty synergy map — never sinks retrieval. |
-| 3 shape | `pipeline/shaping.py` | Strips the Scryfall object to what stage 4 needs, precomputes `legal_in_deck` (commander-legal, colour identity within the commander's, not banned, not already in the deck) and functional roles, dedupes by `oracle_id`, caps legal-cards-first, and renders the deterministic text block stage 4 reads (`render_pool`). |
+| 2 candidates | `pipeline/candidates.py` | Runs each query via `scryfall.search_pipeline` (EDHREC-ordered, deduped printings), **broadening any query that underfills** (see below), merges keeping the best-ranked first, annotates each card with EDHREC synergy/inclusion where the commander's page has it, sorts by EDHREC rank, caps the pool. EDHREC failure degrades to an empty synergy map — never sinks retrieval. |
+| 3 shape | `pipeline/shaping.py` | Strips the Scryfall object to what stage 4 needs, precomputes `legal_in_deck` (commander-legal, colour identity within the commander's, not banned, not already in the deck) and functional roles, dedupes by `oracle_id`, caps legal-cards-first, and renders the deterministic text block stage 4 reads (`render_pool`). **Note:** `_STRIP_FIELDS` does not include `edhrec`, so the synergy/inclusion annotation stage 2 attaches is dropped here and never reaches the selection model. Fixing that is Stage 3 of the overhaul. |
 | 4 select | `pipeline/selection.py` | The LLM picks from the pool and justifies each pick **against this deck**. Given the commander (with oracle text), current cards by category, and strategy notes. Picks not in the pool, or marked ILLEGAL, are dropped in `parse_selection` (hallucination guard). |
 | 5 validate | `pipeline/validate.py` | Turns the picks into pending `DeckProposal` rows by reusing `propose_deck_changes` — the same approval gate the conversational path uses. A pick that fails validation never becomes a proposal. |
 
@@ -73,6 +73,41 @@ exact shape `propose_deck_changes` returns.
 `SuggestionResult` whose `proposals` field is the exact shape
 `propose_deck_changes` returns — so it plugs into the existing approve/deny SSE
 + REST workflow with no new plumbing.
+
+## Query broadening (stage 2)
+
+The cheatsheet tells the model "if a query would return very few cards, loosen
+it", but the model emits queries **blind** — it never sees a result count, so it
+cannot act on that instruction. A single over-tight query therefore contributed
+nothing, and because stage 2 ran each query exactly once, nothing downstream
+could recover. This was the largest single cause of a thin pool.
+
+`pipeline/broaden.py` makes the instruction actionable by the harness: run the
+query, count the hits, and if it underfilled (< 8 by default) drop **one**
+constraint and re-run, up to 3 rounds. Relaxation order is most-arbitrary-first:
+mana value bound, keyword, power/toughness, oracle tag, rarity.
+
+Two invariants:
+
+- **Legality is never relaxed.** `id<=` and `f:commander` survive every round,
+  so broadening cannot leak an illegal card into the pool.
+- **Intent is never fully relaxed.** A query stripped of every term describing
+  what a card *does* (`o:`, `t:`, `otag:`, `is:`, `produces:`, `keyword:`) is no
+  longer a search for anything — verified live, `id<=br f:commander` cheerfully
+  returns Sol Ring and Command Tower. Broadening stops rather than degrading a
+  search into generic staples. Contributing nothing beats contributing
+  confident noise.
+
+The `otag:` step matters more than it looks. Tagger's vocabulary is a
+**hierarchy, and the bulk export ships only leaf taggings** — `otag:removal`,
+`otag:tutor`, and `otag:sacrifice-outlet` all resolve on Scryfall (which expands
+ancestors server-side) but have zero rows in the bulk file. Slugs are therefore
+not guessable, and a model inventing a plausible tag name is a routine failure
+that returns exactly zero cards. Dropping the tag is often the whole fix.
+
+`SuggestionResult.debug["broadened"]` maps each original query to the relaxed
+queries actually tried, so a suggestion that quietly widened its search is
+inspectable rather than silent.
 
 ## Model & thinking policy
 

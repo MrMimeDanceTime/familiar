@@ -1,4 +1,4 @@
-from app.pipeline.candidates import gather_candidates
+from app.pipeline.candidates import gather_candidates, gather_candidates_detailed
 from app.pipeline.spec import QuerySpec
 from app.tools.edhrec_client import EdhrecNotFoundError
 
@@ -105,3 +105,62 @@ def test_no_commander_skips_edhrec_entirely():
 
     pool = gather_candidates(QuerySpec(queries=["q1"]), None, scryfall=sf, edhrec=Boom())
     assert pool[0]["edhrec"] is None
+
+
+# ── Broadening integration ──────────────────────────────────────────────
+#
+# Stage 1 emits queries blind — it never sees a result count — so an over-tight
+# query used to contribute nothing with no way to recover. Stage 2 now retries
+# with one constraint relaxed. These pin that it happens, that it is reported,
+# and that it never relaxes legality.
+
+
+def test_underfilled_query_is_broadened():
+    sf = FakeScryfall({
+        # The original returns one card; the relaxed form (mv dropped) returns more.
+        "id<=br otag:ramp mv<=1 f:commander": [_card("A", "a", 10)],
+        "id<=br otag:ramp f:commander": [_card(f"C{i}", f"c{i}", i) for i in range(12)],
+    })
+    spec = QuerySpec(queries=["id<=br otag:ramp mv<=1 f:commander"])
+    result = gather_candidates_detailed(spec, None, scryfall=sf, edhrec=FakeEdhrec())
+    assert len(result.cards) == 12
+    assert "id<=br otag:ramp mv<=1 f:commander" in result.broadened
+
+
+def test_broadening_reports_the_trail():
+    sf = FakeScryfall({"id<=br otag:ramp mv<=1 f:commander": []})
+    spec = QuerySpec(queries=["id<=br otag:ramp mv<=1 f:commander"])
+    result = gather_candidates_detailed(spec, None, scryfall=sf, edhrec=FakeEdhrec())
+    trail = result.broadened["id<=br otag:ramp mv<=1 f:commander"]
+    assert trail  # at least one relaxed query was attempted
+    for attempted in trail:
+        assert "id<=br" in attempted
+        assert "f:commander" in attempted
+
+
+def test_well_filled_query_is_not_broadened():
+    sf = FakeScryfall({"q1": [_card(f"C{i}", f"c{i}", i) for i in range(20)]})
+    result = gather_candidates_detailed(
+        QuerySpec(queries=["q1"]), None, scryfall=sf, edhrec=FakeEdhrec()
+    )
+    assert result.broadened == {}
+    assert sf.queries_run == ["q1"]
+
+
+def test_broadening_can_be_disabled():
+    sf = FakeScryfall({"id<=br otag:ramp mv<=1 f:commander": [_card("A", "a", 1)]})
+    spec = QuerySpec(queries=["id<=br otag:ramp mv<=1 f:commander"])
+    result = gather_candidates_detailed(
+        spec, None, scryfall=sf, edhrec=FakeEdhrec(), broaden=False
+    )
+    assert sf.queries_run == ["id<=br otag:ramp mv<=1 f:commander"]
+    assert result.broadened == {}
+
+
+def test_gather_candidates_wrapper_still_returns_a_list():
+    """The original signature is load-bearing for existing callers."""
+    sf = FakeScryfall({"q1": [_card("A", "a", 1)]})
+    pool = gather_candidates(QuerySpec(queries=["q1"]), None, scryfall=sf,
+                             edhrec=FakeEdhrec())
+    assert isinstance(pool, list)
+    assert pool[0]["name"] == "A"

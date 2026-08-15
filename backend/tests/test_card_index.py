@@ -419,3 +419,33 @@ def test_is_stale_on_empty_index(card_db):
 
 def test_is_stale_false_after_import(imported):
     assert importer.is_stale() is False
+
+
+def test_pipeline_reads_tags_from_the_index(imported, monkeypatch):
+    """The pipeline's tag lookup must come from the index once it exists, not
+    from the gzip-backed dict that rebuilt ~229k entries on first call."""
+    from app.knowledge import tag_lookup
+    from app.pipeline import service
+
+    def _boom():
+        raise AssertionError("legacy bulk lookup should not be reached")
+
+    monkeypatch.setattr(tag_lookup, "get_tag_lookup", _boom)
+    monkeypatch.setattr(service, "get_tag_lookup", _boom)
+
+    tags = service._tags_for_pool([
+        {"oracle_id": "oid-sol-ring"}, {"oracle_id": "oid-mayhem-devil"},
+    ])
+    assert tags["oid-sol-ring"] == {"mana-rock", "opponent-sacrifice-matters"}
+
+
+def test_pipeline_tag_lookup_falls_back_when_index_empty(card_db, monkeypatch):
+    """A cold start with no index yet must still produce roles rather than an
+    untagged pool."""
+    from app.pipeline import service
+
+    monkeypatch.setattr(
+        service, "get_tag_lookup", lambda: {"oid-x": {"ramp"}}
+    )
+    tags = service._tags_for_pool([{"oracle_id": "oid-x"}])
+    assert tags["oid-x"] == {"ramp"}
