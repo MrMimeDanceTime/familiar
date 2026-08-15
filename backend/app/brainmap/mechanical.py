@@ -105,7 +105,15 @@ THEMES: tuple[Theme, ...] = (
     Theme(
         key="lifegain",
         label="lifegain",
-        triggers=(r"\bgain(s)? .*life\b", r"\blifelink\b", r"lifegain"),
+        # Must be a lifegain PAYOFF, not merely a card that happens to gain
+        # life. "gain N life" appears on a huge number of commanders as a minor
+        # rider — Rin and Seri's activated ability gains life, which made a
+        # Cat/Dog tribal deck read as a lifegain deck and mislabelled every
+        # on-type card as "engine piece for lifegain".
+        triggers=(
+            r"whenever you gain life", r"if you (?:would )?gain(?:ed)? life",
+            r"\blifegain\b", r"life you gained",
+        ),
         enabler_slugs=("lifegain", "lifelink"),
         payoff_slugs=("lifegain-matters", "life-matters"),
     ),
@@ -119,11 +127,68 @@ THEMES: tuple[Theme, ...] = (
     Theme(
         key="spellslinger",
         label="instants & sorceries",
-        triggers=(r"instant or sorcery", r"\bprowess\b", r"whenever you cast"),
+        # "whenever you cast" alone is far too loose — it matches any cast
+        # trigger, including tribal commanders like Rin and Seri ("whenever you
+        # cast a Dog spell"). Require the spell type to actually be named.
+        triggers=(
+            r"instant or sorcery", r"\bprowess\b", r"\bmagecraft\b",
+            r"whenever you cast (?:an? )?(?:instant|sorcery)",
+        ),
         enabler_slugs=("cost-reducer-instant-sorcery", "spell-copy"),
         payoff_slugs=("instant-sorcery-matters", "prowess", "magecraft"),
     ),
 )
+
+
+# Tribal is not a fixed theme: the relevant slugs depend on WHICH creature type
+# the commander cares about, so it is resolved per deck rather than declared
+# above. Tagger exposes one slug per type (`typal-dragon`, `typal-elf`, …) plus
+# `changeling` for cards that count as every type at once.
+#
+# This was the gap that made the layer nearly silent on a tribal deck: Rin and
+# Seri is a Cat/Dog commander, and none of the fixed themes describe creature
+# typing, so the layer scored 4 of 60 pool cards.
+_TYPAL_PREFIX = "typal-"
+_CHANGELING_SLUGS = ("changeling", "gives-changeling", "becomes-changeling")
+
+# "Whenever you cast a Dog spell" / "Dogs you control get" / "other Cats".
+_TYPE_PATTERNS = (
+    r"cast (?:an?|another) (\w+) spell",
+    r"\b(\w+)s? you control\b",
+    r"\bother (\w+)s\b",
+    r"\beach (\w+) you control\b",
+)
+
+# Words that match the patterns above but are not creature types. Without this
+# the extractor happily decides the deck is "permanent" tribal.
+_NOT_A_TYPE = frozenset({
+    "creature", "creatures", "permanent", "permanents", "token", "tokens",
+    "artifact", "artifacts", "enchantment", "enchantments", "land", "lands",
+    "player", "players", "opponent", "opponents", "spell", "spells", "card",
+    "cards", "other", "another", "this", "that", "you", "your", "it", "them",
+})
+
+
+def detect_creature_types(commander_text: str, store: Any) -> list[str]:
+    """Creature types the commander cares about, verified against the tag data.
+
+    Extracted from the commander's oracle text, then filtered to types that
+    actually have a ``typal-<type>`` slug — which both removes false positives
+    and guarantees the resulting query returns something.
+    """
+    if not commander_text:
+        return []
+
+    available = {slug for slug, _count in store.tag_slugs(_TYPAL_PREFIX, limit=100000)}
+    found: list[str] = []
+    for pattern in _TYPE_PATTERNS:
+        for match in re.finditer(pattern, commander_text, re.I):
+            word = match.group(1).lower().rstrip("s")
+            if word in _NOT_A_TYPE or word in found:
+                continue
+            if f"{_TYPAL_PREFIX}{word}" in available:
+                found.append(word)
+    return found
 
 
 @dataclass
@@ -203,7 +268,14 @@ class MechanicalLayer:
             return {}
 
         hits = resolve_slugs(themes, self._store)
-        if not hits:
+
+        # Tribal, resolved per deck from the commander's creature types.
+        tribal_types = detect_creature_types(commander_text, self._store)
+        tribal_slugs = {f"{_TYPAL_PREFIX}{t}" for t in tribal_types}
+        if tribal_slugs:
+            tribal_slugs.update(_CHANGELING_SLUGS)
+
+        if not hits and not tribal_slugs:
             return {}
 
         enabler_slugs = {s for h in hits for s in h.enablers}
@@ -231,6 +303,19 @@ class MechanicalLayer:
 
             matched_enablers = tags & enabler_slugs
             matched_payoffs = tags & payoff_slugs
+            matched_tribal = tags & tribal_slugs
+
+            if matched_tribal and not (matched_enablers or matched_payoffs):
+                # On-type without also serving another theme. Still a real
+                # signal on a tribal deck — being a Cat IS the synergy when the
+                # commander triggers on casting Cats.
+                types = ", ".join(tribal_types) or "the deck's type"
+                out[name.lower()] = LayerScore(
+                    layer=MECHANICAL, score=0.7,
+                    reason=f"on-type for {types} tribal",
+                )
+                continue
+
             if not matched_enablers and not matched_payoffs:
                 continue
 
@@ -243,6 +328,12 @@ class MechanicalLayer:
                 score, role = 0.75, "payoff"
             else:
                 score, role = 0.6, "enabler"
+
+            # On-type AND useful is strictly better than either alone on a
+            # tribal deck, so it takes the engine-piece score.
+            if matched_tribal:
+                score = 1.0
+                role = f"on-type {role}"
 
             matched_themes = sorted({
                 slug_labels[slug]

@@ -68,15 +68,21 @@ def test_blend_combines_layers():
     assert result[0].total == pytest.approx(0.5)
 
 
-def test_absent_layer_does_not_shrink_totals():
-    """A fresh install has no personal history. Without renormalising, every
-    card would top out at 0.8 and the numbers would stop meaning anything."""
+def test_absent_layer_does_not_collapse_a_score():
+    """A fresh install has no personal history, and that must not drag every
+    card down toward zero.
+
+    The score is still shaded below 1.0 — two of three layers agreeing is real
+    but not total evidence — and that shading is deliberate (see
+    test_broad_agreement_beats_a_single_confident_layer). What matters is that
+    it stays close to the raw score rather than being multiplied away.
+    """
     scores = {
         CONSENSUS: {"a": LayerScore(CONSENSUS, 1.0)},
         MECHANICAL: {"a": LayerScore(MECHANICAL, 1.0)},
         PERSONAL: {},
     }
-    assert blend(scores)[0].total == pytest.approx(1.0)
+    assert blend(scores)[0].total > 0.85
 
 
 def test_off_meta_shifts_weight_to_mechanical():
@@ -372,3 +378,153 @@ def test_shape_falls_back_to_rank_without_map_scores():
     ]
     ctx = DeckContext(identity=frozenset(), card_names_lower=frozenset())
     assert [c.name for c in shape(raw, ctx, {})] == ["Better", "Worse"]
+
+
+# ── Per-card confidence (found by running a real deck) ───────────────────
+
+
+def test_unlisted_card_is_not_punished_by_a_silent_layer():
+    """Renormalising globally over "layers that scored anything" punishes a card
+    the other layers simply have no opinion about.
+
+    Measured on a real Rin and Seri pool: Cat Collector scored mechanical 1.00
+    with no EDHREC entry (a fine card that is not on the commander's page) and
+    came out at 0.42, below staples scoring on consensus alone. 43 of 60 cards
+    landed at exactly 0.00, so most of the pool reached the model unranked.
+    """
+    scores = {
+        CONSENSUS: {"staple": LayerScore(CONSENSUS, 0.62)},
+        MECHANICAL: {"unlisted": LayerScore(MECHANICAL, 1.0)},
+    }
+    result = {c.name: c.total for c in blend(scores)}
+    assert result["unlisted"] > result["staple"]
+
+
+def test_broad_agreement_beats_a_single_confident_layer():
+    """The counterweight: per-card renormalisation alone would let one layer at
+    1.00 outrank a card all three layers agree is 0.80."""
+    scores = {
+        CONSENSUS: {"broad": LayerScore(CONSENSUS, 0.8)},
+        MECHANICAL: {"broad": LayerScore(MECHANICAL, 0.8)},
+        PERSONAL: {
+            "broad": LayerScore(PERSONAL, 0.8),
+            "thin": LayerScore(PERSONAL, 1.0),
+        },
+    }
+    result = {c.name: c.total for c in blend(scores)}
+    assert result["broad"] > result["thin"]
+
+
+def test_more_evidence_means_more_confidence():
+    """A mechanical-only score (weight 0.3) should be trusted more than a
+    personal-only one (0.2) at equal raw score."""
+    scores = {
+        MECHANICAL: {"mech": LayerScore(MECHANICAL, 1.0)},
+        PERSONAL: {"pers": LayerScore(PERSONAL, 1.0)},
+    }
+    result = {c.name: c.total for c in blend(scores)}
+    assert result["mech"] > result["pers"]
+
+
+# ── Tribal (the gap that made the layer near-silent) ─────────────────────
+
+
+RIN_AND_SERI = (
+    "Whenever you cast a Dog spell, create a 1/1 green Cat creature token. "
+    "Whenever you cast a Cat spell, create a 1/1 white Dog creature token. "
+    "{R}{G}{W}, {T}: Rin and Seri deals damage to any target equal to the "
+    "number of Dogs you control. You gain life equal to the number of Cats "
+    "you control."
+)
+
+
+class TypalStore(FakeStore):
+    def tag_slugs(self, pattern=None, limit=100):
+        slugs = self._vocabulary | {"typal-cat", "typal-dog", "typal-elf", "changeling"}
+        if pattern:
+            slugs = {s for s in slugs if pattern in s}
+        return [(s, 1) for s in slugs]
+
+
+def test_detects_creature_types_from_commander_text():
+    from app.brainmap.mechanical import detect_creature_types
+
+    types = detect_creature_types(RIN_AND_SERI, TypalStore())
+    assert set(types) == {"cat", "dog"}
+
+
+def test_creature_type_extraction_rejects_non_types():
+    """The patterns match "permanents you control" too; without a stopword list
+    the layer decides the deck is "permanent" tribal."""
+    from app.brainmap.mechanical import detect_creature_types
+
+    text = "Whenever you cast a creature spell, permanents you control get +1/+1."
+    assert detect_creature_types(text, TypalStore()) == []
+
+
+def test_creature_type_must_exist_in_the_tag_data():
+    """A type with no `typal-<type>` slug cannot be queried, so it is dropped."""
+    from app.brainmap.mechanical import detect_creature_types
+
+    text = "Whenever you cast a Sliver spell, draw a card."
+    assert detect_creature_types(text, TypalStore()) == []
+
+
+def test_on_type_cards_score_on_a_tribal_deck():
+    """Being a Cat IS the synergy when the commander triggers on casting Cats.
+    Before this, a tribal commander scored 4 of 60 pool cards."""
+    store = TypalStore(
+        commander_text=RIN_AND_SERI,
+        tags={"oid-cat": {"typal-cat"}, "oid-vanilla": {"alliteration"}},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Cat Lord", oracle_id="oid-cat"),
+         _card("Vanilla", oracle_id="oid-vanilla")],
+        ScoringContext(commander="Rin and Seri, Inseparable"),
+    )
+    assert "cat lord" in scored
+    assert "on-type" in scored["cat lord"].reason
+    assert "vanilla" not in scored
+
+
+def test_changeling_counts_as_on_type():
+    store = TypalStore(
+        commander_text=RIN_AND_SERI, tags={"oid-shifter": {"changeling"}},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Realmwalker", oracle_id="oid-shifter")],
+        ScoringContext(commander="Rin and Seri, Inseparable"),
+    )
+    assert "realmwalker" in scored
+
+
+# ── Trigger precision (spurious themes mislabel every card) ──────────────
+
+
+def test_lifegain_needs_a_payoff_not_an_incidental_life_rider():
+    """Rin and Seri's activated ability gains life, which made a Cat/Dog tribal
+    deck read as a lifegain deck and labelled on-type cards "engine piece for
+    lifegain"."""
+    keys = {t.key for t in detect_themes(RIN_AND_SERI, [])}
+    assert "lifegain" not in keys
+
+
+def test_spellslinger_needs_a_named_spell_type():
+    """"whenever you cast" alone matches any cast trigger, including "whenever
+    you cast a Dog spell"."""
+    keys = {t.key for t in detect_themes(RIN_AND_SERI, [])}
+    assert "spellslinger" not in keys
+
+
+def test_real_spellslinger_still_detected():
+    keys = {t.key for t in detect_themes(
+        "Whenever you cast an instant spell, draw a card.", []
+    )}
+    assert "spellslinger" in keys
+
+
+def test_real_lifegain_still_detected():
+    keys = {t.key for t in detect_themes(
+        "Whenever you gain life, put a +1/+1 counter on this creature.", []
+    )}
+    assert "lifegain" in keys

@@ -39,6 +39,18 @@ class ConsensusLayer:
     def score(
         self, cards: list[dict], context: ScoringContext
     ) -> dict[str, LayerScore]:
+        """Score the pool on EDHREC data.
+
+        A card with no EDHREC entry is skipped, NOT scored zero. "Unlisted" and
+        "unpopular" are different claims: EDHREC only covers cards that appear
+        on the commander's page, so a perfectly good card that no query surfaced
+        into that page has no consensus opinion at all. Scoring it zero would
+        rank it below cards with a genuinely terrible play rate.
+
+        The blend already handles this correctly — it renormalises over the
+        layers that produced a score for each card — so skipping means "no
+        opinion" and lets the other layers decide.
+        """
         out: dict[str, LayerScore] = {}
         for card in cards:
             data = card.get("edhrec")

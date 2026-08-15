@@ -152,19 +152,47 @@ def blend(
     weights[CONSENSUS] = consensus_weight - movable
     weights[MECHANICAL] = mechanical_weight + movable
 
-    active = {name for name, entries in scores.items() if entries}
-    total_weight = sum(weights.get(name, 0.0) for name in active) or 1.0
-
     by_card: dict[str, CardScore] = {}
     for layer_name, entries in scores.items():
         for key, entry in entries.items():
             card = by_card.setdefault(key, CardScore(name=key))
             card.layers[layer_name] = entry
 
+    # Renormalise PER CARD over the layers that scored THAT card, not globally
+    # over the layers that scored anything.
+    #
+    # Global renormalisation silently punishes a card the other layers know
+    # nothing about. Measured on a real Rin and Seri pool: Cat Collector scored
+    # mechanical 1.00 with no EDHREC entry (it is a fine card that simply is not
+    # on the commander's page) and came out at 0.42 — below staples scoring 0.62
+    # on consensus alone. 43 of 60 cards landed at exactly 0.00, so most of the
+    # pool reached the selection model effectively unranked.
+    #
+    # "Unlisted" is not "bad". A layer with no opinion about a card must not
+    # drag that card's total down.
+    # How much of the total weight has to back a score before it is taken at
+    # face value. Below this, the score is shaded toward the neutral midpoint in
+    # proportion to how thin the evidence is.
+    #
+    # This is the counterweight to per-card renormalisation. Without it, one
+    # layer scoring 1.0 outranks a card all three layers agree is 0.8 — trading
+    # the "unlisted is punished" bug for an "overconfident from thin evidence"
+    # bug. A card is not better than a broadly-endorsed one just because only
+    # one layer happened to have an opinion.
+    full_weight = sum(weights.get(name, 0.0) for name in LAYER_NAMES) or 1.0
+    neutral = 0.35
+
     for card in by_card.values():
-        card.total = sum(
-            card.get(name) * weights.get(name, 0.0) for name in active
-        ) / total_weight
+        contributing = [name for name in card.layers if name in weights]
+        card_weight = sum(weights[name] for name in contributing)
+        if card_weight <= 0:
+            card.total = 0.0
+            continue
+        raw = sum(
+            card.get(name) * weights[name] for name in contributing
+        ) / card_weight
+        confidence = card_weight / full_weight
+        card.total = raw * confidence + neutral * (1.0 - confidence)
 
     # Consensus breaks ties. The mechanical layer scores in a few discrete bands
     # (engine piece / payoff / enabler), so at high off_meta many cards land on
