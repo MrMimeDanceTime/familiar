@@ -184,6 +184,9 @@ def update_deck(
     notes: str | None = None,
     power_level: str | None = None,
     format: str | None = None,
+    role_targets: dict | None = None,
+    themes: list | None = None,
+    plan_notes: str | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -200,6 +203,12 @@ def update_deck(
         deck.power_level = power_level
     if format is not None:
         deck.format = format
+    if role_targets is not None:
+        deck.role_targets = role_targets
+    if themes is not None:
+        deck.themes = themes
+    if plan_notes is not None:
+        deck.plan_notes = plan_notes
     deck.updated_at = _utcnow()
     session.add(deck)
     session.commit()
@@ -396,6 +405,11 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "notes": deck.notes,
         "power_level": deck.power_level,
         "format": deck.format,
+        # The deck plan: targets and direction, so consumers can see what the
+        # deck is trying to be rather than re-inferring it from the card list.
+        "role_targets": deck.role_targets or {},
+        "themes": deck.themes or [],
+        "plan_notes": deck.plan_notes,
         "conversation_id": linked.id if linked else None,
         "total_cards": total_cards,
         "cards": [
@@ -510,12 +524,16 @@ def apply_proposal(session: Session, proposal_id: int) -> dict | None:
         return None
 
     if proposal.action == "add":
+        # Carry the proposal's reasoning onto the card. Stage 4 already writes a
+        # per-pick justification and it was discarded at approval, so the deck
+        # could never answer "why is this card here" without another LLM call.
         deck_tools.deck_add_card(
             session,
             deck_id=proposal.deck_id,
             card_name=proposal.card_name,
             qty=proposal.quantity,
             category=proposal.category,
+            notes=proposal.reasoning or None,
         )
     elif proposal.action == "remove":
         deck_tools.deck_remove_card(

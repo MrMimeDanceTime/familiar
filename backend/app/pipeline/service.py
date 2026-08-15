@@ -45,6 +45,7 @@ def _timed(stage: str, timings: dict[str, float]):
         level = logging.WARNING if dt > 20 else logging.INFO
         logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
 
+from app import deckplan
 from app.cards import schema as card_schema
 from app.cards import store as card_store
 from app.db import repository as repo
@@ -160,6 +161,22 @@ def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
     if notes:
         lines.append("")
         lines.append(f"Strategy notes: {notes}")
+
+    # The plan: targets, direction, and what the deck is still short on. Without
+    # this the model can only see what the deck CONTAINS and has to guess what it
+    # WANTS, so a suggestion aimed at a filled role looked as good as one filling
+    # a gap.
+    plan = deckplan.build_plan(snapshot)
+    lines.append("")
+    lines.append(deckplan.render_plan(plan))
+
+    # Why the existing cards are there. Each card's stored note is the reasoning
+    # from the proposal that added it, so the model can build on prior decisions
+    # instead of re-deriving them.
+    rationale = deckplan.render_card_rationale(snapshot.get("cards", []))
+    if rationale:
+        lines.append("")
+        lines.append(rationale)
 
     return "\n".join(lines)
 

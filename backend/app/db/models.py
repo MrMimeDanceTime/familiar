@@ -52,6 +52,16 @@ class Deck(SQLModel, table=True):
     power_nuance_adj: float | None = None
     power_nuance_reason: str | None = None
     power_nuance_key: str | None = None
+    # The deck plan: what this deck is TRYING to be, as opposed to what it
+    # currently is. Without it every suggestion starts cold — the model saw a
+    # list of card names and had to re-infer the plan from them each call.
+    #
+    # `role_targets` is {role: count} ("ramp": 10, "interaction": 8). `themes`
+    # is a list of direction strings the deck is built around. Both are JSON
+    # because they are read and written whole, never queried by element.
+    role_targets: dict | None = Field(default=None, sa_column=Column(JSON))
+    themes: list | None = Field(default=None, sa_column=Column(JSON))
+    plan_notes: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

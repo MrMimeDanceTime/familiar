@@ -17,6 +17,11 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("deck", "power_nuance_adj", "REAL"),
     ("deck", "power_nuance_reason", "TEXT"),
     ("deck", "power_nuance_key", "TEXT"),
+    # The deck plan (role targets, themes, plan notes). JSON columns are TEXT
+    # in SQLite; SQLModel's JSON type reads/writes them transparently.
+    ("deck", "role_targets", "JSON"),
+    ("deck", "themes", "JSON"),
+    ("deck", "plan_notes", "TEXT"),
 ]
 
 
