@@ -62,6 +62,11 @@ class Deck(SQLModel, table=True):
     role_targets: dict | None = Field(default=None, sa_column=Column(JSON))
     themes: list | None = Field(default=None, sa_column=Column(JSON))
     plan_notes: str | None = None
+    # How far off-consensus to build, 0.0 to 1.0. Trades EDHREC play rate
+    # against commander-specific synergy when ranking recommendations: at 0 the
+    # deck gets what everyone plays, at 1 it gets what is specific to this
+    # commander even when few decks run it. Defaults to 0.25 when unset.
+    off_meta: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

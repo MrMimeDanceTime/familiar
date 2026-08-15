@@ -170,6 +170,11 @@ def render_plan(plan: DeckPlan) -> str:
         f"{g.role} {g.current}/{g.target}" for g in plan.gaps
     )
     lines.append(f"Role counts: {shape}")
+    lines.append(
+        "(Counts overlap: a card counts toward every role it fills, so a land "
+        "that draws is in both. A role over target is not necessarily bloated. "
+        "Targets are rules of thumb, not requirements.)"
+    )
 
     unmet = plan.unmet
     if unmet:

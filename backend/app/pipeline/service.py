@@ -181,6 +181,19 @@ def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
     return "\n".join(lines)
 
 
+def _deck_off_meta(snapshot: dict[str, Any]) -> float:
+    """How far off-consensus this deck wants to be, 0.0 to 1.0.
+
+    Defaults to 0.25: mostly follows what people play, but leans far enough
+    toward commander-specific synergy that two decks on the same commander do
+    not return identical pools. A deck can set its own value.
+    """
+    value = snapshot.get("off_meta")
+    if isinstance(value, (int, float)):
+        return max(0.0, min(1.0, float(value)))
+    return 0.25
+
+
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
     cards.
@@ -221,6 +234,7 @@ def build_suggestions(
     max_picks: int = 10,
     scryfall: Any | None = None,
     edhrec: Any | None = None,
+    off_meta: float | None = None,
 ) -> SuggestionResult:
     """Run the full retrieval pipeline for a deck and intent.
 
@@ -269,6 +283,8 @@ def build_suggestions(
         gathered = candidates_stage.gather_candidates_detailed(
             spec, snapshot.get("commander"),
             scryfall=scryfall, edhrec=edhrec,
+            identity=identity,
+            off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
         )
         pool = gathered.cards
 

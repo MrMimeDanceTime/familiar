@@ -187,6 +187,7 @@ def update_deck(
     role_targets: dict | None = None,
     themes: list | None = None,
     plan_notes: str | None = None,
+    off_meta: float | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -209,6 +210,8 @@ def update_deck(
         deck.themes = themes
     if plan_notes is not None:
         deck.plan_notes = plan_notes
+    if off_meta is not None:
+        deck.off_meta = off_meta
     deck.updated_at = _utcnow()
     session.add(deck)
     session.commit()
@@ -410,6 +413,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "role_targets": deck.role_targets or {},
         "themes": deck.themes or [],
         "plan_notes": deck.plan_notes,
+        "off_meta": deck.off_meta,
         "conversation_id": linked.id if linked else None,
         "total_cards": total_cards,
         "cards": [

@@ -37,6 +37,11 @@ _STRIP_FIELDS = (
     "name", "oracle_id", "mana_cost", "cmc", "type_line", "oracle_text",
     "color_identity", "legal_commander", "keywords", "power", "toughness",
     "loyalty", "rarity", "edhrec_rank",
+    # The EDHREC signal. Stage 2 has always attached this and this tuple always
+    # dropped it, so the selection model could see a card's rules text but never
+    # that 75% of decks with this commander run it. That is the single most
+    # informative thing available about a candidate.
+    "edhrec",
 )
 
 
@@ -81,6 +86,7 @@ class ShapedCard:
     loyalty: str | None
     rarity: str | None
     edhrec_rank: int | None
+    edhrec: dict[str, Any] | None = None
     fine_roles: set[str] = field(default_factory=set)
     coarse_roles: set[str] = field(default_factory=set)
     legal_in_deck: bool = False
@@ -139,6 +145,7 @@ def _precompute(raw: dict[str, Any], ctx: DeckContext, tags: set[str]) -> Shaped
         loyalty=stripped.get("loyalty"),
         rarity=stripped.get("rarity"),
         edhrec_rank=stripped.get("edhrec_rank"),
+        edhrec=stripped.get("edhrec"),
         fine_roles=fine,
         coarse_roles=coarse,
         legal_in_deck=ok,
@@ -192,6 +199,31 @@ def _fmt_roles(card: ShapedCard) -> str:
     return "—"
 
 
+def _fmt_edhrec(card: ShapedCard) -> str:
+    """Render the EDHREC signal for one card.
+
+    Both numbers, deliberately, because they mean different things and the
+    difference is the point: a card at 75% play with +0.02 synergy is a staple
+    every deck in these colours runs, while 20% play with +0.18 synergy is
+    specific to THIS commander. Showing only popularity is what makes every deck
+    converge on the same list.
+    """
+    data = card.edhrec
+    if not data:
+        return ""
+    parts: list[str] = []
+    rate = data.get("inclusion_rate")
+    if isinstance(rate, (int, float)):
+        parts.append(f"{rate * 100:.0f}% of decks")
+    synergy = data.get("synergy")
+    if isinstance(synergy, (int, float)):
+        parts.append(f"synergy {synergy:+.2f}")
+    signal = data.get("signal")
+    if signal and signal not in ("by-type",):
+        parts.append(str(signal))
+    return ", ".join(parts)
+
+
 def render_pool(cards: list[ShapedCard]) -> str:
     """Render shaped cards as a compact, stable text block for the stage-4 prompt.
 
@@ -209,6 +241,9 @@ def render_pool(cards: list[ShapedCard]) -> str:
         if stats:
             parts.append(stats)
         parts.append(f"roles: {_fmt_roles(card)}")
+        edhrec = _fmt_edhrec(card)
+        if edhrec:
+            parts.append(f"EDHREC: {edhrec}")
         if not card.legal_in_deck:
             parts.append(f"ILLEGAL ({'; '.join(card.illegal_reasons)})")
         lines.append(" | ".join(parts))

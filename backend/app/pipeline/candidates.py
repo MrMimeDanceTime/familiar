@@ -17,6 +17,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.cards import store as card_store
+from app.pipeline import edhrec_source
 from app.pipeline.broaden import search_with_broadening
 from app.pipeline.spec import QuerySpec
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
@@ -25,6 +27,41 @@ from app.tools.scryfall_client import get_scryfall_client
 logger = logging.getLogger(__name__)
 
 _RANK_LAST = float("inf")
+
+
+def _edhrec_recommendations(
+    commander_name: str | None,
+    client: Any,
+    identity: frozenset[str] | None,
+    *,
+    off_meta: float,
+    cap: int,
+) -> list[dict[str, Any]]:
+    """Pull the commander's EDHREC page in as candidates, hydrated locally.
+
+    This is the half that was missing: the page was fetched only to annotate
+    cards Scryfall had already returned, so a card EDHREC recommends that no
+    query matched could never enter the pool. Degrades to an empty list on any
+    failure — EDHREC is the best signal available but must never be a hard
+    dependency of retrieval.
+    """
+    if not commander_name:
+        return []
+    try:
+        recs = client.commander_recs(commander_name)
+    except EdhrecError:
+        return []
+    except Exception as exc:  # defensive: EDHREC's shape is unofficial
+        logger.warning("EDHREC recommendations failed for %r: %s", commander_name, exc)
+        return []
+
+    try:
+        collected = edhrec_source.collect(recs)
+        ranked = edhrec_source.rank(collected, off_meta=off_meta)
+        return edhrec_source.hydrate(ranked[:cap], card_store, identity)
+    except Exception as exc:  # noqa: BLE001 — never sink retrieval
+        logger.warning("EDHREC hydration failed for %r: %s", commander_name, exc)
+        return []
 
 
 def _edhrec_synergy_map(commander_name: str | None, client: Any) -> dict[str, dict[str, Any]]:
@@ -104,14 +141,22 @@ def gather_candidates_detailed(
     cap: int = 120,
     min_hits: int = 8,
     broaden: bool = True,
+    identity: frozenset[str] | None = None,
+    off_meta: float = 0.0,
+    edhrec_cap: int = 40,
 ) -> CandidateResult:
     """Run the spec's queries, merge/dedupe/annotate/cap into a raw candidate pool.
 
-    Dedupe is by oracle_id, keeping the first occurrence — since each query is
-    EDHREC-ordered and queries are run best-intent-first, the first hit is the
-    best-ranked. The merged pool is sorted by EDHREC rank (most-played first,
-    unranked last) and capped. Each card is annotated with an ``edhrec`` dict
-    (synergy/inclusion/category) when the commander's page lists it.
+    Two sources feed the pool. EDHREC's recommendations for the commander go in
+    FIRST — they are the only signal that knows what actually goes in this
+    specific deck, and they used to be unable to contribute a candidate at all.
+    Scryfall query results follow. Dedupe is by oracle_id keeping the first
+    occurrence, so an EDHREC-sourced card keeps its synergy annotation.
+
+    ``off_meta`` (0.0-1.0) trades EDHREC play rate against commander-specific
+    synergy when ranking recommendations. At 0 it follows consensus; at 1 it
+    surfaces cards specific to this commander that few decks run. This is what
+    keeps decks from converging on the same hundred cards.
 
     An underfilled query is retried with one constraint relaxed (see
     ``pipeline.broaden``). Stage 1 emits queries blind — it never sees a result
@@ -124,6 +169,9 @@ def gather_candidates_detailed(
 
     edhrec_start = time.monotonic()
     synergy = _edhrec_synergy_map(commander_name, edhrec)
+    recommendations = _edhrec_recommendations(
+        commander_name, edhrec, identity, off_meta=off_meta, cap=edhrec_cap,
+    )
     edhrec_dt = time.monotonic() - edhrec_start
     if edhrec_dt > 5:
         logger.warning("EDHREC lookup for %r took %.2fs", commander_name, edhrec_dt)
@@ -131,6 +179,19 @@ def gather_candidates_detailed(
     seen: set[str] = set()
     merged: list[dict[str, Any]] = []
     broadened: dict[str, list[str]] = {}
+
+    # EDHREC first: these carry the commander-specific signal, and being first
+    # means dedupe keeps their annotation rather than a bare Scryfall hit.
+    # `_edhrec_position` preserves the off-meta ranking through the merge sort
+    # and is stripped before the pool is returned.
+    for position, card in enumerate(recommendations):
+        oid = card.get("oracle_id")
+        if oid is not None:
+            if oid in seen:
+                continue
+            seen.add(oid)
+        card["_edhrec_position"] = position
+        merged.append(card)
     for query in spec.queries:
         q_start = time.monotonic()
         if broaden:
@@ -156,9 +217,32 @@ def gather_candidates_detailed(
             annotated["edhrec"] = synergy.get((card.get("name") or "").lower())
             merged.append(annotated)
 
-    merged.sort(
-        key=lambda c: c["edhrec_rank"] if c.get("edhrec_rank") is not None else _RANK_LAST
-    )
+    # Sort EDHREC-sourced cards ahead of query hits, preserving the order
+    # `edhrec_source.rank` put them in; query hits then follow by global EDHREC
+    # rank. A recommendation is ranked by how well it fits THIS commander, while
+    # `edhrec_rank` is global popularity that knows nothing about the deck, so
+    # ranking the two together scatters the commander-specific picks among
+    # generically-popular ones and undoes the off-meta weighting entirely.
+    #
+    # Source is tracked explicitly rather than inferred from the presence of an
+    # `edhrec` key: query hits ALSO carry one (from the synergy map), so a
+    # truthiness check put both groups in the same bucket and sorted generic
+    # ramp above the high-synergy picks.
+    def _sort_key(card: dict[str, Any]) -> tuple[int, float]:
+        position = card.get("_edhrec_position")
+        if position is not None:
+            return (0, float(position))
+        rank = card.get("edhrec_rank")
+        return (1, rank if rank is not None else _RANK_LAST)
+
+    merged.sort(key=_sort_key)
+    for card in merged:
+        card.pop("_edhrec_position", None)
+    if recommendations:
+        logger.info(
+            "EDHREC contributed %d candidate(s) for %r (off_meta=%.2f)",
+            len(recommendations), commander_name, off_meta,
+        )
     if broadened:
         logger.info("broadened %d of %d queries", len(broadened), len(spec.queries))
     return CandidateResult(cards=merged[:cap], broadened=broadened)

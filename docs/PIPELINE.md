@@ -65,7 +65,7 @@ exact shape `propose_deck_changes` returns.
 |---|---|---|
 | 1 spec | `pipeline/spec.py` | Turns intent + colour identity into a few Scryfall queries. The harness **enforces** `id<=<identity>` and `f:commander` on every query (`enforce_query`) regardless of what the model wrote, so legality can't leak. Parse is tolerant (`parse_spec`): coerces/repairs, drops blanks/dupes, caps count. |
 | 2 candidates | `pipeline/candidates.py` | Runs each query via `scryfall.search_pipeline` (EDHREC-ordered, deduped printings), **broadening any query that underfills** (see below), merges keeping the best-ranked first, annotates each card with EDHREC synergy/inclusion where the commander's page has it, sorts by EDHREC rank, caps the pool. EDHREC failure degrades to an empty synergy map — never sinks retrieval. |
-| 3 shape | `pipeline/shaping.py` | Strips the Scryfall object to what stage 4 needs, precomputes `legal_in_deck` (commander-legal, colour identity within the commander's, not banned, not already in the deck) and functional roles, dedupes by `oracle_id`, caps legal-cards-first, and renders the deterministic text block stage 4 reads (`render_pool`). **Note:** `_STRIP_FIELDS` does not include `edhrec`, so the synergy/inclusion annotation stage 2 attaches is dropped here and never reaches the selection model. Fixing that is Stage 3 of the overhaul. |
+| 3 shape | `pipeline/shaping.py` | Strips the Scryfall object to what stage 4 needs, precomputes `legal_in_deck` (commander-legal, colour identity within the commander's, not banned, not already in the deck) and functional roles, dedupes by `oracle_id`, caps legal-cards-first, and renders the deterministic text block stage 4 reads (`render_pool`), including each card's EDHREC play rate and synergy. |
 | 4 select | `pipeline/selection.py` | The LLM picks from the pool and justifies each pick **against this deck**. Given the commander (with oracle text), current cards by category, and strategy notes. Picks not in the pool, or marked ILLEGAL, are dropped in `parse_selection` (hallucination guard). |
 | 5 validate | `pipeline/validate.py` | Turns the picks into pending `DeckProposal` rows by reusing `propose_deck_changes` — the same approval gate the conversational path uses. A pick that fails validation never becomes a proposal. |
 
@@ -108,6 +108,53 @@ that returns exactly zero cards. Dropping the tag is often the whole fix.
 `SuggestionResult.debug["broadened"]` maps each original query to the relaxed
 queries actually tried, so a suggestion that quietly widened its search is
 inspectable rather than silent.
+
+## EDHREC as a candidate source (stage 2)
+
+EDHREC used to be a garnish. Stage 2 fetched the commander's page only to
+annotate cards Scryfall had already returned, so a card EDHREC recommends that
+no query happened to match could not enter the pool at all — the best available
+signal for "what actually goes in this deck" was structurally unable to
+contribute a candidate. Worse, `shaping._STRIP_FIELDS` omitted `edhrec`, so even
+the annotation was discarded before stage 4 read it.
+
+`pipeline/edhrec_source.py` makes the page a real source: collect its cardlists,
+rank them, hydrate the names through the local card index in one query, and
+merge them into the pool ahead of query hits.
+
+### The two numbers
+
+EDHREC gives each card `synergy` and `inclusion`, and only one is what its name
+suggests.
+
+`inclusion` is **a raw deck count, not a rate** — verified 2026-08-15, it equals
+`num_decks` exactly. The rate is `num_decks / potential_decks`, and the
+denominator varies per card because a newer card has had fewer eligible decks
+(2,893 for a recent printing vs 20,489 for an established one). Ranking on
+`inclusion` therefore sorts by raw popularity *and* quietly buries new cards.
+The rate is computed rather than read.
+
+`synergy` is a true differential: inclusion in this commander's decks minus
+inclusion in decks of the same colours. Measured on Korvold, the "High Synergy
+Cards" list averages ~+0.42 while "Top Cards" averages ~+0.15 at comparable play
+rates — same popularity, opposite meaning.
+
+### The off-meta knob
+
+`off_meta` (0.0–1.0, per deck, default 0.25) trades play rate against synergy
+when ranking recommendations. This is what stops every deck converging on the
+same hundred cards. Measured live on Korvold:
+
+| `off_meta` | Top of pool |
+|---|---|
+| 0.0 | Forest, Command Tower, Swamp, Sol Ring — every Jund deck's staples |
+| 1.0 | Mayhem Devil, Tireless Provisioner, Pitiless Plunderer — the treasure-sacrifice engine specific to Korvold |
+
+EDHREC-sourced cards sort ahead of query hits, preserving the order `rank` put
+them in. **Source is tracked explicitly, not inferred from the presence of an
+`edhrec` key** — query hits carry one too (from the synergy map), so a
+truthiness check puts both groups in the same bucket and lets generic staples
+outrank the commander-specific picks. That bug is pinned by a regression test.
 
 ## Model & thinking policy
 

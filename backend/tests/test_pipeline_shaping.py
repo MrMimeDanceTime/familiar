@@ -43,6 +43,10 @@ def test_strip_keeps_only_selection_fields():
         "name", "oracle_id", "mana_cost", "cmc", "type_line", "oracle_text",
         "color_identity", "legal_commander", "keywords", "power", "toughness",
         "loyalty", "rarity", "edhrec_rank",
+        # Stage 2 attaches this and the strip used to drop it, so the selection
+        # model could read a card's rules text but never that 75% of decks with
+        # this commander run it.
+        "edhrec",
     }
 
 

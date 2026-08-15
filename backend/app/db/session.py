@@ -22,6 +22,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("deck", "role_targets", "JSON"),
     ("deck", "themes", "JSON"),
     ("deck", "plan_notes", "TEXT"),
+    ("deck", "off_meta", "REAL"),
 ]
 
 
