@@ -113,3 +113,57 @@ def test_fallthrough_is_total_over_real_cached_tags():
         if coarse not in via_fine:
             misses.append((slug, coarse))
     assert not misses, f"fallthrough dropped {len(misses)} coarse roles: {misses[:20]}"
+
+
+# ── Vocabulary drift guard ───────────────────────────────────────────────
+#
+# The fine-role rules were originally written against GUESSED slug names, and
+# most of them matched nothing. Tagger's vocabulary is a hierarchy and the bulk
+# export ships only LEAF taggings, so the obvious concept names (`recursion`,
+# `protection`, `sacrifice-outlet`) resolve on Scryfall's API while matching
+# zero rows locally. Audited 2026-08-15: `protection` and `graveyard-hate`
+# matched nothing at all; `sacrifice-outlet` and `aristocrats` matched one slug
+# each out of 4,383.
+#
+# These tests pin representative REAL slugs so a rule that stops matching is a
+# test failure rather than a silently emptier pool.
+
+import pytest
+
+from app.pipeline.roles import fine_roles_for_tags
+
+# (slug, expected fine role). Every slug here was verified present in the bulk
+# export with a meaningful card count.
+_REAL_SLUGS = [
+    ("reanimate-creature", "recursion"),        # 534 cards
+    ("recursion-from-exile", "recursion"),      # 20
+    ("protects-creature", "protection"),        # 731
+    ("gives-indestructible", "protection"),     # 285
+    ("gives-hexproof", "protection"),           # 165
+    ("death-trigger", "aristocrats"),           # 591
+    ("your-sacrifice-matters", "aristocrats"),  # 118
+    ("sacrifice-outlet-creature", "sacrifice-outlet"),   # 894
+    ("repeatable-sacrifice-outlet", "sacrifice-outlet"), # 580
+    ("free-sacrifice-outlet", "sacrifice-outlet"),       # 183
+    ("hate-graveyard", "graveyard-hate"),       # 300
+    ("repeatable-creature-tokens", "tokens"),   # 1471
+    ("mana-rock", "ramp"),
+    ("spot-removal", "spot-removal"),
+]
+
+
+@pytest.mark.parametrize("slug,expected", _REAL_SLUGS)
+def test_real_slug_maps_to_its_role(slug, expected):
+    assert expected in fine_roles_for_tags({slug}), (
+        f"{slug!r} no longer maps to {expected!r} — the rule may have been "
+        f"written against a guessed slug name rather than the real vocabulary"
+    )
+
+
+def test_roles_are_reachable_from_leaf_slugs():
+    """Ancestor slugs like `sacrifice-outlet` resolve on Scryfall's API but ship
+    ZERO rows in the bulk export. Mapping them is harmless; DEPENDING on them is
+    the bug, so every role must also be reachable from a real leaf slug."""
+    assert "sacrifice-outlet" in fine_roles_for_tags({"sacrifice-outlet-artifact"})
+    assert "recursion" in fine_roles_for_tags({"reanimate-self"})
+    assert "protection" in fine_roles_for_tags({"protects-all"})
