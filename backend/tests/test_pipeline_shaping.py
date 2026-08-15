@@ -47,6 +47,8 @@ def test_strip_keeps_only_selection_fields():
         # model could read a card's rules text but never that 75% of decks with
         # this commander run it.
         "edhrec",
+        # The brain map's per-layer scores and explanation.
+        "brainmap",
     }
 
 

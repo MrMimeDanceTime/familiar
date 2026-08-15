@@ -46,6 +46,8 @@ def _timed(stage: str, timings: dict[str, float]):
         logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
 
 from app import deckplan
+from app.brainmap import layers as brain_layers
+from app.brainmap import map as brain_map
 from app.cards import schema as card_schema
 from app.cards import store as card_store
 from app.db import repository as repo
@@ -194,6 +196,41 @@ def _deck_off_meta(snapshot: dict[str, Any]) -> float:
     return 0.25
 
 
+def _apply_brain_map(
+    session: Session,
+    pool: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+    identity: frozenset[str],
+    deck_id: int,
+    off_meta: float,
+) -> list[dict[str, Any]]:
+    """Rank the pool through the brain map before it is capped.
+
+    Order matters: shaping caps the pool, so scoring has to happen first or the
+    cap would discard cards the map would have ranked highest. Fully guarded —
+    a scoring failure leaves the pool in its original order, which is the
+    pre-brain-map behaviour and still perfectly usable.
+    """
+    try:
+        context = brain_layers.ScoringContext(
+            commander=snapshot.get("commander"),
+            identity=identity,
+            themes=[t for t in (snapshot.get("themes") or []) if t],
+            deck_card_names=frozenset(
+                (c.get("name") or "").lower() for c in snapshot.get("cards", [])
+            ),
+            deck_id=deck_id,
+        )
+        ranked = brain_map.score_pool(
+            pool, context,
+            store=card_store, engine=session.get_bind(), off_meta=off_meta,
+        )
+        return brain_map.annotate_pool(pool, ranked)
+    except Exception as exc:  # noqa: BLE001 — ranking is an improvement, not a precondition
+        logger.warning("brain map scoring failed, using unranked pool: %s", exc)
+        return pool
+
+
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
     cards.
@@ -289,6 +326,10 @@ def build_suggestions(
         pool = gathered.cards
 
     with _timed("stage3_shape", timings):
+        pool = _apply_brain_map(
+            session, pool, snapshot, identity, deck_id,
+            off_meta if off_meta is not None else _deck_off_meta(snapshot),
+        )
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
     with _timed("stage4_select", timings):

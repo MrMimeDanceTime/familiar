@@ -42,6 +42,8 @@ _STRIP_FIELDS = (
     # that 75% of decks with this commander run it. That is the single most
     # informative thing available about a candidate.
     "edhrec",
+    # The brain map's per-layer scores and explanation.
+    "brainmap",
 )
 
 
@@ -87,6 +89,7 @@ class ShapedCard:
     rarity: str | None
     edhrec_rank: int | None
     edhrec: dict[str, Any] | None = None
+    brainmap: dict[str, Any] | None = None
     fine_roles: set[str] = field(default_factory=set)
     coarse_roles: set[str] = field(default_factory=set)
     legal_in_deck: bool = False
@@ -146,6 +149,7 @@ def _precompute(raw: dict[str, Any], ctx: DeckContext, tags: set[str]) -> Shaped
         rarity=stripped.get("rarity"),
         edhrec_rank=stripped.get("edhrec_rank"),
         edhrec=stripped.get("edhrec"),
+        brainmap=stripped.get("brainmap"),
         fine_roles=fine,
         coarse_roles=coarse,
         legal_in_deck=ok,
@@ -157,11 +161,25 @@ def _precompute(raw: dict[str, Any], ctx: DeckContext, tags: set[str]) -> Shaped
 _RANK_LAST = float("inf")
 
 
-def _rank_key(card: ShapedCard) -> tuple[bool, float]:
-    # Legal-first, then most-played-first. Sorting on (not legal) puts legal
-    # (False) ahead of illegal (True); ties broken by ascending EDHREC rank.
+def _rank_key(card: ShapedCard) -> tuple[bool, int, float]:
+    """Sort key: legal first, then scored-by-the-map, then best within each tier.
+
+    Three tiers rather than one blended number, because a brain-map fit score
+    (0-1, higher is better) and an EDHREC rank (1-30000, lower is better) are
+    not comparable and mixing them into one float only works by accident.
+
+    A map score wins over EDHREC rank because the map ranks a card against THIS
+    deck while `edhrec_rank` is global popularity that knows nothing about it.
+    That ordering matters more than it looks: ``shape`` CAPS the pool, so
+    sorting on rank here would discard exactly the cards the map ranked highest.
+    """
+    illegal = not card.legal_in_deck
+    if card.brainmap:
+        total = card.brainmap.get("total")
+        if isinstance(total, (int, float)):
+            return (illegal, 0, -float(total))
     rank = card.edhrec_rank if card.edhrec_rank is not None else _RANK_LAST
-    return (not card.legal_in_deck, rank)
+    return (illegal, 1, rank)
 
 
 def shape(
@@ -197,6 +215,24 @@ def _fmt_roles(card: ShapedCard) -> str:
     if card.fine_roles:
         return ", ".join(sorted(card.fine_roles))
     return "—"
+
+
+def _fmt_brainmap(card: ShapedCard) -> str:
+    """Render the brain map's verdict for one card.
+
+    Shows the layer breakdown rather than only the total, because the SHAPE of
+    the score is the useful part: "mechanical 0.75, consensus 0.31" is an
+    underplayed card that genuinely works here, and it should read differently
+    from a staple that everyone runs.
+    """
+    data = card.brainmap
+    if not data:
+        return ""
+    bits = [f"fit {data.get('total', 0):.2f}"]
+    explain = data.get("explain")
+    if explain:
+        bits.append(str(explain))
+    return " | ".join(bits)
 
 
 def _fmt_edhrec(card: ShapedCard) -> str:
@@ -244,6 +280,9 @@ def render_pool(cards: list[ShapedCard]) -> str:
         edhrec = _fmt_edhrec(card)
         if edhrec:
             parts.append(f"EDHREC: {edhrec}")
+        fit = _fmt_brainmap(card)
+        if fit:
+            parts.append(fit)
         if not card.legal_in_deck:
             parts.append(f"ILLEGAL ({'; '.join(card.illegal_reasons)})")
         lines.append(" | ".join(parts))
