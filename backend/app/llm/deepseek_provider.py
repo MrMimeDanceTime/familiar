@@ -120,9 +120,15 @@ class DeepSeekProvider:
         call (the Pro/Flash seam); ``thinking`` toggles reasoning (on by default,
         matching send()).
         """
-        extra_body: dict[str, Any] = {}
-        if thinking:
-            extra_body["thinking"] = {"type": "enabled"}
+        # Always send the flag explicitly, both ways. Omitting it when thinking
+        # is False does NOT disable reasoning — DeepSeek falls back to the
+        # model's own default, which for the v4 family is thinking ENABLED. That
+        # made `thinking=False` a no-op on this path: measured 15.5s for a
+        # stage-1 call with the flag omitted against 1.5s with it explicitly
+        # disabled, for identical output. send() has always done this correctly.
+        extra_body: dict[str, Any] = {
+            "thinking": {"type": "enabled" if thinking else "disabled"}
+        }
 
         try:
             response = self._client.chat.completions.create(

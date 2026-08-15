@@ -182,7 +182,28 @@ def test_deepseek_complete_json_defaults_to_provider_model_and_can_disable_think
 
     call_kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert call_kwargs["model"] == "deepseek-v4-pro"  # no override -> default
-    assert call_kwargs["extra_body"] == {}  # thinking disabled -> no flag
+    # The flag must be sent EXPLICITLY disabled, not omitted. Omitting it lets
+    # DeepSeek fall back to the model's own default, which for the v4 family is
+    # thinking ENABLED — so `thinking=False` silently did nothing. Measured
+    # 15.5s with the flag omitted against 1.5s with it explicitly disabled, on
+    # identical stage-1 input. This assertion previously pinned `== {}`, which
+    # is why the bug survived: it tested the behaviour rather than the intent.
+    assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_complete_json_enables_thinking_explicitly(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+    )
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    provider.complete_json("sys", "user", thinking=True)
+
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
 @patch("app.llm.anthropic_provider.anthropic.Anthropic")
