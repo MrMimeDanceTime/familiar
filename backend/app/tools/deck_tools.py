@@ -339,6 +339,7 @@ def deck_set_plan(
     role_targets: dict | None = None,
     plan_notes: str | None = None,
     off_meta: float | None = None,
+    power_level: str | None = None,
 ) -> dict:
     """Record what the deck is TRYING to be.
 
@@ -377,6 +378,7 @@ def deck_set_plan(
         role_targets=clean_targets,
         plan_notes=plan_notes,
         off_meta=clean_off_meta,
+        power_level=power_level,
     )
     return repo.deck_snapshot(session, deck_id)
 

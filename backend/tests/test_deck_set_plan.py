@@ -149,3 +149,31 @@ def test_tool_requires_only_deck_id():
 
     spec = next(s for s in TOOL_SPECS if s.name == "deck_set_plan")
     assert spec.parameters["required"] == ["deck_id"]
+
+
+# ── Power level drives the targets ───────────────────────────────────────
+
+
+def test_records_power_level(session, deck):
+    """Nothing could set this field before, so the targets always defaulted —
+    a player asking for a 7 got a plan aimed at a 6."""
+    snap = deck_set_plan(session, deck.id, power_level="7")
+    assert snap["power_level"] == "7"
+
+
+def test_power_level_changes_the_targets(session, deck):
+    from app import deckplan
+
+    deck_set_plan(session, deck.id, power_level="7")
+    plan = deckplan.build_plan(deck_get_current(session, deck.id))
+
+    assert plan.targets == deckplan.TARGETS_BY_POWER[7]
+    assert plan.power_level == 7
+
+
+def test_power_level_is_in_the_tool_schema():
+    """The model can only set what the schema exposes."""
+    from app.tools.schemas import TOOL_SPECS
+
+    spec = next(s for s in TOOL_SPECS if s.name == "deck_set_plan")
+    assert "power_level" in spec.parameters["properties"]

@@ -35,15 +35,50 @@ from app.pipeline import roles as role_taxonomy
 # coarse map can currently give.)
 PLANNED_ROLES: tuple[str, ...] = ("land", "ramp", "draw", "removal")
 
-# Rules-of-thumb defaults for a 100-card Commander deck, used only when a deck
-# has no explicit targets. These are starting points to be argued with, not
-# prescriptions — which is why they are overridable per deck.
-DEFAULT_TARGETS: dict[str, int] = {
-    "land": 36,
-    "ramp": 10,
-    "draw": 10,
-    "removal": 8,
+# Targets per power level, derived from the scoring formula in
+# ``deck_tools._estimate_power_level`` rather than invented.
+#
+# The two were previously unrelated, and the mismatch was not subtle: a deck
+# hitting the old defaults (36/10/10/8) EXACTLY scored power 6 and could not
+# reach 7 by any curve. Two bands caused it — 36 lands scores +0.5 where the
+# formula's sweet spot is 33-35 at +1.0, and 8 removal scores +0.5 where 10
+# earns +1.0. So a player asking for a 7 got a plan aiming at a 6, and the
+# build chased targets that capped it below its own goal.
+#
+# Each row is the cheapest configuration reaching that level with a realistic
+# land count, verified against the formula in tests.
+TARGETS_BY_POWER: dict[int, dict[str, int]] = {
+    4: {"land": 35, "ramp": 6, "draw": 5, "removal": 5},
+    5: {"land": 34, "ramp": 8, "draw": 5, "removal": 5},
+    6: {"land": 34, "ramp": 8, "draw": 8, "removal": 8},
+    7: {"land": 34, "ramp": 10, "draw": 12, "removal": 10},
+    8: {"land": 34, "ramp": 12, "draw": 12, "removal": 13},
+    9: {"land": 33, "ramp": 14, "draw": 15, "removal": 15},
 }
+
+# Used when a deck states no power level. Sits mid-range rather than at either
+# extreme, and unlike the old constant it is a row of the same table, so it
+# cannot drift away from what the scorer rewards.
+DEFAULT_POWER = 6
+DEFAULT_TARGETS: dict[str, int] = TARGETS_BY_POWER[DEFAULT_POWER]
+
+
+def targets_for_power(power_level: str | int | None) -> dict[str, int]:
+    """Role targets that actually reach the requested power level.
+
+    Accepts the free-text ``power_level`` a deck stores ("7", "~7", "7-8"),
+    since it is set from conversation rather than a picker.
+    """
+    if power_level is None:
+        return dict(DEFAULT_TARGETS)
+    if isinstance(power_level, str):
+        digits = "".join(c for c in power_level if c.isdigit())
+        if not digits:
+            return dict(DEFAULT_TARGETS)
+        # "7-8" -> take the first number; the lower bound is the commitment.
+        power_level = int(digits[0])
+    nearest = min(TARGETS_BY_POWER, key=lambda k: abs(k - int(power_level)))
+    return dict(TARGETS_BY_POWER[nearest])
 
 
 @dataclass
@@ -73,6 +108,9 @@ class DeckPlan:
     notes: str = ""
     gaps: list[RoleGap] = field(default_factory=list)
     total_cards: int = 0
+    # The power level these targets were derived for, so the numbers can be
+    # explained rather than presented as arbitrary.
+    power_level: int = DEFAULT_POWER
 
     @property
     def unmet(self) -> list[RoleGap]:
@@ -117,7 +155,9 @@ def build_plan(snapshot: dict[str, Any]) -> DeckPlan:
     Falls back to DEFAULT_TARGETS for any role the deck has not set explicitly,
     so a deck with no plan still gets a usable gap view rather than an empty one.
     """
-    targets = dict(DEFAULT_TARGETS)
+    # Start from what the deck's stated power level actually requires, so the
+    # gap view aims at the player's goal instead of a fixed guess.
+    targets = targets_for_power(snapshot.get("power_level"))
     stored = snapshot.get("role_targets")
     if isinstance(stored, dict):
         for role, value in stored.items():
@@ -140,6 +180,15 @@ def build_plan(snapshot: dict[str, Any]) -> DeckPlan:
         for role in PLANNED_ROLES
     ]
 
+    resolved_power = DEFAULT_POWER
+    raw_power = snapshot.get("power_level")
+    if raw_power is not None:
+        digits = "".join(c for c in str(raw_power) if c.isdigit())
+        if digits:
+            resolved_power = min(
+                TARGETS_BY_POWER, key=lambda k: abs(k - int(digits[0]))
+            )
+
     themes = snapshot.get("themes")
     return DeckPlan(
         targets=targets,
@@ -147,6 +196,7 @@ def build_plan(snapshot: dict[str, Any]) -> DeckPlan:
         notes=(snapshot.get("plan_notes") or "").strip(),
         gaps=gaps,
         total_cards=sum((c.get("quantity") or 1) for c in body),
+        power_level=resolved_power,
     )
 
 
@@ -171,9 +221,11 @@ def render_plan(plan: DeckPlan) -> str:
     )
     lines.append(f"Role counts: {shape}")
     lines.append(
-        "(Counts overlap: a card counts toward every role it fills, so a land "
-        "that draws is in both. A role over target is not necessarily bloated. "
-        "Targets are rules of thumb, not requirements.)"
+        f"(Targets are what the power-level scorer actually rewards at power "
+        f"{plan.power_level} — they are derived from the same formula "
+        f"deck_get_stats uses, not rules of thumb. Missing them means the deck "
+        f"scores BELOW its stated power level. Counts overlap: a card counts "
+        f"toward every role it fills, so a land that draws is in both.)"
     )
 
     unmet = plan.unmet

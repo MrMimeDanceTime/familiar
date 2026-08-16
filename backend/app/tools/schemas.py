@@ -366,6 +366,17 @@ TOOL_SPECS: list[ToolSpec] = [
                     "type": "string",
                     "description": "One or two lines on the gameplan and how it wins.",
                 },
+                "power_level": {
+                    "type": "string",
+                    "description": (
+                        "Target power level 1-10, as the player stated it (\"7\", "
+                        "\"~7\", \"7-8\"). SET THIS whenever the player names a "
+                        "power level or bracket — the role targets are derived "
+                        "from it using the same formula deck_get_stats scores "
+                        "with, so leaving it unset silently aims the whole build "
+                        "at the default instead of the player's goal."
+                    ),
+                },
                 "off_meta": {
                     "type": "number",
                     "description": (

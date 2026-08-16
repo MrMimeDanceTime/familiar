@@ -131,7 +131,11 @@ B1 Exhibition — ultra-casual, theme first, 0 game changers, no MLD, no extra
 B2 Core — precon level, still 0 game changers, extra turns limited, no 2-card
    infinite combos.
 B3 Upgraded — UP TO 3 game changers, extra turns limited, 2-card combos only
-   as a late-game (turn 7+) plan, no MLD.
+   as a late-game (turn 7+) plan, no MLD. A deck with ZERO game changers still
+   computes as B3 when its fundamentals are tuned: deck_get_stats reads that as
+   average MV <= 2.5 with at least 10 ramp AND at least 10 interaction. Below
+   that it computes B2, so a "Bracket 3" request with a slow curve or thin
+   interaction lands at 2 no matter how strong the cards are.
 B4 Optimized — no game-changer limit (4+ in practice), OR MLD, OR a fast-combo
    profile (2+ GCs with a low curve + fast mana); heavy interaction, short of
    cEDH meta.
@@ -294,6 +298,17 @@ what most decks with this commander run, at 1 they favour cards specific to
 this commander that few decks play. Default is 0.25. Raise it when the player
 wants their build to feel distinctive or says they dislike netdecked lists;
 lower it when they want something proven.
+
+SET power_level WHENEVER THE PLAYER NAMES ONE. The role targets are derived
+from it using the same formula deck_get_stats scores with, so an unset power
+level aims the entire build at the default rather than the player's goal. "I
+want a 7" and "bracket 3" both mean: call deck_set_plan with power_level.
+
+The targets are not rules of thumb to negotiate with — they are what the scorer
+rewards. Missing them means the deck computes BELOW the level the player asked
+for, however good the cards are. If the player wants targets that contradict
+their stated power level (say 40 lands at power 7), build what they asked for,
+but say plainly that it will score lower and why.
 </the_plan>
 
 <proposal_discipline>

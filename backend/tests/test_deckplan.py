@@ -369,3 +369,101 @@ def test_missing_score_does_not_break_the_change():
 
     changes = selection_to_changes(Selection(picks=[Pick("Unknown", "why")]), None, {})
     assert "scores" not in changes[0]
+
+
+# ── Targets must agree with the power formula ────────────────────────────
+#
+# These were two unrelated systems. The plan's targets were rules of thumb I
+# invented; the power level is computed by a banded formula in deck_tools. They
+# disagreed in a way that mattered: a deck hitting the old defaults exactly
+# (36 land / 10 ramp / 10 draw / 8 removal) scored power 6 and could NOT reach
+# 7 by any curve. A player asking for a 7 got a plan aiming at a 6.
+#
+# Two bands caused it: 36 lands scores +0.5 where the formula's sweet spot is
+# 33-35 at +1.0, and 8 removal scores +0.5 where 10 earns +1.0.
+
+
+import pytest as _pytest
+
+from app.deckplan import DEFAULT_POWER, TARGETS_BY_POWER, targets_for_power
+
+
+@_pytest.mark.parametrize("level", sorted(TARGETS_BY_POWER))
+def test_targets_actually_score_their_power_level(level):
+    """The contract: hitting a row's targets scores that row's level.
+
+    This is the test that would have caught the original mismatch.
+    """
+    from app.tools.deck_tools import _estimate_power_level
+
+    t = TARGETS_BY_POWER[level]
+    scored, factors = _estimate_power_level(
+        2.8, t["land"], t["ramp"], t["draw"], t["removal"], 100
+    )
+    assert scored == level, (
+        f"power {level} targets {t} score {scored}, not {level}. "
+        f"Factors: {factors}"
+    )
+
+
+def test_power_seven_targets_reach_bracket_three():
+    """Bracket 3 without a Game Changer needs mv <= 2.5, ramp >= 10, and
+    interaction >= 10. The old 8-removal target missed that by two cards, so a
+    "Bracket 3 / power 7" request could hit neither."""
+    from app.tools.deck_tools import _estimate_bracket
+
+    t = TARGETS_BY_POWER[7]
+    bracket, _ = _estimate_bracket(
+        set(), 2.5, t["land"], t["ramp"], t["removal"], {}, 100
+    )
+    assert bracket >= 3
+
+
+def test_higher_power_never_asks_for_less():
+    """A monotonic ladder: a higher power level must not require fewer cards in
+    any role, or the plan would tell a player to cut to level up."""
+    levels = sorted(TARGETS_BY_POWER)
+    for lower, higher in zip(levels, levels[1:]):
+        for role in ("ramp", "draw", "removal"):
+            assert TARGETS_BY_POWER[higher][role] >= TARGETS_BY_POWER[lower][role], (
+                f"{role}: power {higher} asks for less than power {lower}"
+            )
+
+
+def test_targets_for_power_parses_free_text():
+    """power_level is set from conversation, not a picker, so it arrives as
+    whatever the model wrote."""
+    expected = TARGETS_BY_POWER[7]
+    for value in ("7", "~7", "7-8", "power 7", 7):
+        assert targets_for_power(value) == expected, value
+
+
+def test_targets_for_power_falls_back_without_a_level():
+    assert targets_for_power(None) == TARGETS_BY_POWER[DEFAULT_POWER]
+    assert targets_for_power("unset") == TARGETS_BY_POWER[DEFAULT_POWER]
+
+
+def test_out_of_range_power_clamps_to_nearest():
+    assert targets_for_power(11) == TARGETS_BY_POWER[max(TARGETS_BY_POWER)]
+    assert targets_for_power(1) == TARGETS_BY_POWER[min(TARGETS_BY_POWER)]
+
+
+def test_plan_uses_the_decks_stated_power_level():
+    """The gap view must aim at the player's goal, not a fixed guess."""
+    plan = build_plan(_snapshot([], power_level="7"))
+    assert plan.targets == TARGETS_BY_POWER[7]
+    assert plan.power_level == 7
+
+
+def test_explicit_role_targets_still_override():
+    """A deck that states its own numbers keeps them, power level or not."""
+    plan = build_plan(_snapshot([], power_level="7", role_targets={"land": 38}))
+    assert plan.targets["land"] == 38
+    assert plan.targets["ramp"] == TARGETS_BY_POWER[7]["ramp"]
+
+
+def test_rendered_plan_explains_where_targets_come_from():
+    """The model previously treated targets as arbitrary and negotiated with
+    them; it should know missing them means scoring below the stated level."""
+    text = render_plan(build_plan(_snapshot([], power_level="7")))
+    assert "power-level scorer" in text or "power 7" in text
