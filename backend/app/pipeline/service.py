@@ -45,6 +45,11 @@ def _timed(stage: str, timings: dict[str, float]):
         level = logging.WARNING if dt > 20 else logging.INFO
         logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
 
+from app import deckplan
+from app.brainmap import layers as brain_layers
+from app.brainmap import map as brain_map
+from app.cards import schema as card_schema
+from app.cards import store as card_store
 from app.db import repository as repo
 from app.knowledge.tag_lookup import get_tag_lookup
 from app.pipeline import candidates as candidates_stage
@@ -159,20 +164,95 @@ def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
         lines.append("")
         lines.append(f"Strategy notes: {notes}")
 
+    # The plan: targets, direction, and what the deck is still short on. Without
+    # this the model can only see what the deck CONTAINS and has to guess what it
+    # WANTS, so a suggestion aimed at a filled role looked as good as one filling
+    # a gap.
+    plan = deckplan.build_plan(snapshot)
+    lines.append("")
+    lines.append(deckplan.render_plan(plan))
+
+    # Why the existing cards are there. Each card's stored note is the reasoning
+    # from the proposal that added it, so the model can build on prior decisions
+    # instead of re-deriving them.
+    rationale = deckplan.render_card_rationale(snapshot.get("cards", []))
+    if rationale:
+        lines.append("")
+        lines.append(rationale)
+
     return "\n".join(lines)
+
+
+def _deck_off_meta(snapshot: dict[str, Any]) -> float:
+    """How far off-consensus this deck wants to be, 0.0 to 1.0.
+
+    Defaults to 0.25: mostly follows what people play, but leans far enough
+    toward commander-specific synergy that two decks on the same commander do
+    not return identical pools. A deck can set its own value.
+    """
+    value = snapshot.get("off_meta")
+    if isinstance(value, (int, float)):
+        return max(0.0, min(1.0, float(value)))
+    return 0.25
+
+
+def _apply_brain_map(
+    session: Session,
+    pool: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+    identity: frozenset[str],
+    deck_id: int,
+    off_meta: float,
+) -> list[dict[str, Any]]:
+    """Rank the pool through the brain map before it is capped.
+
+    Order matters: shaping caps the pool, so scoring has to happen first or the
+    cap would discard cards the map would have ranked highest. Fully guarded —
+    a scoring failure leaves the pool in its original order, which is the
+    pre-brain-map behaviour and still perfectly usable.
+    """
+    try:
+        context = brain_layers.ScoringContext(
+            commander=snapshot.get("commander"),
+            identity=identity,
+            themes=[t for t in (snapshot.get("themes") or []) if t],
+            deck_card_names=frozenset(
+                (c.get("name") or "").lower() for c in snapshot.get("cards", [])
+            ),
+            deck_id=deck_id,
+        )
+        ranked = brain_map.score_pool(
+            pool, context,
+            store=card_store, engine=session.get_bind(), off_meta=off_meta,
+        )
+        return brain_map.annotate_pool(pool, ranked)
+    except Exception as exc:  # noqa: BLE001 — ranking is an improvement, not a precondition
+        logger.warning("brain map scoring failed, using unranked pool: %s", exc)
+        return pool
 
 
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
-    cards. Reads the shared tag cache once; a card absent from it gets no tags
-    (shaping still assigns the land role from its type line)."""
+    cards.
+
+    Reads the local card index, which stores taggings as rows, so this touches
+    the few dozen cards in the pool instead of rebuilding a ~229k-entry dict in
+    memory on first call. Falls back to the legacy gzip-backed lookup when the
+    index hasn't been built yet (first run, or a failed refresh) so a cold start
+    still produces roles rather than an untagged pool.
+    """
+    oracle_ids = [c.get("oracle_id") for c in pool if c.get("oracle_id")]
+    if not oracle_ids:
+        return {}
+
+    try:
+        if card_schema.tag_count() > 0:
+            return card_store.tags_for_many(oracle_ids)
+    except Exception as exc:  # noqa: BLE001 — index problems must not sink retrieval
+        logger.warning("card index tag lookup failed, falling back to bulk cache: %s", exc)
+
     lookup = get_tag_lookup()
-    tags: dict[str, set[str]] = {}
-    for card in pool:
-        oid = card.get("oracle_id")
-        if oid and oid not in tags:
-            tags[oid] = lookup.get(oid, set())
-    return tags
+    return {oid: lookup.get(oid, set()) for oid in oracle_ids}
 
 
 def build_suggestions(
@@ -191,6 +271,7 @@ def build_suggestions(
     max_picks: int = 10,
     scryfall: Any | None = None,
     edhrec: Any | None = None,
+    off_meta: float | None = None,
 ) -> SuggestionResult:
     """Run the full retrieval pipeline for a deck and intent.
 
@@ -236,24 +317,35 @@ def build_suggestions(
         )
 
     with _timed("stage2_candidates", timings):
-        pool = candidates_stage.gather_candidates(
+        gathered = candidates_stage.gather_candidates_detailed(
             spec, snapshot.get("commander"),
             scryfall=scryfall, edhrec=edhrec,
+            identity=identity,
+            off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
         )
+        pool = gathered.cards
 
     with _timed("stage3_shape", timings):
+        pool = _apply_brain_map(
+            session, pool, snapshot, identity, deck_id,
+            off_meta if off_meta is not None else _deck_off_meta(snapshot),
+        )
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
     with _timed("stage4_select", timings):
+        from app.config import settings
+
         selection = selection_stage.select(
             provider, shaped, user_intent,
             model=model, max_picks=max_picks, thinking=select_thinking,
             deck_context=_render_deck_context(snapshot),
+            reasoning_effort=settings.select_reasoning_effort or None,
         )
 
     debug = {
         "queries": spec.queries,
         "intent_summary": spec.intent_summary,
+        "broadened": gathered.broadened,
         "pool_size": len(pool),
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),
@@ -270,10 +362,20 @@ def build_suggestions(
             summary=selection.summary, proposals=[], selection=selection, debug=debug,
         )
 
+    # The brain map's verdict per card, so the review surface can show why a
+    # pick scored the way it did. Built from the shaped pool because that is
+    # the last point the scores and the card names are together.
+    scores_by_name = {
+        card.name.lower(): card.brainmap
+        for card in shaped
+        if card.name and card.brainmap
+    }
+
     with _timed("stage5_validate", timings):
         result = validate_to_proposals(
             session, deck_id, selection,
             conversation_id=conversation_id, message_id=message_id,
+            scores_by_name=scores_by_name,
         )
     logger.info(
         "pipeline: done in %.2fs timings=%s",

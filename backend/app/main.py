@@ -1,4 +1,5 @@
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,8 @@ from sqlmodel import Session
 
 from app.api import chat, conversations, decks, preferences
 from app.backup import run_startup_backup
+from app.cards import importer as card_importer
+from app.cards import schema as card_schema
 from app.config import settings
 from app.db import repository as repo
 from app.db.session import get_engine, init_db
@@ -53,11 +56,35 @@ def _reconcile_turns() -> None:
         logger.exception("Turn reconciliation failed; continuing startup")
 
 
+def _refresh_card_index() -> None:
+    """Refresh the local Scryfall card index in the background.
+
+    A cold import is ~15s (38k cards + 230k taggings), which would block the
+    app from serving on every stale start, so it runs off the startup path in a
+    daemon thread. A stale index is still a usable index and the pipeline falls
+    back to the Scryfall API when a card is missing, so nothing here is on the
+    critical path. Fully guarded: an import failure leaves the existing index
+    in place and the app serves either way.
+    """
+    card_schema.ensure_schema()
+    if not settings.card_index_refresh_on_startup:
+        return
+
+    def _run() -> None:
+        try:
+            card_importer.refresh_if_stale()
+        except Exception:  # noqa: BLE001
+            logger.exception("Card index refresh failed; continuing with existing index")
+
+    threading.Thread(target=_run, name="card-index-refresh", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     _ensure_fts()
     seed_knowledge_base()
+    _refresh_card_index()
     # Off-machine backup to pCloud (no-ops unless configured). Runs at startup
     # so it captures the prior session even after a hard crash; fully guarded
     # so a backup failure never blocks the app from serving.

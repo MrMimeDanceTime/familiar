@@ -70,14 +70,16 @@ class AnthropicProvider:
         *,
         model: str | None = None,
         thinking: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Single-shot JSON completion for the retrieval pipeline's stage-1/4.
 
         Anthropic has no response_format=json_object, so we force JSON the
         idiomatic way: prefill the assistant turn with ``{`` and re-prepend it to
-        the reply. ``thinking`` is accepted for a provider-neutral signature but
-        ignored — Anthropic reasoning is a separate mechanism the chat loop
-        doesn't use here. ``model`` overrides the provider default per call.
+        the reply. ``thinking`` and ``reasoning_effort`` are accepted for a
+        provider-neutral signature but ignored — Anthropic reasoning is a
+        separate mechanism the chat loop doesn't use here. ``model`` overrides
+        the provider default per call.
         """
         response = self._client.messages.create(
             model=model or self._model,

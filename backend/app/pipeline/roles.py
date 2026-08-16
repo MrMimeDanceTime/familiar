@@ -152,32 +152,45 @@ _SLUG_RULES: dict[str, tuple[frozenset[str], tuple[str, ...], tuple[str, ...]]] 
         frozenset({"tutor", "transmute"}),
         ("tutor-",), ("-tutor",),
     ),
+    # The slugs below are verified against the bulk export, not guessed. Tagger's
+    # vocabulary is a hierarchy and the export ships ONLY leaf taggings, so the
+    # obvious concept names (`recursion`, `protection`, `sacrifice-outlet`)
+    # resolve on Scryfall's API but match zero rows locally. Audited 2026-08-15:
+    # the previous guessed names left `protection` and `graveyard-hate` matching
+    # nothing at all, and `sacrifice-outlet`/`aristocrats` matching one slug
+    # each. See tests/test_pipeline_roles.py, which fails if a rule stops
+    # matching real data.
     RECURSION: (
-        frozenset({"recursion", "reanimation", "reanimator", "graveyard-recursion",
-                   "self-recursion", "regrowth"}),
-        (), ("-recursion",),
+        frozenset({"regrowth"}),
+        ("recursion-", "reanimate-", "reanimation-"),
+        ("-recursion", "-reanimation"),
     ),
     GRAVEYARD_HATE: (
-        frozenset({"graveyard-hate", "grave-hate"}),
-        (), (),
+        frozenset({"hate-graveyard", "graveyard-hate", "grave-hate"}),
+        ("hate-graveyard-",), (),
     ),
     ARISTOCRATS: (
-        frozenset({"aristocrats", "death-trigger", "death-matters",
-                   "dies-trigger", "payoff-sacrifice"}),
-        (), (),
+        frozenset({"aristocrats", "death-matters", "dies-trigger",
+                   "payoff-sacrifice", "your-sacrifice-matters"}),
+        ("death-trigger",), ("-death-trigger",),
     ),
     SACRIFICE_OUTLET: (
-        frozenset({"sacrifice-outlet", "free-sacrifice-outlet"}),
-        (), (),
+        frozenset({"sacrifice-outlet", "free-sacrifice-outlet",
+                   "repeatable-sacrifice-outlet"}),
+        ("sacrifice-outlet-",), ("-sacrifice-outlet",),
     ),
     TOKENS: (
         frozenset({"tokens", "token", "token-maker", "go-wide", "populate"}),
-        ("token-",), ("-tokens",),
+        ("token-", "repeatable-creature-tokens", "repeatable-artifact-tokens"),
+        ("-token", "-tokens"),
     ),
     PROTECTION: (
-        frozenset({"protection", "hexproof", "indestructible", "phase-out",
-                   "flicker-protection", "protect-your-stuff"}),
-        (), (),
+        frozenset({"protection", "phase-out", "flicker-protection",
+                   "protect-your-stuff"}),
+        ("protects-", "gives-protection", "gives-hexproof",
+         "gives-indestructible", "gains-hexproof", "gains-indestructible",
+         "gains-protection"),
+        (),
     ),
     LAND: (
         frozenset({"land"}),

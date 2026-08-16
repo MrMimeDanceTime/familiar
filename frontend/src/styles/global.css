@@ -2516,3 +2516,103 @@ body.has-pinned-tray .deck-detail {
   }
 }
 
+
+/* ── Proposal review: scores and denial reasons ─────────────────────────
+ *
+ * The score bars show the SHAPE of a recommendation, not just its total. A
+ * card everyone plays and a card that uniquely fits this commander can reach
+ * the same score by opposite routes, and that difference is what a player
+ * actually wants when deciding whether to keep it.
+ */
+
+.proposal-scores {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 10px;
+}
+
+.proposal-score {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.proposal-score__label {
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.proposal-score__track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent-bg);
+  overflow: hidden;
+}
+
+.proposal-score__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 160ms ease-out;
+}
+
+/* Distinct hues per layer so the shape reads at a glance rather than needing
+ * the labels to be parsed. */
+.proposal-score__fill--consensus { background: var(--accent); opacity: 0.55; }
+.proposal-score__fill--mechanical { background: var(--accent); }
+.proposal-score__fill--personal { background: var(--accent); opacity: 0.8; }
+
+.proposal-card__explain {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  margin: 0 0 12px;
+  opacity: 0.85;
+}
+
+.proposal-card__deny-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.proposal-card__deny-prompt {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.proposal-card__deny-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn--chip {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn--chip:hover:not(:disabled) {
+  background: var(--accent-bg);
+}
+
+.btn--chip-muted {
+  color: var(--text-dim);
+  border-style: dashed;
+}
+
+.proposal-card__explain--none {
+  font-style: italic;
+  opacity: 0.6;
+}

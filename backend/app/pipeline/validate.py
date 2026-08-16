@@ -25,7 +25,9 @@ from app.tools.deck_tools import propose_deck_changes
 
 
 def selection_to_changes(
-    selection: Selection, deck_card_names: set[str] | None = None
+    selection: Selection,
+    deck_card_names: set[str] | None = None,
+    scores_by_name: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Translate a Selection into the change dicts propose_deck_changes expects.
 
@@ -33,20 +35,30 @@ def selection_to_changes(
     model's one-line justification through to the proposal row so the UI can show
     why each card was suggested.
 
+    ``scores_by_name`` (lowercased card name -> brain-map verdict) rides along so
+    the review surface can show WHY a card scored well, not just that the model
+    liked it. It is attached here rather than recomputed at render time because
+    the pool the card was scored against no longer exists by then.
+
     Cuts are hallucination-guarded: when ``deck_card_names`` (lowercased) is given,
     a cut naming a card not in the deck is dropped rather than forwarded. Without
     this guard a single bogus cut makes propose_deck_changes raise and sinks the
     entire batch of good adds — so the guard is what keeps one bad remove from
     collapsing the whole suggestion.
     """
+    scores_by_name = scores_by_name or {}
     changes: list[dict[str, Any]] = []
     for pick in selection.picks:
-        changes.append({
+        change: dict[str, Any] = {
             "action": "add",
             "card_name": pick.name,
             "quantity": 1,
             "reasoning": pick.reason,
-        })
+        }
+        verdict = scores_by_name.get(pick.name.lower())
+        if verdict:
+            change["scores"] = verdict
+        changes.append(change)
     for cut in selection.cuts:
         if deck_card_names is not None and cut.name.lower() not in deck_card_names:
             continue
@@ -66,6 +78,7 @@ def validate_to_proposals(
     conversation_id: int | None = None,
     message_id: int | None = None,
     summary: str | None = None,
+    scores_by_name: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """Turn a Selection into pending proposals via the shared proposal path.
 
@@ -79,7 +92,7 @@ def validate_to_proposals(
     from app.db import repository as repo
 
     deck_names = {c.card_name.lower() for c in repo.list_deck_cards(session, deck_id)}
-    changes = selection_to_changes(selection, deck_names)
+    changes = selection_to_changes(selection, deck_names, scores_by_name)
     if not changes:
         return {"ok": True, "summary": summary or selection.summary, "proposals": []}
 

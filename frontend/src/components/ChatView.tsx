@@ -11,7 +11,7 @@ interface ProposalBatchBlockProps {
   isStreaming: boolean
   isDismissed: boolean
   onApply: (id: number) => Promise<void>
-  onDeny: (id: number) => Promise<void>
+  onDeny: (id: number, reason?: string) => Promise<void>
   onContinue: () => void
 }
 
@@ -79,7 +79,7 @@ interface ChatViewProps {
   onSend: (text: string) => void
   proposalBatches: ProposalBatch[]
   onApplyProposal: (id: number) => Promise<void>
-  onDenyProposal: (id: number) => Promise<void>
+  onDenyProposal: (id: number, reason?: string) => Promise<void>
   cardNames: string[]
 }
 

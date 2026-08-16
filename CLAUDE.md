@@ -18,6 +18,27 @@ Claude Code on this repo.
 
 ## Conventions
 
+- **Touching scoring? Run the coverage report.** Any change to
+  `app/brainmap/`, `app/cards/` (index, tags, co-occurrence), or
+  `app/pipeline/candidates.py` changes how much of a candidate pool the brain
+  map can actually score. Measure it:
+
+  ```
+  cd backend && .venv\Scripts\python.exe tools/coverage_report.py
+  ```
+
+  It compares against `tools/coverage_baseline.json`, prints a per-deck delta,
+  and exits non-zero if mechanical coverage dropped on any deck. A single total
+  hides the failure that matters — a change that helps one deck and craters
+  another looks fine in aggregate. When a drop is intended, say why and re-run
+  with `--save` to move the baseline; the diff of the numbers belongs in the
+  commit. Never `--save` to silence a drop you have not explained.
+
+  History for why this exists: the first mechanical layer used a hand-written
+  theme list and scored **4%** of pooled cards, with five of eleven decks at
+  exactly zero. Nothing caught that for two stages, because nobody was
+  measuring.
+
 - No comments explaining *what* code does; only for non-obvious *why* (see
   the `provider_native` slicing comment in `engine.py` as the model).
 - Don't add migration tooling (Alembic etc.) — single-user local SQLite.

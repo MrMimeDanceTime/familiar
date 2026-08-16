@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     # beats reasoning depth. Not used by the chat loop, which runs on the default.
     deepseek_model_fast: str = "deepseek-v4-flash"
 
+    # How hard the selection stage is allowed to think: "low", "medium", "high",
+    # or empty for the provider default.
+    #
+    # Stage-4 latency is dominated by OUTPUT volume, not prompt size — measured
+    # over repeated samples, a thinking call emits a median 9,476 completion
+    # tokens against 489 without, and at ~90 tok/s that is the entire wait.
+    # Shrinking the prompt does nothing (halving it measured slightly slower).
+    # On an identical pool: provider default 93.2s median, "medium" 73.7s,
+    # "low" 40.8s — and "low" returned the same theme-aware picks, including
+    # both changelings that trigger the commander twice.
+    #
+    # "low" is the default here because a suggestion is interactive and 40s beats
+    # 93s for output that graded the same. Set empty to restore provider default.
+    select_reasoning_effort: str = "low"
+
     # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
     # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a
     # slow thinking-mode pipeline call). Cap it so a stalled request fails fast
@@ -46,6 +61,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     familiar_db_path: str = "familiar.db"
+
+    # Refresh the local Scryfall card index on startup, in a background thread.
+    # Turned off under test so the suite never reaches the network; a test that
+    # needs an index builds one explicitly.
+    card_index_refresh_on_startup: bool = True
 
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24

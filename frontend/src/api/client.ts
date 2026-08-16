@@ -92,8 +92,12 @@ export const api = {
   applyProposal: (proposalId: number): Promise<Deck> =>
     fetch(`/api/decks/proposals/${proposalId}/apply`, { method: 'POST' }).then((r) => asJson<Deck>(r)),
 
-  denyProposal: (proposalId: number): Promise<{ ok: boolean }> =>
-    fetch(`/api/decks/proposals/${proposalId}/deny`, { method: 'POST' }).then((r) => asJson<{ ok: boolean }>(r)),
+  denyProposal: (proposalId: number, reason?: string): Promise<{ ok: boolean }> =>
+    fetch(`/api/decks/proposals/${proposalId}/deny`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason ?? null }),
+    }).then((r) => asJson<{ ok: boolean }>(r)),
 
   getPreferences: (): Promise<UserPreferences> =>
     fetch('/api/preferences').then((r) => asJson<UserPreferences>(r)),

@@ -26,6 +26,7 @@ DECK_MUTATION_TOOLS = {
     "deck_remove_card",
     "deck_set_commander",
     "deck_update_notes",
+    "deck_set_plan",
 }
 
 PROPOSAL_TOOLS = {
@@ -47,6 +48,7 @@ DECK_SCOPED_TOOLS = {
     "deck_remove_card",
     "deck_set_commander",
     "deck_update_notes",
+    "deck_set_plan",
     "propose_deck_changes",
     "withdraw_pending_proposals",
     "suggest_cards",
@@ -189,6 +191,7 @@ SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "deck_remove_card": deck_tools.deck_remove_card,
     "deck_set_commander": deck_tools.deck_set_commander,
     "deck_update_notes": deck_tools.deck_update_notes,
+    "deck_set_plan": deck_tools.deck_set_plan,
     "propose_deck_changes": deck_tools.propose_deck_changes,
     "withdraw_pending_proposals": deck_tools.withdraw_pending_proposals,
 }

@@ -184,6 +184,10 @@ def update_deck(
     notes: str | None = None,
     power_level: str | None = None,
     format: str | None = None,
+    role_targets: dict | None = None,
+    themes: list | None = None,
+    plan_notes: str | None = None,
+    off_meta: float | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -200,6 +204,14 @@ def update_deck(
         deck.power_level = power_level
     if format is not None:
         deck.format = format
+    if role_targets is not None:
+        deck.role_targets = role_targets
+    if themes is not None:
+        deck.themes = themes
+    if plan_notes is not None:
+        deck.plan_notes = plan_notes
+    if off_meta is not None:
+        deck.off_meta = off_meta
     deck.updated_at = _utcnow()
     session.add(deck)
     session.commit()
@@ -396,6 +408,12 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "notes": deck.notes,
         "power_level": deck.power_level,
         "format": deck.format,
+        # The deck plan: targets and direction, so consumers can see what the
+        # deck is trying to be rather than re-inferring it from the card list.
+        "role_targets": deck.role_targets or {},
+        "themes": deck.themes or [],
+        "plan_notes": deck.plan_notes,
+        "off_meta": deck.off_meta,
         "conversation_id": linked.id if linked else None,
         "total_cards": total_cards,
         "cards": [
@@ -510,12 +528,16 @@ def apply_proposal(session: Session, proposal_id: int) -> dict | None:
         return None
 
     if proposal.action == "add":
+        # Carry the proposal's reasoning onto the card. Stage 4 already writes a
+        # per-pick justification and it was discarded at approval, so the deck
+        # could never answer "why is this card here" without another LLM call.
         deck_tools.deck_add_card(
             session,
             deck_id=proposal.deck_id,
             card_name=proposal.card_name,
             qty=proposal.quantity,
             category=proposal.category,
+            notes=proposal.reasoning or None,
         )
     elif proposal.action == "remove":
         deck_tools.deck_remove_card(
@@ -535,11 +557,22 @@ def apply_proposal(session: Session, proposal_id: int) -> dict | None:
     return deck_snapshot(session, proposal.deck_id)
 
 
-def deny_proposal(session: Session, proposal_id: int) -> bool:
+def deny_proposal(
+    session: Session, proposal_id: int, reason: str | None = None
+) -> bool:
+    """Deny a pending proposal, optionally recording WHY.
+
+    The reason is the difference between a boolean and a usable signal. "No"
+    and "not this one, wrong slot" mean different things: the first says
+    nothing generalisable, the second says the card was fine but the deck
+    didn't need that role. The learning loop can only act on the second.
+    """
     proposal = get_proposal(session, proposal_id)
     if not proposal or proposal.status != "pending":
         return False
     proposal.status = "denied"
+    if reason:
+        proposal.denial_reason = reason.strip()[:200] or None
     session.add(proposal)
     session.commit()
     return True

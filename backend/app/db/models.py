@@ -52,6 +52,21 @@ class Deck(SQLModel, table=True):
     power_nuance_adj: float | None = None
     power_nuance_reason: str | None = None
     power_nuance_key: str | None = None
+    # The deck plan: what this deck is TRYING to be, as opposed to what it
+    # currently is. Without it every suggestion starts cold — the model saw a
+    # list of card names and had to re-infer the plan from them each call.
+    #
+    # `role_targets` is {role: count} ("ramp": 10, "interaction": 8). `themes`
+    # is a list of direction strings the deck is built around. Both are JSON
+    # because they are read and written whole, never queried by element.
+    role_targets: dict | None = Field(default=None, sa_column=Column(JSON))
+    themes: list | None = Field(default=None, sa_column=Column(JSON))
+    plan_notes: str | None = None
+    # How far off-consensus to build, 0.0 to 1.0. Trades EDHREC play rate
+    # against commander-specific synergy when ranking recommendations: at 0 the
+    # deck gets what everyone plays, at 1 it gets what is specific to this
+    # commander even when few decks run it. Defaults to 0.25 when unset.
+    off_meta: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -89,6 +104,16 @@ class DeckProposal(SQLModel, table=True):
     category: str | None = None
     commander_name: str | None = None
     reasoning: str = ""
+    # The brain map's verdict for this card: per-layer scores plus the
+    # one-line explanation. Stored on the proposal rather than recomputed at
+    # render time because the pool it was scored against is gone by the time
+    # the player reviews, and "why did it suggest this" has to answer with what
+    # the model actually saw.
+    scores: dict | None = Field(default=None, sa_column=Column(JSON))
+    # Why a denial happened. A bare boolean is a weak signal — "no" and "not
+    # this one, wrong slot" mean different things to the learning loop, and
+    # only the second is worth generalising from.
+    denial_reason: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 
