@@ -242,3 +242,40 @@ def test_deepseek_send_parses_plain_text_no_tools(mock_openai_cls):
 
     assert turn.text == "It's sunny."
     assert turn.tool_calls == []
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_complete_json_caps_reasoning_effort(mock_openai_cls):
+    """Stage-4 latency is dominated by OUTPUT volume, not prompt size: a
+    thinking call emits a median 9,476 completion tokens against 489 without,
+    and at ~90 tok/s that is the whole wait. `reasoning_effort` is the only
+    lever that moves it (`budget_tokens` is silently ignored by the API)."""
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+    )
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    provider.complete_json("sys", "user", thinking=True, reasoning_effort="low")
+
+    extra = mock_client.chat.completions.create.call_args.kwargs["extra_body"]
+    assert extra["thinking"] == {"type": "enabled"}
+    assert extra["reasoning_effort"] == "low"
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_reasoning_effort_is_not_sent_when_thinking_is_off(mock_openai_cls):
+    """Capping reasoning is meaningless when there is no reasoning, and sending
+    both flags together is a contradiction the API should never see."""
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+    )
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    provider.complete_json("sys", "user", thinking=False, reasoning_effort="low")
+
+    extra = mock_client.chat.completions.create.call_args.kwargs["extra_body"]
+    assert extra == {"thinking": {"type": "disabled"}}

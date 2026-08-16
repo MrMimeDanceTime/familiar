@@ -333,10 +333,13 @@ def build_suggestions(
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
     with _timed("stage4_select", timings):
+        from app.config import settings
+
         selection = selection_stage.select(
             provider, shaped, user_intent,
             model=model, max_picks=max_picks, thinking=select_thinking,
             deck_context=_render_deck_context(snapshot),
+            reasoning_effort=settings.select_reasoning_effort or None,
         )
 
     debug = {

@@ -42,7 +42,7 @@ class TwoStageProvider:
         self._stage4 = json.dumps(stage4)
         self.calls = []
 
-    def complete_json(self, system, user, *, model=None, thinking=True):
+    def complete_json(self, system, user, *, model=None, thinking=True, reasoning_effort=None):
         self.calls.append({"system": system, "user": user, "model": model})
         if "query-planning stage" in system:
             return self._stage1

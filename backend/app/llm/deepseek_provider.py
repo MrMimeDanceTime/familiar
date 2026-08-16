@@ -111,6 +111,7 @@ class DeepSeekProvider:
         *,
         model: str | None = None,
         thinking: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Single-shot JSON completion for the retrieval pipeline's stage-1/4.
 
@@ -129,6 +130,20 @@ class DeepSeekProvider:
         extra_body: dict[str, Any] = {
             "thinking": {"type": "enabled" if thinking else "disabled"}
         }
+
+        # Cap how long it reasons. Latency here is dominated by OUTPUT volume,
+        # not prompt size: measured over repeated samples, a thinking selection
+        # call emits a median 9,476 completion tokens against 489 without, and
+        # at ~90 tok/s that IS the whole 93s. Shrinking the prompt does nothing
+        # (halving it measured slightly slower).
+        #
+        # `reasoning_effort` is honoured; `budget_tokens` is silently ignored.
+        # On the same pool: default 93.2s median, medium 73.7s, low 40.8s — and
+        # low returned the same theme-aware picks including both changelings
+        # that trigger the commander twice. Off by default so behaviour is
+        # unchanged unless configured.
+        if thinking and reasoning_effort:
+            extra_body["reasoning_effort"] = reasoning_effort
 
         try:
             response = self._client.chat.completions.create(

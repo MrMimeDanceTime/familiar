@@ -158,6 +158,7 @@ def select(
     max_picks: int = 10,
     thinking: bool = True,
     deck_context: str = "",
+    reasoning_effort: str | None = None,
 ) -> Selection:
     """Run stage 4: prompt the provider with the curated pool, parse+repair its
     JSON into a validated Selection.
@@ -165,9 +166,18 @@ def select(
     ``deck_context`` gives the model the commander + current deck so it can judge
     fit/synergy against this specific deck (the one thing Python can't do). This
     is the stage where deck-aware reasoning happens, so with real context present
-    ``thinking=True`` earns its cost."""
+    ``thinking=True`` earns its cost.
+
+    ``reasoning_effort`` caps how long it thinks. Latency here is dominated by
+    output volume (a thinking call emits ~9.5k completion tokens against ~490
+    without), so this is the only lever that moves it — shrinking the prompt
+    measured no faster. "low" roughly halves the wait for picks that graded the
+    same."""
     system, user = build_prompt(
         pool, user_intent, max_picks=max_picks, deck_context=deck_context
     )
-    raw = provider.complete_json(system, user, model=model, thinking=thinking)
+    raw = provider.complete_json(
+        system, user, model=model, thinking=thinking,
+        reasoning_effort=reasoning_effort,
+    )
     return parse_selection(raw, pool, max_picks=max_picks)

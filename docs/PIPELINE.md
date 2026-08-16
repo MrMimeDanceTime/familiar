@@ -169,7 +169,27 @@ The two LLM stages are **not symmetric**, and the defaults reflect that
   (`_render_deck_context`) and reasons about combos/synergy, so thinking earns
   its cost. It stays on the fast model to keep latency sane.
 
-Both default to the provider's fast model (`get_fast_model()` →
+**Stage-4 latency is dominated by OUTPUT volume, not prompt size.** Measured over
+repeated samples on an identical pool: a thinking selection call emits a median
+**9,476 completion tokens** against 489 without, and at ~90 tok/s that generation
+*is* the whole wait. Shrinking the prompt does nothing — halving it measured
+slightly *slower*.
+
+The only lever that moves it is `reasoning_effort` (`budget_tokens` is silently
+ignored by the API). On the same pool:
+
+| Effort | Median latency |
+|---|---|
+| provider default | 93.2s |
+| `medium` | 73.7s |
+| `low` | 40.8s |
+
+`low` returned the same theme-aware picks, including both changelings that
+trigger the commander twice, so it is the default (`SELECT_REASONING_EFFORT` in
+`.env`; set empty to restore the provider default). A full suggestion runs ~62s
+end to end.
+
+Both stages default to the provider's fast model (`get_fast_model()` →
 `deepseek-v4-flash`). This is a deliberate reversal of the older "Pro
 everywhere" default: routing two heavy Pro+thinking calls made a
 congested-API `suggest_cards` take ~80s; Flash with the split above brings it

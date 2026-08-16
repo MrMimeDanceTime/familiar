@@ -34,7 +34,7 @@ class FakeProvider:
         self._payload = payload if isinstance(payload, str) else json.dumps(payload)
         self.calls = []
 
-    def complete_json(self, system, user, *, model=None, thinking=True):
+    def complete_json(self, system, user, *, model=None, thinking=True, reasoning_effort=None):
         self.calls.append({"system": system, "user": user, "model": model})
         return self._payload
 

@@ -59,6 +59,7 @@ class ChatProvider(Protocol):
         *,
         model: str | None = None,
         thinking: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str: ...
 
     def append_tool_results(
