@@ -295,19 +295,42 @@ def run_chat_turn(
         # one final toolless send: the model must now produce a text response
         # (it can't call another tool), so it summarizes what it found. This is
         # what the player expects when the model has effectively finished its
-        # reasoning but kept a trailing tool call attached. Thinking on — this is
-        # the synthesis turn, not mechanical dispatch.
+        # reasoning but kept a trailing tool call attached.
+        #
+        # Thinking stays OFF, matching the rest of the loop. Turning it on here
+        # broke the turn outright: DeepSeek requires every assistant message in
+        # the history to carry `reasoning_content` when a call runs in thinking
+        # mode, and the loop's own messages were produced with thinking off, so
+        # they have none. The wrap-up then 400s with "The `reasoning_content` in
+        # the thinking mode must be passed back to the API" — losing exactly the
+        # turn this fallback exists to rescue.
         logger.warning(
             "chat: hit MAX_TOOL_ITERATIONS (%d) after %.2fs — forcing toolless wrap-up",
             MAX_TOOL_ITERATIONS, time.perf_counter() - turn_started,
         )
-        wrap = provider.send(system_prompt, history, [], thinking=True)
+        wrap = provider.send(system_prompt, history, [], thinking=False)
         yield from _finalize_turn(
             session, conversation_id, sequence,
             wrap.text or _MAX_ITER_FALLBACK_TEXT, wrap.raw_assistant_message,
             proposal_ids_this_turn, pending_summary,
         )
     except Exception as exc:  # noqa: BLE001 - surface to client instead of crashing the stream
+        # Reveal any proposals this turn already created before reporting the
+        # error. They are real pending rows in the database, so without this the
+        # player is told something failed while approvable cards sit invisible —
+        # the work is done and unreachable, which reads as data loss.
+        try:
+            settled = _settled_proposal_batch(
+                session, proposal_ids_this_turn, pending_summary
+            )
+            if settled["proposals"]:
+                logger.info(
+                    "chat: turn failed but revealing %d pending proposal(s)",
+                    len(settled["proposals"]),
+                )
+                yield deck_proposal_event(settled)
+        except Exception:  # noqa: BLE001 - never let recovery mask the real error
+            logger.exception("chat: could not reveal proposals after a failed turn")
         yield error_event(str(exc))
 
 

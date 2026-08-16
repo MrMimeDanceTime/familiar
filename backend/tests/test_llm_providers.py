@@ -279,3 +279,76 @@ def test_reasoning_effort_is_not_sent_when_thinking_is_off(mock_openai_cls):
 
     extra = mock_client.chat.completions.create.call_args.kwargs["extra_body"]
     assert extra == {"thinking": {"type": "disabled"}}
+
+
+# ── Mixed thinking modes in one conversation ─────────────────────────────
+
+
+def test_thinking_call_backfills_missing_reasoning_content():
+    """DeepSeek rejects a thinking-mode request whose history has an assistant
+    message without `reasoning_content`.
+
+    Reproduced against the live API: the chat loop dispatches tools with
+    thinking OFF, so its assistant messages carry none, and the max-iteration
+    wrap-up then called with thinking ON and 400'd — losing the whole turn
+    along with any proposals it had already built.
+    """
+    from app.llm.deepseek_provider import _require_reasoning_content
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "sure", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+    ]
+
+    patched = _require_reasoning_content(history)
+
+    assert patched[1]["reasoning_content"] == ""
+    # Non-assistant messages are untouched.
+    assert patched[0] == history[0]
+    assert patched[2] == history[2]
+
+
+def test_existing_reasoning_content_is_preserved():
+    """A real reasoning trace must survive; only absent ones are backfilled."""
+    from app.llm.deepseek_provider import _require_reasoning_content
+
+    history = [
+        {"role": "assistant", "content": "x", "reasoning_content": "I thought hard"},
+    ]
+
+    assert _require_reasoning_content(history)[0]["reasoning_content"] == "I thought hard"
+
+
+def test_backfill_does_not_mutate_the_original_history():
+    """History is persisted for byte-identical replay, so patching a copy for
+    one API call must not rewrite what is stored."""
+    from app.llm.deepseek_provider import _require_reasoning_content
+
+    original = [{"role": "assistant", "content": "x"}]
+    _require_reasoning_content(original)
+
+    assert "reasoning_content" not in original[0]
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_send_backfills_only_when_thinking(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    fake_message = SimpleNamespace(
+        content="ok", tool_calls=None,
+        model_dump=lambda exclude_none=True: {"role": "assistant", "content": "ok"},
+    )
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=fake_message, finish_reason="stop")]
+    )
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    history = [{"role": "assistant", "content": "earlier"}]
+
+    provider.send("sys", list(history), [], thinking=False)
+    sent = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    assert "reasoning_content" not in sent[-1]
+
+    provider.send("sys", list(history), [], thinking=True)
+    sent = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    assert sent[-1]["reasoning_content"] == ""

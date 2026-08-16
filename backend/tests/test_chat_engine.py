@@ -152,7 +152,12 @@ def test_max_iterations_forces_a_final_text_response(session):
     assert any("summary of what I found" in e for e in events)
     # Exactly one forced wrap-up, and it ran with thinking on (synthesis turn).
     assert provider.toolless_sends == 1
-    assert provider.thinking_on_wrap is True
+    # Thinking must stay OFF here. Turning it on broke the turn outright:
+    # DeepSeek requires every assistant message in the history to carry
+    # `reasoning_content` when a call runs in thinking mode, and the loop's own
+    # messages are produced with thinking off, so the wrap-up 400'd and lost the
+    # very turn this fallback exists to rescue.
+    assert provider.thinking_on_wrap is False
 
     messages = repo.list_messages(session, convo.id)
     assert messages[-1].role == "assistant"
@@ -745,3 +750,43 @@ def test_every_ui_facing_serialisation_carries_scores():
         source = inspect.getsource(module)
         assert '"reasoning"' in source, marker
         assert '"scores"' in source, f"{marker} serialises proposals without scores"
+
+
+def test_failed_turn_still_reveals_its_proposals(session):
+    """A turn that errors after building proposals must still show them.
+
+    They are real pending rows, so without this the player is told something
+    failed while approvable cards sit invisible until a page refresh — the work
+    is done and unreachable, which reads as data loss.
+    """
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    class ExplodingProvider(FakeProvider):
+        def __init__(self):
+            super().__init__([])
+
+        def send(self, *a, **kw):
+            # Create a proposal, then fail — the shape of the real bug, where a
+            # batch landed and the wrap-up call 400'd.
+            proposal = DeckProposal(
+                conversation_id=convo.id, deck_id=deck.id, action="add",
+                card_name="Sol Ring", quantity=1, reasoning="ramp",
+            )
+            session.add(proposal)
+            session.commit()
+            session.refresh(proposal)
+            self.created_id = proposal.id
+            raise RuntimeError("DeepSeek API call failed")
+
+    provider = ExplodingProvider()
+    events = _collect(
+        run_chat_turn(session, provider, convo.id, "build me a deck", deck_id=deck.id)
+    )
+
+    assert any(e.startswith("event: error") for e in events)
+    # The proposal is pending in the database...
+    assert repo.get_proposal(session, provider.created_id).status == "pending"

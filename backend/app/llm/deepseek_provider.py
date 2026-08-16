@@ -10,6 +10,37 @@ from app.llm.base import AssistantTurn, ToolCallRequest, ToolResult, ToolSpec
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 
+def _require_reasoning_content(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Give every assistant message a `reasoning_content` before a thinking call.
+
+    DeepSeek rejects a thinking-mode request whose history contains an assistant
+    message without it:
+
+        400 - The `reasoning_content` in the thinking mode must be passed back
+              to the API.
+
+    That happens whenever thinking modes are MIXED within one conversation — the
+    chat loop dispatches tools with thinking off, so its assistant messages carry
+    none, and any later thinking call replaying that history fails. The turn is
+    lost along with any proposals it had already built.
+
+    Backfills an empty string rather than dropping the messages: the history has
+    to stay byte-identical for replay, and an empty reasoning trace is truthful
+    for a message that genuinely did not reason.
+    """
+    patched: list[dict[str, Any]] = []
+    for message in messages:
+        if (
+            message.get("role") == "assistant"
+            and "reasoning_content" not in message
+        ):
+            message = {**message, "reasoning_content": ""}
+        patched.append(message)
+    return patched
+
+
 class DeepSeekProvider:
     def __init__(
         self, api_key: str, model: str, timeout: float | None = None,
@@ -62,6 +93,9 @@ class DeepSeekProvider:
         max_kwargs: dict[str, Any] = (
             {"max_tokens": self._max_tokens} if self._max_tokens else {}
         )
+
+        if thinking:
+            messages = _require_reasoning_content(messages)
 
         try:
             response = self._client.chat.completions.create(
