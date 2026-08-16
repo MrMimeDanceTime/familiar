@@ -40,6 +40,59 @@ MAX_TOOL_ITERATIONS = 12
 # propose -> withdraw -> propose churn that used to burn the iteration budget.
 WITHDRAW_ONLY_TOOLS = [t for t in TOOL_SPECS if t.name == "withdraw_pending_proposals"]
 
+# A hand-picked batch of this many cards or more is the model choosing cards
+# itself instead of running the scoring pipeline.
+#
+# The prompt asks for this routing and was ignored: on a live deck, 68 proposals
+# were built with propose_deck_changes and suggest_cards was called ZERO times,
+# so every card reached the player with no play rate, no mechanical fit against
+# the commander, and nothing for the deck to learn from. Adding more prompt text
+# did not move it, because propose_deck_changes remained available for the job.
+#
+# Set from what the live deck actually did: of 13 hand-picked calls, the add
+# counts were 3, 4, and 6 (ten of them at 6). Nothing at 1 or 2. So 3 catches
+# every real role batch while leaving small explicit requests alone — a player
+# naming two cards ("add Sol Ring and Arcane Signet") is a normal direct
+# proposal and must not be refused.
+_HANDPICK_LIMIT = 3
+
+
+def _redirect_to_pipeline(tool_name: str, args: dict[str, Any]) -> str | None:
+    """Refuse a hand-picked multi-card ADD batch, naming the tool to use instead.
+
+    Returns the refusal text, or None to let the call through. Deliberately
+    narrow — everything the direct path is genuinely for stays allowed:
+    single named cards, cuts, commander proposals, and mixed batches whose
+    adds are below the limit.
+    """
+    if tool_name != "propose_deck_changes":
+        return None
+
+    changes = args.get("changes")
+    if not isinstance(changes, list):
+        return None
+
+    adds = [
+        c for c in changes
+        if isinstance(c, dict) and c.get("action", "add") == "add"
+    ]
+    if len(adds) < _HANDPICK_LIMIT:
+        return None
+
+    named = ", ".join(str(c.get("card_name")) for c in adds[:4] if c.get("card_name"))
+    return (
+        f"REFUSED: {len(adds)} hand-picked cards ({named}...). A batch filling a "
+        "role or gap must go through suggest_cards, which scores every candidate "
+        "against this deck — play rate, mechanical fit with the commander, and "
+        "the player's own history. Cards proposed directly arrive with none of "
+        "that and the player sees 'no scoring data'.\n\n"
+        "Call suggest_cards with a focused intent describing what this batch is "
+        "for (e.g. 'ramp package', 'cheap interaction', 'card draw that fits the "
+        "commander'). It returns approval-ready proposals.\n\n"
+        "Use propose_deck_changes only for a card the player named explicitly, a "
+        "cut, or a commander."
+    )
+
 
 def _load_history(session: Session, conversation_id: int) -> list[dict[str, Any]]:
     messages = repo.list_messages(session, conversation_id)
@@ -164,6 +217,22 @@ def run_chat_turn(
 
                 if call.name in PROPOSAL_TOOLS:
                     args["conversation_id"] = conversation_id
+
+                redirect = _redirect_to_pipeline(call.name, args)
+                if redirect is not None:
+                    # Refused rather than dispatched: the model gets the reason
+                    # as a tool result and re-issues through suggest_cards. The
+                    # prompt asked for this routing and was ignored — a batch of
+                    # hand-picked cards reaches the player with no play rate, no
+                    # mechanical fit, and nothing for the deck to learn from, so
+                    # the choice cannot be left to instruction.
+                    logger.info("chat: redirected %s to suggest_cards", call.name)
+                    results.append(ToolResult(call_id=call.id, content=redirect))
+                    tool_calls_log.append(
+                        {"id": call.id, "name": call.name, "arguments": call.arguments}
+                    )
+                    tool_results_log.append({"call_id": call.id, "content": redirect})
+                    continue
 
                 result = dispatch(call.name, args, session, provider=provider)
                 content = str(result.content) if not result.ok else _serialize(result.content)

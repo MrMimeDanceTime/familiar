@@ -400,10 +400,9 @@ def test_proposals_revealed_only_after_trims_settle(mock_get_client, session):
                         id="call_1",
                         name="propose_deck_changes",
                         arguments={
-                            "summary": "Ramp trio",
+                            "summary": "Two rocks the player named",
                             "changes": [
                                 {"action": "add", "card_name": "Sol Ring"},
-                                {"action": "add", "card_name": "Arcane Signet"},
                                 {"action": "add", "card_name": "Mind Stone"},
                             ],
                         },
@@ -436,9 +435,9 @@ def test_proposals_revealed_only_after_trims_settle(mock_get_client, session):
     proposal_events = [e for e in events if e.startswith("event: deck_proposal")]
     # Exactly one reveal, at the end.
     assert len(proposal_events) == 1
-    # It carries only the two survivors, not the trimmed Mind Stone.
+    # It carries only the survivor, not the trimmed Mind Stone.
     payload = proposal_events[0]
-    assert "Sol Ring" in payload and "Arcane Signet" in payload
+    assert "Sol Ring" in payload
     assert "Mind Stone" not in payload
     # The reveal comes before done.
     done_idx = next(i for i, e in enumerate(events) if e.startswith("event: done"))
@@ -561,3 +560,110 @@ def test_history_replay_reconstructs_provider_native_messages(session):
     assert sent_history[0] == {"role": "user", "content": "first message"}
     assert sent_history[1] == {"role": "assistant", "content": "first reply"}
     assert sent_history[2] == {"role": "user", "content": "second message"}
+
+
+# ── Routing hand-picked batches to the scoring pipeline ──────────────────
+#
+# The prompt asked the model to use suggest_cards for role batches and was
+# ignored: on a live deployed deck, 68 proposals were built with
+# propose_deck_changes and suggest_cards was called ZERO times. Every card
+# reached the player with no play rate, no mechanical fit, and nothing for the
+# deck to learn from. More prompt text did not move it, because the direct path
+# stayed available for the job.
+
+
+from app.chat.engine import _redirect_to_pipeline
+
+
+def _changes(*specs):
+    return [{"action": a, "card_name": n} for a, n in specs]
+
+
+def test_multi_card_handpicked_batch_is_refused():
+    msg = _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("add", "Sol Ring"), ("add", "Arcane Signet"),
+                            ("add", "Fellwar Stone")),
+    })
+    assert msg is not None
+    assert "suggest_cards" in msg
+
+
+def test_single_named_card_is_allowed():
+    """"Add Sol Ring" is exactly what the direct path is for."""
+    assert _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("add", "Sol Ring")),
+    }) is None
+
+
+def test_cuts_are_allowed():
+    """A cut names cards already in the deck; there is nothing to score."""
+    assert _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("remove", "Bad Card"), ("remove", "Worse Card"),
+                            ("remove", "Filler")),
+    }) is None
+
+
+def test_commander_proposal_is_allowed():
+    assert _redirect_to_pipeline("propose_deck_changes", {
+        "changes": [{"action": "set_commander", "card_name": "Korvold"}],
+    }) is None
+
+
+def test_commander_plus_one_card_is_allowed():
+    """Opening a deck with the commander and a single card is a normal move and
+    must not be blocked."""
+    assert _redirect_to_pipeline("propose_deck_changes", {
+        "changes": [
+            {"action": "set_commander", "card_name": "Korvold"},
+            {"action": "add", "card_name": "Sol Ring"},
+        ],
+    }) is None
+
+
+def test_mixed_batch_counts_only_the_adds():
+    """Cuts alongside adds must not push a small add batch over the limit."""
+    allowed = _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("remove", "Cut This"), ("remove", "Cut That"),
+                            ("add", "Card A"), ("add", "Card B")),
+    })
+    assert allowed is None
+
+    refused = _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("remove", "Cut This"), ("add", "Card A"),
+                            ("add", "Card B"), ("add", "Card C")),
+    })
+    assert refused is not None
+
+
+def test_suggest_cards_is_never_redirected():
+    """The pipeline path is the destination, not a candidate for redirection."""
+    assert _redirect_to_pipeline("suggest_cards", {"intent": "ramp"}) is None
+
+
+def test_other_tools_pass_through():
+    assert _redirect_to_pipeline("deck_get_current", {"deck_id": 1}) is None
+
+
+def test_malformed_changes_do_not_crash():
+    for changes in (None, "not a list", [], [None, 7]):
+        assert _redirect_to_pipeline(
+            "propose_deck_changes", {"changes": changes}
+        ) is None
+
+
+def test_refusal_names_the_cards_so_the_model_can_reissue():
+    msg = _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("add", "Sol Ring"), ("add", "Arcane Signet"),
+                            ("add", "Fellwar Stone")),
+    })
+    assert "Sol Ring" in msg
+    assert "Arcane Signet" in msg
+
+
+def test_two_named_cards_are_allowed():
+    """Measured on the live deck: real hand-picked batches were 3, 4, and 6
+    adds (ten of thirteen at 6). Nothing at 1 or 2, so a player naming two
+    cards stays on the direct path."""
+    assert _redirect_to_pipeline("propose_deck_changes", {
+        "changes": _changes(("add", "Sol Ring"), ("add", "Arcane Signet")),
+    }) is None
