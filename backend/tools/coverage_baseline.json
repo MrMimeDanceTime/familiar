@@ -1,0 +1,104 @@
+{
+  "saved_at": "2026-08-16T07:38:42+00:00",
+  "decks": {
+    "Fire Lord Azula Grixis Control": {
+      "deck": "Fire Lord Azula Grixis Control",
+      "commander": "Fire Lord Azula",
+      "pool": 83,
+      "scored": 78,
+      "consensus": 49,
+      "mechanical": 28,
+      "personal": 61
+    },
+    "Vendrell Rooms": {
+      "deck": "Vendrell Rooms",
+      "commander": "Marina Vendrell",
+      "pool": 88,
+      "scored": 86,
+      "consensus": 47,
+      "mechanical": 61,
+      "personal": 46
+    },
+    "Massacre Girl Wither Proliferate": {
+      "deck": "Massacre Girl Wither Proliferate",
+      "commander": "Massacre Girl, Known Killer",
+      "pool": 85,
+      "scored": 74,
+      "consensus": 47,
+      "mechanical": 38,
+      "personal": 62
+    },
+    "Hei Bai Five-Color Shrines": {
+      "deck": "Hei Bai Five-Color Shrines",
+      "commander": "Hei Bai, Forest Guardian",
+      "pool": 87,
+      "scored": 87,
+      "consensus": 62,
+      "mechanical": 71,
+      "personal": 71
+    },
+    "Spencer Rin&Seri": {
+      "deck": "Spencer Rin&Seri",
+      "commander": "Rin and Seri, Inseparable",
+      "pool": 83,
+      "scored": 82,
+      "consensus": 53,
+      "mechanical": 62,
+      "personal": 39
+    },
+    "Fire Lord Ozai Rakdos": {
+      "deck": "Fire Lord Ozai Rakdos",
+      "commander": "Fire Lord Ozai",
+      "pool": 81,
+      "scored": 80,
+      "consensus": 61,
+      "mechanical": 60,
+      "personal": 55
+    },
+    "Captain Ngathrob": {
+      "deck": "Captain Ngathrob",
+      "commander": "Captain N'ghathrod",
+      "pool": 83,
+      "scored": 74,
+      "consensus": 51,
+      "mechanical": 36,
+      "personal": 37
+    },
+    "Spencer Torbran": {
+      "deck": "Spencer Torbran",
+      "commander": "Torbran, Thane of Red Fell",
+      "pool": 85,
+      "scored": 71,
+      "consensus": 46,
+      "mechanical": 7,
+      "personal": 36
+    },
+    "Sakashima and Krark": {
+      "deck": "Sakashima and Krark",
+      "commander": "Krark, the Thumbless",
+      "pool": 87,
+      "scored": 79,
+      "consensus": 45,
+      "mechanical": 34,
+      "personal": 48
+    },
+    "Silverquill Tokens": {
+      "deck": "Silverquill Tokens",
+      "commander": "Silverquill, the Disputant",
+      "pool": 81,
+      "scored": 74,
+      "consensus": 61,
+      "mechanical": 13,
+      "personal": 60
+    },
+    "Korlash Swamptron": {
+      "deck": "Korlash Swamptron",
+      "commander": "Korlash, Heir to Blackblade",
+      "pool": 82,
+      "scored": 81,
+      "consensus": 41,
+      "mechanical": 72,
+      "personal": 62
+    }
+  }
+}

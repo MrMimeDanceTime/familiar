@@ -1,24 +1,39 @@
 """How much of a candidate pool the brain map can actually score.
 
-Run this after changing scoring. It is the regression test for "did that get
-better or just different" — a change that raises coverage on one deck and
-craters it on another is a wash, and only a spread of real decks shows that.
+Run this after ANY change to scoring, the card index, or the tag pipeline. It
+is the regression test for "did that get better or just different" — a change
+that raises coverage on one deck and craters another is a wash, and only a
+spread of real decks shows that.
 
-    .venv/Scripts/python.exe tools/coverage_report.py
-    .venv/Scripts/python.exe tools/coverage_report.py --deck 19
+    .venv/Scripts/python.exe tools/coverage_report.py           # measure + compare
+    .venv/Scripts/python.exe tools/coverage_report.py --save    # accept as baseline
+    .venv/Scripts/python.exe tools/coverage_report.py --deck 19 # one deck
 
-Uses each deck's real commander and a generic intent, so it measures the
-scoring layers rather than the query planner. No LLM calls: the pool comes from
-EDHREC plus a fixed Scryfall query, which keeps runs comparable.
+Every run compares against the last saved baseline and prints the deltas, so
+regressions are visible without anyone remembering what the numbers used to be.
+``--save`` is deliberately separate: a run that shows a drop should not quietly
+overwrite the evidence.
+
+Uses each deck's real commander and a fixed generic query, so it measures the
+scoring layers rather than the query planner, and no LLM is called — runs stay
+comparable and cost nothing.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Windows consoles default to cp1252, which cannot encode the symbols this
+# report prints — without this the tool dies on its own header rather than on
+# anything it measured.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from sqlmodel import Session  # noqa: E402
 
@@ -75,9 +90,45 @@ def measure(session: Session, deck_id: int) -> dict | None:
     }
 
 
+# Committed, so a baseline travels with the branch that changed it and shows up
+# in review as a diff of the actual numbers.
+BASELINE_PATH = Path(__file__).resolve().parent / "coverage_baseline.json"
+
+
+def load_baseline() -> dict:
+    if not BASELINE_PATH.exists():
+        return {}
+    try:
+        return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_baseline(rows: list[dict]) -> None:
+    payload = {
+        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "decks": {r["deck"]: r for r in rows},
+    }
+    BASELINE_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _delta(current: int, previous: int | None) -> str:
+    """Render a change against the baseline, or blank when there is none."""
+    if previous is None:
+        return "   new"
+    diff = current - previous
+    if diff == 0:
+        return "     ·"
+    return f"{diff:+6d}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", type=int, help="measure a single deck")
+    parser.add_argument(
+        "--save", action="store_true",
+        help="accept these numbers as the new baseline",
+    )
     args = parser.parse_args()
 
     with Session(get_engine()) as session:
@@ -103,15 +154,26 @@ def main() -> int:
         print("no decks measured")
         return 1
 
-    header = f"{'deck':<26}{'pool':>6}{'scored':>8}{'cons':>7}{'mech':>7}{'pers':>7}"
+    baseline = load_baseline().get("decks", {})
+
+    header = (
+        f"{'deck':<26}{'pool':>6}{'scored':>8}{'cons':>7}"
+        f"{'mech':>7}{'Δmech':>7}{'pers':>7}"
+    )
     print(header)
     print("-" * len(header))
+    regressed: list[str] = []
     for row in rows:
         pct = 100 * row["scored"] / row["pool"] if row["pool"] else 0
+        was = baseline.get(row["deck"])
+        prev_mech = was.get("mechanical") if was else None
+        if prev_mech is not None and row["mechanical"] < prev_mech:
+            regressed.append(row["deck"])
         print(
             f"{row['deck'][:25]:<26}{row['pool']:>6}"
             f"{row['scored']:>6} {pct:>3.0f}%"
-            f"{row['consensus']:>7}{row['mechanical']:>7}{row['personal']:>7}"
+            f"{row['consensus']:>7}{row['mechanical']:>7}"
+            f"{_delta(row['mechanical'], prev_mech):>7}{row['personal']:>7}"
         )
 
     total_pool = sum(r["pool"] for r in rows)
@@ -124,8 +186,25 @@ def main() -> int:
         f"{'':>7}{total_mech:>7}"
     )
     print()
-    print(f"mechanical layer covers {100 * total_mech / total_pool:.0f}% of all pooled cards")
-    return 0
+    print(
+        f"mechanical layer covers {100 * total_mech / total_pool:.0f}% "
+        f"of all pooled cards"
+    )
+
+    if not baseline:
+        print("\nNo baseline yet — run with --save to record one.")
+    elif regressed:
+        # Named rather than summarised: "3 decks regressed" sends you hunting,
+        # and a per-deck drop is exactly the case a single total would hide.
+        print(f"\n⚠ mechanical coverage DROPPED on: {', '.join(regressed)}")
+    else:
+        print("\nNo mechanical-coverage regressions against the baseline.")
+
+    if args.save:
+        save_baseline(rows)
+        print(f"Baseline saved to {BASELINE_PATH.name}")
+
+    return 1 if regressed and not args.save else 0
 
 
 if __name__ == "__main__":
