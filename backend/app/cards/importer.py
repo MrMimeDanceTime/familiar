@@ -339,6 +339,10 @@ def refresh_if_stale(*, force: bool = False, client: httpx.Client | None = None)
     try:
         import_cards(client)
         import_tags(client)
+        # Derived from the tags that just landed, so it has to follow them.
+        from app.cards import cooccurrence
+
+        cooccurrence.rebuild()
     except (httpx.HTTPError, CardImportError, OSError, gzip.BadGzipFile) as exc:
         logger.warning("card index refresh failed, keeping existing index: %s", exc)
         return False

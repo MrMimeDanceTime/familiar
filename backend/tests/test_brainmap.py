@@ -23,7 +23,11 @@ from app.brainmap.layers import (
     ScoringContext,
     blend,
 )
-from app.brainmap.mechanical import MechanicalLayer, detect_themes, resolve_slugs
+from app.brainmap.mechanical import (
+    MechanicalLayer,
+    build_relationship,
+    is_flavour_tag,
+)
 from app.brainmap.personal import PersonalLayer
 
 
@@ -38,21 +42,45 @@ def _card(name, edhrec=None, oracle_id=None):
 class FakeStore:
     """Minimal store: commander text, tag vocabulary, and per-card tags."""
 
-    def __init__(self, commander_text="", tags=None, vocabulary=None):
+    def __init__(self, commander_text="", tags=None, vocabulary=None,
+                 related=None, colour_artifacts=None):
         self._commander_text = commander_text
         self._tags = tags or {}
         self._vocabulary = vocabulary or set(
             s for slugs in (tags or {}).values() for s in slugs
         )
+        self._related = related or {}
+        self._colour_artifacts = colour_artifacts or set()
 
     def by_name(self, name):
-        return {"name": name, "oracle_text": self._commander_text}
+        return {
+            "name": name,
+            "oracle_text": self._commander_text,
+            "oracle_id": "oid-commander",
+        }
 
     def tags_for_many(self, oracle_ids):
         return {oid: self._tags.get(oid, set()) for oid in oracle_ids}
 
     def tag_slugs(self, pattern=None, limit=100):
-        return [(s, 1) for s in self._vocabulary]
+        slugs = self._vocabulary
+        if pattern:
+            slugs = {s for s in slugs if pattern in s}
+        return [(s, 1) for s in slugs]
+
+    def tags_for(self, oracle_id):
+        return self._tags.get(oracle_id, set())
+
+    def related_tags(self, slugs, *, min_lift=5.0, limit=12):
+        out = {s: float("inf") for s in slugs}
+        for s in slugs:
+            for partner, lift in self._related.get(s, {}).items():
+                if lift >= min_lift:
+                    out[partner] = lift
+        return out
+
+    def is_colour_artifact(self, slug, threshold=0.5):
+        return slug in self._colour_artifacts
 
 
 # ── Blending ─────────────────────────────────────────────────────────────
@@ -148,96 +176,6 @@ def test_consensus_distinguishes_staple_from_specific():
 
 def test_consensus_skips_cards_without_data():
     assert ConsensusLayer().score([_card("Unknown")], ScoringContext()) == {}
-
-
-# ── Layer 2: mechanical ──────────────────────────────────────────────────
-
-
-KORVOLD_TEXT = (
-    "Flying\nWhenever Korvold enters or attacks, sacrifice another permanent.\n"
-    "Whenever you sacrifice a permanent, put a +1/+1 counter on Korvold and "
-    "draw a card."
-)
-
-
-def test_detects_theme_from_commander_text():
-    keys = {t.key for t in detect_themes(KORVOLD_TEXT, [])}
-    assert "sacrifice" in keys
-
-
-def test_detects_declared_themes():
-    keys = {t.key for t in detect_themes("", ["treasure tokens"])}
-    assert "treasure" in keys
-
-
-def test_no_themes_without_signal():
-    assert detect_themes("Flying. Vigilance.", []) == []
-
-
-def test_resolve_slugs_drops_slugs_absent_from_the_vocabulary():
-    """Tagger's vocabulary is a hierarchy and the bulk export ships only leaf
-    taggings, so a plausible slug name can silently match nothing."""
-    themes = detect_themes(KORVOLD_TEXT, [])
-    store = FakeStore(vocabulary={"free-sacrifice-outlet"})
-    hits = resolve_slugs(themes, store)
-    assert hits
-    assert hits[0].enablers == ["free-sacrifice-outlet"]
-
-
-def test_mechanical_scores_engine_payoff_and_enabler():
-    store = FakeStore(
-        commander_text=KORVOLD_TEXT,
-        tags={
-            "oid-engine": {"free-sacrifice-outlet", "your-sacrifice-matters"},
-            "oid-payoff": {"your-sacrifice-matters"},
-            "oid-enabler": {"free-sacrifice-outlet"},
-        },
-    )
-    cards = [
-        _card("Engine", oracle_id="oid-engine"),
-        _card("Payoff", oracle_id="oid-payoff"),
-        _card("Enabler", oracle_id="oid-enabler"),
-    ]
-    scored = MechanicalLayer(store).score(
-        cards, ScoringContext(commander="Korvold, Fae-Cursed King")
-    )
-    assert scored["engine"].score > scored["payoff"].score > scored["enabler"].score
-    assert "engine piece" in scored["engine"].reason
-
-
-def test_mechanical_reason_names_only_the_matched_theme():
-    """Korvold triggers both 'sacrifice' and '+1/+1 counters'. Joining every
-    detected theme onto every card makes a sacrifice outlet claim to be a
-    counters card."""
-    store = FakeStore(
-        commander_text=KORVOLD_TEXT,
-        tags={"oid-sac": {"free-sacrifice-outlet"}},
-        vocabulary={"free-sacrifice-outlet", "counters-matter"},
-    )
-    scored = MechanicalLayer(store).score(
-        [_card("Sac Outlet", oracle_id="oid-sac")],
-        ScoringContext(commander="Korvold, Fae-Cursed King"),
-    )
-    reason = scored["sac outlet"].reason
-    assert "sacrifice" in reason
-    assert "counter" not in reason
-
-
-def test_mechanical_returns_nothing_without_a_theme():
-    store = FakeStore(commander_text="Flying. Vigilance.", tags={})
-    scored = MechanicalLayer(store).score(
-        [_card("X")], ScoringContext(commander="Vanilla")
-    )
-    assert scored == {}
-
-
-def test_mechanical_ignores_untagged_cards():
-    store = FakeStore(commander_text=KORVOLD_TEXT, tags={},
-                      vocabulary={"free-sacrifice-outlet"})
-    scored = MechanicalLayer(store).score(
-        [_card("Untagged")], ScoringContext(commander="Korvold, Fae-Cursed King")
-    )
-    assert scored == {}
 
 
 # ── Layer 3: personal ────────────────────────────────────────────────────
@@ -426,110 +364,6 @@ def test_more_evidence_means_more_confidence():
     assert result["mech"] > result["pers"]
 
 
-# ── Tribal (the gap that made the layer near-silent) ─────────────────────
-
-
-RIN_AND_SERI = (
-    "Whenever you cast a Dog spell, create a 1/1 green Cat creature token. "
-    "Whenever you cast a Cat spell, create a 1/1 white Dog creature token. "
-    "{R}{G}{W}, {T}: Rin and Seri deals damage to any target equal to the "
-    "number of Dogs you control. You gain life equal to the number of Cats "
-    "you control."
-)
-
-
-class TypalStore(FakeStore):
-    def tag_slugs(self, pattern=None, limit=100):
-        slugs = self._vocabulary | {"typal-cat", "typal-dog", "typal-elf", "changeling"}
-        if pattern:
-            slugs = {s for s in slugs if pattern in s}
-        return [(s, 1) for s in slugs]
-
-
-def test_detects_creature_types_from_commander_text():
-    from app.brainmap.mechanical import detect_creature_types
-
-    types = detect_creature_types(RIN_AND_SERI, TypalStore())
-    assert set(types) == {"cat", "dog"}
-
-
-def test_creature_type_extraction_rejects_non_types():
-    """The patterns match "permanents you control" too; without a stopword list
-    the layer decides the deck is "permanent" tribal."""
-    from app.brainmap.mechanical import detect_creature_types
-
-    text = "Whenever you cast a creature spell, permanents you control get +1/+1."
-    assert detect_creature_types(text, TypalStore()) == []
-
-
-def test_creature_type_must_exist_in_the_tag_data():
-    """A type with no `typal-<type>` slug cannot be queried, so it is dropped."""
-    from app.brainmap.mechanical import detect_creature_types
-
-    text = "Whenever you cast a Sliver spell, draw a card."
-    assert detect_creature_types(text, TypalStore()) == []
-
-
-def test_on_type_cards_score_on_a_tribal_deck():
-    """Being a Cat IS the synergy when the commander triggers on casting Cats.
-    Before this, a tribal commander scored 4 of 60 pool cards."""
-    store = TypalStore(
-        commander_text=RIN_AND_SERI,
-        tags={"oid-cat": {"typal-cat"}, "oid-vanilla": {"alliteration"}},
-    )
-    scored = MechanicalLayer(store).score(
-        [_card("Cat Lord", oracle_id="oid-cat"),
-         _card("Vanilla", oracle_id="oid-vanilla")],
-        ScoringContext(commander="Rin and Seri, Inseparable"),
-    )
-    assert "cat lord" in scored
-    assert "on-type" in scored["cat lord"].reason
-    assert "vanilla" not in scored
-
-
-def test_changeling_counts_as_on_type():
-    store = TypalStore(
-        commander_text=RIN_AND_SERI, tags={"oid-shifter": {"changeling"}},
-    )
-    scored = MechanicalLayer(store).score(
-        [_card("Realmwalker", oracle_id="oid-shifter")],
-        ScoringContext(commander="Rin and Seri, Inseparable"),
-    )
-    assert "realmwalker" in scored
-
-
-# ── Trigger precision (spurious themes mislabel every card) ──────────────
-
-
-def test_lifegain_needs_a_payoff_not_an_incidental_life_rider():
-    """Rin and Seri's activated ability gains life, which made a Cat/Dog tribal
-    deck read as a lifegain deck and labelled on-type cards "engine piece for
-    lifegain"."""
-    keys = {t.key for t in detect_themes(RIN_AND_SERI, [])}
-    assert "lifegain" not in keys
-
-
-def test_spellslinger_needs_a_named_spell_type():
-    """"whenever you cast" alone matches any cast trigger, including "whenever
-    you cast a Dog spell"."""
-    keys = {t.key for t in detect_themes(RIN_AND_SERI, [])}
-    assert "spellslinger" not in keys
-
-
-def test_real_spellslinger_still_detected():
-    keys = {t.key for t in detect_themes(
-        "Whenever you cast an instant spell, draw a card.", []
-    )}
-    assert "spellslinger" in keys
-
-
-def test_real_lifegain_still_detected():
-    keys = {t.key for t in detect_themes(
-        "Whenever you gain life, put a +1/+1 counter on this creature.", []
-    )}
-    assert "lifegain" in keys
-
-
 # ── Learning from structured denials ─────────────────────────────────────
 #
 # This is why the review surface asks WHY. "Don't need this role" is a claim
@@ -664,3 +498,132 @@ def test_curve_score_stays_weak():
 
 def test_curve_score_needs_a_mana_value():
     assert PersonalLayer._curve_score({"cmc": None}, (2.0, 5.0)) is None
+
+
+# ── Layer 2: relationships derived, not declared ─────────────────────────
+#
+# The first version matched commander oracle text against eight hand-written
+# themes plus a tribal special case. Measured across 11 real decks, that scored
+# 4% of pooled cards and gave FIVE decks exactly zero. Deriving relationships
+# from the commander's own tags took the same measurement to 52%.
+
+
+def _commander_store(commander_tags, card_tags, **kw):
+    store = FakeStore(tags={"oid-commander": set(commander_tags), **card_tags}, **kw)
+    return store
+
+
+def test_relationship_comes_from_the_commanders_own_tags():
+    """No theme list. Korvold declares `your-sacrifice-matters` himself."""
+    store = _commander_store({"your-sacrifice-matters"}, {})
+    rel = build_relationship({"your-sacrifice-matters"}, store)
+    assert "your-sacrifice-matters" in rel.own
+
+
+def test_relationship_expands_through_co_occurrence():
+    store = _commander_store(
+        {"synergy-exile-cast"}, {},
+        related={"synergy-exile-cast": {"repeatable-impulsive-draw": 66.5}},
+    )
+    rel = build_relationship({"synergy-exile-cast"}, store)
+    assert rel.related["repeatable-impulsive-draw"] == 66.5
+
+
+def test_colour_artifact_tags_are_dropped():
+    """Torbran carries `synergy-red`, which is true and useless: 80% of its top
+    partners are the other colour tags, where every real mechanic measures 0%."""
+    store = _commander_store(
+        {"synergy-red", "damage-increaser"}, {},
+        colour_artifacts={"synergy-red"},
+        related={"damage-increaser": {"synergy-burn": 292.9}},
+    )
+    rel = build_relationship({"synergy-red", "damage-increaser"}, store)
+    assert "synergy-red" not in rel.own
+    assert "damage-increaser" in rel.own
+    assert "synergy-burn" in rel.related
+
+
+def test_flavour_tags_are_ignored():
+    """Korvold carries `alliteration`; expanding it would relate him to every
+    card with a catchy name. `cycle-*` alone is 1,594 of 4,383 slugs."""
+    for slug in ("alliteration", "cycle-eld-brawler", "punny-name",
+                 "unique-type-line", "single-english-word-name"):
+        assert is_flavour_tag(slug), slug
+    for slug in ("your-sacrifice-matters", "synergy-exile-cast", "typal-cat",
+                 "damage-increaser", "synergy-burn", "landfall"):
+        assert not is_flavour_tag(slug), slug
+
+
+def test_flavour_tags_do_not_enter_the_relationship():
+    store = _commander_store({"alliteration", "damage-increaser"}, {})
+    rel = build_relationship({"alliteration", "damage-increaser"}, store)
+    assert rel.own == {"damage-increaser"}
+
+
+def test_exact_tag_match_outscores_a_related_one():
+    """A card doing exactly what the commander cares about is the strongest
+    signal available."""
+    store = _commander_store(
+        {"your-sacrifice-matters"},
+        {"oid-exact": {"your-sacrifice-matters"}, "oid-related": {"synergy-clue"}},
+        related={"your-sacrifice-matters": {"synergy-clue": 164.6}},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Exact", oracle_id="oid-exact"),
+         _card("Related", oracle_id="oid-related")],
+        ScoringContext(commander="Korvold"),
+    )
+    assert scored["exact"].score > scored["related"].score
+
+
+def test_stronger_lift_scores_higher():
+    store = _commander_store(
+        {"root"},
+        {"oid-strong": {"strong"}, "oid-weak": {"weak"}},
+        related={"root": {"strong": 100.0, "weak": 6.0}},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Strong", oracle_id="oid-strong"),
+         _card("Weak", oracle_id="oid-weak")],
+        ScoringContext(commander="Cmd"),
+    )
+    assert scored["strong"].score > scored["weak"].score
+
+
+def test_unrelated_card_scores_nothing():
+    store = _commander_store(
+        {"your-sacrifice-matters"}, {"oid-other": {"landfall"}},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Unrelated", oracle_id="oid-other")],
+        ScoringContext(commander="Korvold"),
+    )
+    assert scored == {}
+
+
+def test_declared_themes_add_relationships():
+    """A player building tokens under a commander whose text never says "token"
+    can say so; the commander's own tags stay the default."""
+    store = _commander_store(
+        {"damage-increaser"}, {"oid-token": {"repeatable-creature-tokens"}},
+        vocabulary={"repeatable-creature-tokens", "damage-increaser"},
+    )
+    rel = build_relationship(
+        {"damage-increaser"}, store, themes=["creature tokens"]
+    )
+    assert "repeatable-creature-tokens" in rel.own
+
+
+def test_no_commander_yields_no_scores():
+    store = _commander_store(set(), {})
+    assert MechanicalLayer(store).score([_card("X")], ScoringContext()) == {}
+
+
+def test_reason_names_the_relationship():
+    store = _commander_store(
+        {"your-sacrifice-matters"}, {"oid-a": {"your-sacrifice-matters"}},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("A", oracle_id="oid-a")], ScoringContext(commander="Korvold"),
+    )
+    assert "your-sacrifice-matters" in scored["a"].reason

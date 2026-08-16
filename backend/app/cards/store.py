@@ -256,6 +256,61 @@ def tag_slugs(pattern: str | None = None, *, limit: int = 100) -> list[tuple[str
         return [(r[0], r[1]) for r in conn.execute(text(sql), params)]
 
 
+def related_tags(
+    slugs: list[str], *, min_lift: float = 5.0, limit: int = 12
+) -> dict[str, float]:
+    """Tags related to the given ones, mapped to their strength (lift).
+
+    The heart of the derived relationship model: hand a commander's own tags in,
+    get back the tags its supporting cards carry. Nothing is authored — the
+    pairing is measured from which tags share cards (see
+    ``cards.cooccurrence``).
+
+    ``min_lift`` defaults high enough to keep only strong relationships. Weak
+    partners are still in the table and still returned when a caller lowers the
+    bar, but at the default a coincidental pairing ranks far below a mechanical
+    one and contributes proportionally less.
+
+    Returns the input slugs too, at maximum strength: a card sharing the
+    commander's actual tag is the strongest possible match.
+    """
+    if not slugs:
+        return {}
+
+    out: dict[str, float] = {slug: float("inf") for slug in slugs}
+    placeholders = ", ".join(f":s{i}" for i in range(len(slugs)))
+    params: dict[str, Any] = {f"s{i}": s for i, s in enumerate(slugs)}
+    params["min_lift"] = min_lift
+    params["limit"] = limit * max(len(slugs), 1)
+    sql = f"""
+        SELECT partner, lift FROM tag_cooccurrence
+        WHERE slug IN ({placeholders}) AND lift >= :min_lift
+        ORDER BY lift DESC
+        LIMIT :limit
+    """
+    with get_engine().begin() as conn:
+        for partner, lift in conn.execute(text(sql), params):
+            if partner in out:
+                continue
+            out[partner] = max(out.get(partner, 0.0), float(lift))
+    return out
+
+
+def is_colour_artifact(slug: str, threshold: float = 0.5) -> bool:
+    """Whether a tag describes a card's COLOUR rather than what it does.
+
+    ``synergy-red`` is true of Torbran and useless for finding his deck. Such
+    tags are identifiable without a maintained blocklist: their nearest
+    neighbours are the other colour tags (80% for Torbran's, against 0% for
+    every genuine mechanic measured).
+    """
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            text("SELECT colour_share FROM tag_traits WHERE slug = :s"), {"s": slug}
+        ).first()
+    return bool(row) and float(row[0]) >= threshold
+
+
 def search_text(
     query: str,
     *,

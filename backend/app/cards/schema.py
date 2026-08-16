@@ -78,6 +78,7 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_cards_edhrec ON cards (edhrec_rank)",
     "CREATE INDEX IF NOT EXISTS idx_cards_cmc ON cards (cmc)",
     "CREATE INDEX IF NOT EXISTS idx_card_tags_slug ON card_tags (slug)",
+    "CREATE INDEX IF NOT EXISTS idx_cooc_slug ON tag_cooccurrence (slug, lift DESC)",
 )
 
 _CARD_TAGS_DDL = """
@@ -92,6 +93,40 @@ _META_DDL = """
 CREATE TABLE IF NOT EXISTS card_index_meta (
     key   TEXT PRIMARY KEY,
     value TEXT
+)
+"""
+
+# Which oracle tags appear together on the same card, and how much more often
+# than chance. This is what lets a commander's own tags name the cards that work
+# with it, without anyone authoring a theme list.
+#
+# `lift` is P(partner | slug) / P(partner): 1.0 means "co-occurs exactly as often
+# as chance", 50x means "strongly related". Measured, `synergy-exile-cast` pairs
+# with `repeatable-impulsive-draw` at 57.5x — Prosper's enabler package, derived
+# rather than declared.
+#
+# Slug NAMES do not encode this. Substring matching pairs only 65% of
+# relationship slugs and produces `draw-matters` -> `drawback` and
+# `name-matters` -> `punny-name`, so morphology is an accident of naming.
+_TAG_COOC_DDL = """
+CREATE TABLE IF NOT EXISTS tag_cooccurrence (
+    slug      TEXT NOT NULL,
+    partner   TEXT NOT NULL,
+    shared    INTEGER NOT NULL,
+    lift      REAL NOT NULL,
+    PRIMARY KEY (slug, partner)
+)
+"""
+
+# Tags whose closest neighbours are the five colour tags describe a card's
+# COLOUR rather than what it does. Torbran carries `synergy-red`, which is true
+# and useless: 80% of its top partners are the other colour tags, where every
+# genuine mechanic scores 0%. Flagged at build time so scoring can skip them.
+_TAG_TRAITS_DDL = """
+CREATE TABLE IF NOT EXISTS tag_traits (
+    slug          TEXT PRIMARY KEY,
+    card_count    INTEGER NOT NULL,
+    colour_share  REAL NOT NULL
 )
 """
 
@@ -113,6 +148,8 @@ def ensure_schema() -> None:
         conn.execute(text(_CARDS_DDL))
         conn.execute(text(_CARD_TAGS_DDL))
         conn.execute(text(_META_DDL))
+        conn.execute(text(_TAG_COOC_DDL))
+        conn.execute(text(_TAG_TRAITS_DDL))
         conn.execute(text(_FTS_DDL))
         for stmt in _INDEXES:
             conn.execute(text(stmt))
