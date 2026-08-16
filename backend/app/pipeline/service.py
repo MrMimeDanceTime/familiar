@@ -362,10 +362,20 @@ def build_suggestions(
             summary=selection.summary, proposals=[], selection=selection, debug=debug,
         )
 
+    # The brain map's verdict per card, so the review surface can show why a
+    # pick scored the way it did. Built from the shaped pool because that is
+    # the last point the scores and the card names are together.
+    scores_by_name = {
+        card.name.lower(): card.brainmap
+        for card in shaped
+        if card.name and card.brainmap
+    }
+
     with _timed("stage5_validate", timings):
         result = validate_to_proposals(
             session, deck_id, selection,
             conversation_id=conversation_id, message_id=message_id,
+            scores_by_name=scores_by_name,
         )
     logger.info(
         "pipeline: done in %.2fs timings=%s",

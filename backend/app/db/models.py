@@ -104,6 +104,16 @@ class DeckProposal(SQLModel, table=True):
     category: str | None = None
     commander_name: str | None = None
     reasoning: str = ""
+    # The brain map's verdict for this card: per-layer scores plus the
+    # one-line explanation. Stored on the proposal rather than recomputed at
+    # render time because the pool it was scored against is gone by the time
+    # the player reviews, and "why did it suggest this" has to answer with what
+    # the model actually saw.
+    scores: dict | None = Field(default=None, sa_column=Column(JSON))
+    # Why a denial happened. A bare boolean is a weak signal — "no" and "not
+    # this one, wrong slot" mean different things to the learning loop, and
+    # only the second is worth generalising from.
+    denial_reason: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

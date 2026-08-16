@@ -311,13 +311,15 @@ function App() {
   )
 
   const handleDenyProposal = useCallback(
-    async (proposalId: number) => {
-      await api.denyProposal(proposalId)
+    async (proposalId: number, reason?: string) => {
+      await api.denyProposal(proposalId, reason)
       setProposalBatches((prev) =>
         prev.map((batch) => ({
           ...batch,
           proposals: batch.proposals.map((p) =>
-            p.id === proposalId ? { ...p, status: 'denied' as const } : p,
+            p.id === proposalId
+              ? { ...p, status: 'denied' as const, denial_reason: reason ?? null }
+              : p,
           ),
         })),
       )

@@ -23,6 +23,9 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("deck", "themes", "JSON"),
     ("deck", "plan_notes", "TEXT"),
     ("deck", "off_meta", "REAL"),
+    # Brain-map verdict and structured denial reason on each proposal.
+    ("deck_proposals", "scores", "JSON"),
+    ("deck_proposals", "denial_reason", "TEXT"),
 ]
 
 
@@ -35,6 +38,14 @@ def _apply_additive_columns(engine) -> None:
     with engine.begin() as conn:
         for table, column, coltype in _ADDITIVE_COLUMNS:
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            # An empty PRAGMA means the table does not exist, not that it has no
+            # columns — so ALTERing it would raise. That happens whenever this
+            # runs against a DB predating a table (create_all makes missing
+            # tables, but ordering is not guaranteed relative to this patch).
+            # Skip rather than fail: create_all will build the table with the
+            # column already in the model.
+            if not existing:
+                continue
             if column not in existing:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))
 

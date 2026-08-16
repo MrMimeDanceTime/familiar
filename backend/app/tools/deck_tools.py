@@ -1100,6 +1100,10 @@ def propose_deck_changes(
         quantity = change.get("quantity") if action == "remove" else change.get("quantity", 1)
         category = change.get("category")
         reasoning = change.get("reasoning", "")
+        # The brain map's verdict, when the suggestion pipeline produced one.
+        # Carried on the row so the review surface can show WHY a card scored
+        # the way it did — the pool it was scored against is gone by then.
+        scores = change.get("scores")
 
         if action in ("add", "remove", "set_commander") and not card_name:
             raise ValueError(f"'{action}' requires a card_name.")
@@ -1132,6 +1136,7 @@ def propose_deck_changes(
             card_name=canonical_name or card_name or None,
             quantity=quantity,
             category=category,
+            scores=scores if isinstance(scores, dict) else None,
             commander_name=canonical_name if action == "set_commander" else None,
             reasoning=reasoning,
         )
@@ -1148,6 +1153,7 @@ def propose_deck_changes(
             "category": proposal.category,
             "commander_name": proposal.commander_name,
             "reasoning": proposal.reasoning,
+            "scores": proposal.scores,
         })
 
     return {"ok": True, "summary": summary, "proposals": proposals}

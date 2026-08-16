@@ -94,6 +94,20 @@ export interface ChatMessage {
   created_at: string
 }
 
+/** The brain map's verdict for one card: per-layer scores plus the one-line why.
+ *
+ * The SHAPE matters more than the total. High mechanical with low consensus is
+ * an underplayed card that genuinely works with this commander; high consensus
+ * with low mechanical is a staple every deck in these colours runs. Showing
+ * only a single number throws that distinction away. */
+export interface ProposalScores {
+  total: number
+  consensus: number
+  mechanical: number
+  personal: number
+  explain: string
+}
+
 export interface DeckProposal {
   id: number
   deck_id: number
@@ -105,8 +119,20 @@ export interface DeckProposal {
   category: string | null
   commander_name: string | null
   reasoning: string
+  scores?: ProposalScores | null
+  denial_reason?: string | null
   created_at?: string
 }
+
+/** Why a card was passed on. A bare "no" says nothing generalisable; these say
+ *  what to do differently, which is the only thing worth learning from. */
+export const DENIAL_REASONS = [
+  { key: 'wrong-slot', label: "Don't need this role" },
+  { key: 'too-generic', label: 'Too generic' },
+  { key: 'too-expensive', label: 'Too expensive' },
+  { key: 'off-theme', label: 'Off-theme' },
+  { key: 'dislike', label: 'Just don’t like it' },
+] as const
 
 export interface ConversationDetail {
   conversation: Conversation

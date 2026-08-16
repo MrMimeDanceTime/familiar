@@ -83,6 +83,8 @@ def get_conversation(conversation_id: int):
                     "category": p.category,
                     "commander_name": p.commander_name,
                     "reasoning": p.reasoning,
+                    "scores": p.scores,
+                    "denial_reason": p.denial_reason,
                     "created_at": p.created_at.isoformat(),
                 }
                 for p in proposals_raw

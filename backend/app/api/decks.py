@@ -310,10 +310,24 @@ def apply_proposal(proposal_id: int, background_tasks: BackgroundTasks):
         return result
 
 
+class DenyRequest(BaseModel):
+    """Why a proposal was denied.
+
+    Optional, so a bare deny still works. But the reason is what turns a
+    rejection into a usable signal: "wrong slot" and "too expensive" say
+    different things about what to suggest next, where a boolean says nothing
+    worth generalising from.
+    """
+
+    reason: str | None = None
+
+
 @router.post("/proposals/{proposal_id}/deny")
-def deny_proposal(proposal_id: int):
+def deny_proposal(proposal_id: int, body: DenyRequest | None = None):
     with Session(get_engine()) as session:
-        ok = repo.deny_proposal(session, proposal_id)
+        ok = repo.deny_proposal(
+            session, proposal_id, reason=body.reason if body else None
+        )
         if not ok:
             raise HTTPException(status_code=404, detail="Proposal not found or not pending")
         return {"ok": True}

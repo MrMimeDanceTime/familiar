@@ -557,11 +557,22 @@ def apply_proposal(session: Session, proposal_id: int) -> dict | None:
     return deck_snapshot(session, proposal.deck_id)
 
 
-def deny_proposal(session: Session, proposal_id: int) -> bool:
+def deny_proposal(
+    session: Session, proposal_id: int, reason: str | None = None
+) -> bool:
+    """Deny a pending proposal, optionally recording WHY.
+
+    The reason is the difference between a boolean and a usable signal. "No"
+    and "not this one, wrong slot" mean different things: the first says
+    nothing generalisable, the second says the card was fine but the deck
+    didn't need that role. The learning loop can only act on the second.
+    """
     proposal = get_proposal(session, proposal_id)
     if not proposal or proposal.status != "pending":
         return False
     proposal.status = "denied"
+    if reason:
+        proposal.denial_reason = reason.strip()[:200] or None
     session.add(proposal)
     session.commit()
     return True

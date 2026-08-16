@@ -286,3 +286,86 @@ def test_deck_snapshot_exposes_plan_fields(tmp_path):
     assert snapshot["role_targets"] == {"ramp": 12}
     assert snapshot["themes"] == ["treasure"]
     assert snapshot["plan_notes"] == "Low curve."
+
+
+# ── Structured denial (the learning loop's training data) ────────────────
+
+
+def test_denial_reason_is_recorded(tmp_path):
+    """A bare boolean is a weak signal. "wrong slot" and "too expensive" say
+    different things about what to suggest next; only those generalise."""
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from app.db import repository as repo
+    from app.db.models import DeckProposal
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'deny.db'}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="Test")
+        conversation = repo.create_conversation(session)
+        proposal = DeckProposal(
+            conversation_id=conversation.id, deck_id=deck.id, action="add",
+            card_name="Sol Ring", quantity=1, reasoning="ramp",
+        )
+        session.add(proposal)
+        session.commit()
+        session.refresh(proposal)
+
+        assert repo.deny_proposal(session, proposal.id, reason="Too generic") is True
+        session.refresh(proposal)
+
+    assert proposal.status == "denied"
+    assert proposal.denial_reason == "Too generic"
+
+
+def test_denial_without_a_reason_still_works(tmp_path):
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from app.db import repository as repo
+    from app.db.models import DeckProposal
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'deny2.db'}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="Test")
+        conversation = repo.create_conversation(session)
+        proposal = DeckProposal(
+            conversation_id=conversation.id, deck_id=deck.id, action="add",
+            card_name="Sol Ring", quantity=1, reasoning="ramp",
+        )
+        session.add(proposal)
+        session.commit()
+        session.refresh(proposal)
+
+        assert repo.deny_proposal(session, proposal.id) is True
+        session.refresh(proposal)
+
+    assert proposal.status == "denied"
+    assert proposal.denial_reason is None
+
+
+def test_brain_map_scores_ride_onto_the_proposal():
+    """The review surface can only show why a card scored well if the score
+    travels with the proposal — the pool it was scored against is gone by the
+    time the player reviews."""
+    from app.pipeline.selection import Pick, Selection
+    from app.pipeline.validate import selection_to_changes
+
+    selection = Selection(picks=[Pick("Mayhem Devil", "pings on sacrifice")])
+    changes = selection_to_changes(
+        selection, None,
+        {"mayhem devil": {"total": 0.78, "consensus": 0.85, "mechanical": 0.75,
+                          "personal": 0.0, "explain": "payoff for sacrifice"}},
+    )
+    assert changes[0]["scores"]["total"] == 0.78
+
+
+def test_missing_score_does_not_break_the_change():
+    from app.pipeline.selection import Pick, Selection
+    from app.pipeline.validate import selection_to_changes
+
+    changes = selection_to_changes(Selection(picks=[Pick("Unknown", "why")]), None, {})
+    assert "scores" not in changes[0]

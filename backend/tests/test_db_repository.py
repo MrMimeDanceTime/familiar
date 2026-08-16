@@ -391,3 +391,54 @@ def test_additive_columns_patch_existing_db(tmp_path):
         # existing row survived
         name = conn.execute(text("SELECT name FROM deck WHERE id=1")).scalar()
         assert name == "Old"
+
+
+def test_additive_columns_skips_tables_that_do_not_exist(tmp_path):
+    """An empty PRAGMA means the table is absent, not that it has no columns.
+
+    Treating those the same made the patch try to ALTER a missing table and
+    crash startup. Real case: a DB predating deck_proposals, where create_all
+    will build the table with the new columns already in the model anyway.
+    """
+    from sqlalchemy import text
+
+    from app.db.session import _apply_additive_columns
+
+    db = tmp_path / "partial.db"
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE deck (id INTEGER PRIMARY KEY, name TEXT)"))
+
+    # deck_proposals does not exist; this must not raise.
+    _apply_additive_columns(engine)
+
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(deck)"))}
+    assert "role_targets" in cols
+
+
+def test_additive_columns_patch_proposal_table(tmp_path):
+    from sqlalchemy import text
+
+    from app.db.session import _apply_additive_columns
+
+    db = tmp_path / "proposals.db"
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE deck_proposals (id INTEGER PRIMARY KEY, card_name TEXT, "
+            "status TEXT)"
+        ))
+        conn.execute(text(
+            "INSERT INTO deck_proposals (id, card_name, status) "
+            "VALUES (1, 'Sol Ring', 'approved')"
+        ))
+
+    _apply_additive_columns(engine)
+    _apply_additive_columns(engine)  # idempotent
+
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(deck_proposals)"))}
+        assert {"scores", "denial_reason"} <= cols
+        name = conn.execute(text("SELECT card_name FROM deck_proposals WHERE id=1")).scalar()
+        assert name == "Sol Ring"
