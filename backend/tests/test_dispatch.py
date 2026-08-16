@@ -608,11 +608,15 @@ def test_simulated_network_failure_does_not_crash_dispatch(session):
 
 
 def test_deck_mutation_tools_set_is_accurate():
+    # Membership here makes the engine emit a `deck_updated` event, so this set
+    # means "changed something the deck panel shows", not merely "wrote to the
+    # deck table". deck_set_plan qualifies: themes and role targets are shown.
     assert DECK_MUTATION_TOOLS == {
         "deck_add_card",
         "deck_remove_card",
         "deck_set_commander",
         "deck_update_notes",
+        "deck_set_plan",
     }
 
 

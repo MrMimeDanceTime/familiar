@@ -168,7 +168,33 @@ def _detect_roles(type_line: str | None, oracle_text: str,
 
 
 def deck_get_current(session: Session, deck_id: int) -> dict:
-    return repo.deck_snapshot(session, deck_id)
+    """The deck as it stands, plus what it is trying to become.
+
+    The snapshot carries the raw plan fields; this attaches the computed
+    current-vs-target view so the model reads "still needs: draw (short 4)"
+    rather than deriving it from role targets and a 99-card list — arithmetic
+    it does unreliably and would have to redo every turn.
+    """
+    from app import deckplan
+
+    snapshot = repo.deck_snapshot(session, deck_id)
+    plan = deckplan.build_plan(snapshot)
+    snapshot["plan"] = {
+        "themes": plan.themes,
+        "notes": plan.notes,
+        "off_meta": snapshot.get("off_meta"),
+        "role_counts": {
+            g.role: {"current": g.current, "target": g.target} for g in plan.gaps
+        },
+        "still_needs": {g.role: g.gap for g in plan.unmet},
+        "is_set": plan.has_plan(),
+        "counts_overlap": (
+            "A card counts toward every role it fills, so a land that draws is "
+            "in both. A role over target is not necessarily bloated, and these "
+            "targets are rules of thumb rather than requirements."
+        ),
+    }
+    return snapshot
 
 
 def deck_get_stats(session: Session, deck_id: int, provider: Any | None = None) -> dict:
@@ -297,6 +323,61 @@ def set_deck_commanders(
 
 def deck_update_notes(session: Session, deck_id: int, notes: str) -> dict:
     repo.update_deck(session, deck_id, notes=notes)
+    return repo.deck_snapshot(session, deck_id)
+
+
+# Roles the plan tracks. Anything else in role_targets is dropped rather than
+# stored, so a hallucinated role name can't become a target nothing counts
+# toward.
+_PLAN_ROLES = ("land", "ramp", "draw", "removal")
+
+
+def deck_set_plan(
+    session: Session,
+    deck_id: int,
+    themes: list | None = None,
+    role_targets: dict | None = None,
+    plan_notes: str | None = None,
+    off_meta: float | None = None,
+) -> dict:
+    """Record what the deck is TRYING to be.
+
+    Every field is optional and only supplied ones are written, so the model can
+    set a direction early and refine targets later without clobbering what it
+    already recorded.
+
+    Arguments are validated rather than trusted: unknown role names are dropped,
+    counts coerced to non-negative ints, off_meta clamped to 0-1. This is a
+    model-facing tool, so a plausible-but-wrong argument is a normal input, not
+    an exceptional one.
+    """
+    clean_targets: dict[str, int] | None = None
+    if isinstance(role_targets, dict):
+        clean_targets = {}
+        for role in _PLAN_ROLES:
+            value = role_targets.get(role)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                clean_targets[role] = max(0, int(value))
+        if not clean_targets:
+            clean_targets = None
+
+    clean_themes: list[str] | None = None
+    if isinstance(themes, list):
+        clean_themes = [t.strip() for t in themes if isinstance(t, str) and t.strip()]
+
+    clean_off_meta: float | None = None
+    if isinstance(off_meta, (int, float)) and not isinstance(off_meta, bool):
+        clean_off_meta = max(0.0, min(1.0, float(off_meta)))
+
+    repo.update_deck(
+        session, deck_id,
+        themes=clean_themes,
+        role_targets=clean_targets,
+        plan_notes=plan_notes,
+        off_meta=clean_off_meta,
+    )
     return repo.deck_snapshot(session, deck_id)
 
 

@@ -324,4 +324,60 @@ TOOL_SPECS: list[ToolSpec] = [
             "required": ["deck_id", "notes"],
         },
     ),
+    ToolSpec(
+        name="deck_set_plan",
+        description=(
+            "Record the deck's PLAN: what it is trying to be, before building it. "
+            "Set this once you and the player have agreed on a direction, and "
+            "update it whenever the direction changes. The plan drives card "
+            "suggestions (suggest_cards aims at the roles the deck is short on) "
+            "and comes back on every deck read, so the strategy never has to be "
+            "re-inferred from the card list. Pass only the fields you are changing."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "integer"},
+                "themes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Short phrases naming what the deck is built around, e.g. "
+                        '["cat and dog tribal", "token swarm"]. These steer which '
+                        "mechanical relationships card suggestions look for."
+                    ),
+                },
+                "role_targets": {
+                    "type": "object",
+                    "description": (
+                        "How many cards each role should end up with. Omit a role "
+                        "to keep its default (36 land / 10 ramp / 10 draw / 8 "
+                        "removal). Match the deck's actual plan: a low-curve aggro "
+                        "deck wants fewer lands than a big-mana deck."
+                    ),
+                    "properties": {
+                        "land": {"type": "integer"},
+                        "ramp": {"type": "integer"},
+                        "draw": {"type": "integer"},
+                        "removal": {"type": "integer"},
+                    },
+                },
+                "plan_notes": {
+                    "type": "string",
+                    "description": "One or two lines on the gameplan and how it wins.",
+                },
+                "off_meta": {
+                    "type": "number",
+                    "description": (
+                        "0.0-1.0. How far from the popular consensus list to build. "
+                        "0 follows what most decks with this commander run; 1 "
+                        "favours cards specific to this commander even when few "
+                        "decks play them. Default 0.25. Raise it when the player "
+                        "wants something distinctive or dislikes netdecked lists."
+                    ),
+                },
+            },
+            "required": ["deck_id"],
+        },
+    ),
 ]
