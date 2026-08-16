@@ -2616,3 +2616,33 @@ body.has-pinned-tray .deck-detail {
   font-style: italic;
   opacity: 0.6;
 }
+
+/* Touch: the deny-reason chips are the only place the app asks for a precise
+ * tap, and at desktop sizing they are ~26px tall against the ~44px both Apple
+ * and Google recommend. Five of them wrapping in a phone-width column is
+ * exactly the case that gets mis-tapped, and a mis-tap here records the WRONG
+ * reason — worse than no reason, because the learning loop believes it. */
+@media (hover: none) {
+  .btn--chip {
+    padding: 10px 14px;
+    font-size: 13px;
+    min-height: 40px;
+  }
+
+  .proposal-card__deny-options {
+    gap: 8px;
+  }
+}
+
+/* Narrow screens: the score label column is fixed at 46px, which leaves the
+ * bar cramped inside a padded chat bubble on a 320px phone. */
+@media (max-width: 420px) {
+  .proposal-score {
+    grid-template-columns: 40px 1fr;
+    gap: 6px;
+  }
+
+  .proposal-score__label {
+    font-size: 10px;
+  }
+}
