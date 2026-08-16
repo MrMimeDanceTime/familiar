@@ -528,3 +528,139 @@ def test_real_lifegain_still_detected():
         "Whenever you gain life, put a +1/+1 counter on this creature.", []
     )}
     assert "lifegain" in keys
+
+
+# ── Learning from structured denials ─────────────────────────────────────
+#
+# This is why the review surface asks WHY. "Don't need this role" is a claim
+# about the deck's current shape — the card may be perfect once that slot opens
+# — while "too generic" is a claim about the card. Weighting them identically
+# slowly poisons the pool against cards that were only ever mistimed.
+
+
+def _deny_engine(tmp_path, rows):
+    """rows: (card_name, status, deck_id, denial_reason)"""
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from app.db.models import DeckProposal
+
+    engine = create_engine(f"sqlite:///{tmp_path}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        for name, status, deck_id, reason in rows:
+            session.add(DeckProposal(
+                conversation_id=1, deck_id=deck_id, action="add",
+                card_name=name, status=status, reasoning="",
+                denial_reason=reason,
+            ))
+        session.commit()
+    return engine
+
+
+def test_role_denial_counts_far_less_than_a_taste_denial(tmp_path):
+    """The same card, denied once each way, must not score the same."""
+    role = PersonalLayer(_deny_engine(
+        tmp_path / "role.db", [("Card A", "denied", 1, "Don't need this role")]
+    ))
+    taste = PersonalLayer(_deny_engine(
+        tmp_path / "taste.db", [("Card A", "denied", 1, "Too generic")]
+    ))
+    role_weight = role._history(1)["card a"][1]
+    taste_weight = taste._history(1)["card a"][1]
+    assert role_weight < taste_weight / 3
+
+
+def test_unlabelled_denial_sits_between(tmp_path):
+    """A Skip is a real rejection, but the player declined to say why, so it
+    must not carry the weight of an explicit dislike."""
+    layers = {
+        label: PersonalLayer(_deny_engine(
+            tmp_path / f"{key}.db", [("Card A", "denied", 1, reason)]
+        ))._history(1)["card a"][1]
+        for key, label, reason in [
+            ("role", "role", "Don't need this role"),
+            ("skip", "skip", None),
+            ("taste", "taste", "Too generic"),
+        ]
+    }
+    assert layers["role"] < layers["skip"] < layers["taste"]
+
+
+def test_curly_apostrophe_reason_is_recognised(tmp_path):
+    """The UI sends a typographic apostrophe; a lookup miss would silently
+    downgrade the strongest signal to the unlabelled default."""
+    curly = PersonalLayer(_deny_engine(
+        tmp_path / "curly.db", [("Card A", "denied", 1, "Just don’t like it")]
+    ))._history(1)["card a"][1]
+    straight = PersonalLayer(_deny_engine(
+        tmp_path / "straight.db", [("Card A", "denied", 1, "Just don't like it")]
+    ))._history(1)["card a"][1]
+    assert curly == straight
+
+
+def test_unknown_reason_falls_back_rather_than_vanishing(tmp_path):
+    layer = PersonalLayer(_deny_engine(
+        tmp_path / "unknown.db", [("Card A", "denied", 1, "some freeform text")]
+    ))
+    assert layer._history(1)["card a"][1] > 0
+
+
+def test_repeated_denials_accumulate(tmp_path):
+    layer = PersonalLayer(_deny_engine(tmp_path / "rep.db", [
+        ("Card A", "denied", 1, "Too generic"),
+        ("Card A", "denied", 1, "Too generic"),
+    ]))
+    single = PersonalLayer(_deny_engine(
+        tmp_path / "one.db", [("Card A", "denied", 1, "Too generic")]
+    ))
+    assert layer._history(1)["card a"][1] > single._history(1)["card a"][1]
+
+
+def test_role_denial_barely_moves_the_score(tmp_path):
+    """End to end: a card passed on for the wrong slot should still look
+    largely acceptable, because nothing was said against the card."""
+    layer = PersonalLayer(_deny_engine(tmp_path / "e2e.db", [
+        ("Card A", "approved", 1, None),
+        ("Card A", "denied", 1, "Don't need this role"),
+    ]))
+    scored = layer.score([_card("Card A")], ScoringContext(deck_id=1))
+    assert scored["card a"].score > 0.75
+
+
+# ── Generalising beyond exact card names ─────────────────────────────────
+
+
+def test_curve_preference_needs_enough_evidence(tmp_path):
+    """A handful of denials is noise; reading a curve preference off it would
+    be superstition."""
+    layer = PersonalLayer(_deny_engine(tmp_path / "thin.db", [
+        ("Card A", "approved", 1, None), ("Card B", "denied", 1, None),
+    ]))
+    assert layer.curve_preference() is None
+
+
+def test_curve_score_ignores_a_narrow_spread():
+    """Measured on the real database: approved 2.28 MV against denied 2.42.
+    A 0.14 gap is not a preference, and acting on it would invent taste the
+    player has not demonstrated."""
+    assert PersonalLayer._curve_score({"cmc": 5.0}, (2.28, 2.42)) is None
+
+
+def test_curve_score_favours_the_side_the_player_takes_from():
+    cheap = PersonalLayer._curve_score({"cmc": 2.0}, (2.0, 5.0))
+    expensive = PersonalLayer._curve_score({"cmc": 7.0}, (2.0, 5.0))
+    assert cheap is not None and expensive is not None
+    assert cheap.score > expensive.score
+    assert "cheaper" in cheap.reason
+
+
+def test_curve_score_stays_weak():
+    """"You tend to take cheaper cards" is a far softer claim than "you took
+    this card twice", and must never outrank direct history."""
+    inferred = PersonalLayer._curve_score({"cmc": 1.0}, (2.0, 6.0))
+    assert inferred is not None
+    assert 0.35 <= inferred.score <= 0.65
+
+
+def test_curve_score_needs_a_mana_value():
+    assert PersonalLayer._curve_score({"cmc": None}, (2.0, 5.0)) is None

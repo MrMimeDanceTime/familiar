@@ -38,6 +38,35 @@ logger = logging.getLogger(__name__)
 _THIS_DECK_WEIGHT = 1.0
 _OTHER_DECK_WEIGHT = 0.4
 
+# How much each denial reason says about the CARD, as opposed to the moment.
+#
+# This is the whole reason the review surface asks. "Don't need this role" is a
+# statement about the deck's current shape — the card may be perfect next week
+# once that slot opens, so holding it against the card is wrong. "Too generic"
+# and "just don't like it" are statements about the card itself and should
+# stick. Treating every denial identically throws that distinction away and
+# slowly poisons the pool against cards that were only ever mistimed.
+_REASON_WEIGHT: dict[str, float] = {
+    "don't need this role": 0.2,
+    "don’t need this role": 0.2,   # curly apostrophe, as the UI sends it
+    "off-theme": 0.5,
+    "too expensive": 0.7,
+    "too generic": 1.0,
+    "just don't like it": 1.0,
+    "just don’t like it": 1.0,
+}
+
+# An unlabelled denial ("Skip") sits between the two: it is a real rejection,
+# but the player declined to say why, so it should not carry the full weight of
+# an explicit "I dislike this card".
+_UNLABELLED_DENIAL_WEIGHT = 0.6
+
+
+def _reason_weight(reason: str | None) -> float:
+    if not reason:
+        return _UNLABELLED_DENIAL_WEIGHT
+    return _REASON_WEIGHT.get(reason.strip().lower(), _UNLABELLED_DENIAL_WEIGHT)
+
 # Basic lands are approved constantly and carry no preference information: a
 # deck needs them regardless of taste, so counting them would make the layer's
 # strongest opinions be about Swamp. Measured on the real history, they were the
@@ -60,15 +89,18 @@ class PersonalLayer:
     def _history(self, deck_id: int | None) -> dict[str, tuple[float, float]]:
         """Return ``lower(card_name) -> (approve_weight, deny_weight)``.
 
-        Weights are summed across proposals so a card denied three times counts
-        more than one denied once.
+        Weights sum across proposals, so a card denied three times counts more
+        than one denied once, and each denial is scaled by how much its reason
+        says about the CARD rather than the moment (see ``_REASON_WEIGHT``).
+
+        Not grouped in SQL any more: the denial reason varies per row, so
+        grouping would average away exactly the distinction this reads.
         """
         sql = """
-            SELECT lower(card_name) AS name, status, deck_id, count(*) AS n
+            SELECT lower(card_name) AS name, status, deck_id, denial_reason
             FROM deck_proposals
             WHERE action = 'add' AND status IN ('approved', 'denied')
               AND card_name IS NOT NULL
-            GROUP BY lower(card_name), status, deck_id
         """
         out: dict[str, tuple[float, float]] = {}
         try:
@@ -78,7 +110,7 @@ class PersonalLayer:
             logger.warning("personal layer could not read proposal history: %s", exc)
             return {}
 
-        for name, status, row_deck_id, count in rows:
+        for name, status, row_deck_id, denial_reason in rows:
             if name in _BASIC_LANDS:
                 continue
             weight = (
@@ -87,11 +119,82 @@ class PersonalLayer:
             )
             approvals, denials = out.get(name, (0.0, 0.0))
             if status == "approved":
-                approvals += weight * count
+                approvals += weight
             else:
-                denials += weight * count
+                denials += weight * _reason_weight(denial_reason)
             out[name] = (approvals, denials)
         return out
+
+    def curve_preference(self) -> tuple[float, float] | None:
+        """Average mana value of cards taken vs passed on, across all decks.
+
+        The generalising half of this layer. Exact-name history only helps for
+        a card already seen, which is a small slice of any pool; a preference
+        for cheap interaction over six-drops applies to cards never proposed
+        before. Returns ``(approved_mv, denied_mv)`` or None without enough
+        evidence to be worth acting on.
+
+        Deliberately cross-deck: this is taste, not a property of one build.
+        """
+        sql = """
+            SELECT p.status, AVG(c.cmc) AS mv, COUNT(*) AS n
+            FROM deck_proposals p
+            JOIN cards c ON lower(c.name) = lower(p.card_name)
+            WHERE p.action = 'add' AND p.status IN ('approved', 'denied')
+              AND p.card_name IS NOT NULL AND c.cmc IS NOT NULL
+              AND lower(c.name) NOT IN (
+                  'plains','island','swamp','mountain','forest','wastes'
+              )
+            GROUP BY p.status
+        """
+        try:
+            with self._engine.begin() as conn:
+                rows = {r[0]: (r[1], r[2]) for r in conn.execute(text(sql))}
+        except Exception:  # noqa: BLE001 — needs the card index; absent on a cold install
+            return None
+
+        approved = rows.get("approved")
+        denied = rows.get("denied")
+        # Both sides need enough rows to mean anything. A handful of denials is
+        # noise, and reading a curve preference off it would be superstition.
+        if not approved or not denied or approved[1] < 20 or denied[1] < 10:
+            return None
+        return (float(approved[0]), float(denied[0]))
+
+    @staticmethod
+    def _curve_score(
+        card: dict, curve: tuple[float, float] | None
+    ) -> LayerScore | None:
+        """Score an unseen card against the player's demonstrated curve taste.
+
+        Weak on purpose. It scores near the neutral midpoint and never reaches
+        the confidence of a direct approve/deny, because "you tend to take
+        cheaper cards" is a much softer claim than "you took this card twice".
+        Returns None when the two averages are too close to mean anything.
+        """
+        if curve is None:
+            return None
+        approved_mv, denied_mv = curve
+        spread = denied_mv - approved_mv
+        # Under half a mana of difference is not a preference, it is noise.
+        if abs(spread) < 0.5:
+            return None
+
+        cmc = card.get("cmc")
+        if not isinstance(cmc, (int, float)):
+            return None
+
+        midpoint = (approved_mv + denied_mv) / 2
+        # Positive when the card sits on the side of the midpoint the player
+        # has been taking from.
+        aligned = (midpoint - cmc) if spread > 0 else (cmc - midpoint)
+        nudge = max(-0.15, min(0.15, aligned * 0.08))
+        direction = "cheaper" if spread > 0 else "bigger"
+        return LayerScore(
+            layer=PERSONAL,
+            score=0.5 + nudge,
+            reason=f"you lean {direction} than this on average",
+        )
 
     def score(
         self, cards: list[dict], context: ScoringContext
@@ -100,6 +203,8 @@ class PersonalLayer:
         if not history:
             return {}
 
+        curve = self.curve_preference()
+
         out: dict[str, LayerScore] = {}
         for card in cards:
             name = (card.get("name") or "").strip()
@@ -107,6 +212,12 @@ class PersonalLayer:
                 continue
             entry = history.get(name.lower())
             if not entry:
+                # No history for this exact card — but taste still generalises.
+                # Without this the layer only ever speaks about cards already
+                # proposed once, which is a small slice of any pool.
+                inferred = self._curve_score(card, curve)
+                if inferred is not None:
+                    out[name.lower()] = inferred
                 continue
 
             approvals, denials = entry
