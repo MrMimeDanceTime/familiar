@@ -667,3 +667,81 @@ def test_two_named_cards_are_allowed():
     assert _redirect_to_pipeline("propose_deck_changes", {
         "changes": _changes(("add", "Sol Ring"), ("add", "Arcane Signet")),
     }) is None
+
+
+# ── The reveal payload must carry the scores ─────────────────────────────
+#
+# Found in production: proposals had full scores in the database and every card
+# still rendered "no scoring data" in the review UI. The deck_proposal SSE
+# payload — the ONLY thing that UI reads — was hand-built and omitted the field.
+# Three other serialisation sites had been updated; this one was missed, and no
+# test covered it because every test asserted against the database.
+
+
+def test_settled_batch_includes_scores(session):
+    """The reveal payload is what the review UI renders, so a score in the row
+    that never reaches the wire is invisible."""
+    from app.chat.engine import _settled_proposal_batch
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    verdict = {
+        "total": 0.78, "consensus": 0.85, "mechanical": 0.75,
+        "personal": 0.0, "explain": "payoff for sacrifice",
+    }
+    proposal = DeckProposal(
+        conversation_id=convo.id, deck_id=deck.id, action="add",
+        card_name="Mayhem Devil", quantity=1, reasoning="pings on sacrifice",
+        scores=verdict,
+    )
+    session.add(proposal)
+    session.commit()
+    session.refresh(proposal)
+
+    batch = _settled_proposal_batch(session, [proposal.id], "a batch")
+
+    assert batch["proposals"][0]["scores"] == verdict
+
+
+def test_settled_batch_tolerates_an_unscored_proposal(session):
+    """propose_deck_changes for a named card legitimately has no scores; the
+    key must still be present so the UI can distinguish "no data" from a
+    missing field."""
+    from app.chat.engine import _settled_proposal_batch
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    proposal = DeckProposal(
+        conversation_id=convo.id, deck_id=deck.id, action="add",
+        card_name="Sol Ring", quantity=1, reasoning="player asked for it",
+    )
+    session.add(proposal)
+    session.commit()
+    session.refresh(proposal)
+
+    batch = _settled_proposal_batch(session, [proposal.id], "a batch")
+
+    assert "scores" in batch["proposals"][0]
+    assert batch["proposals"][0]["scores"] is None
+
+
+def test_every_ui_facing_serialisation_carries_scores():
+    """Guards the class of bug rather than the instance: three sites were
+    updated and a fourth was missed. Any new proposal serialiser feeding the UI
+    must include the field."""
+    import inspect
+
+    from app.api import conversations as conversations_api
+    from app.chat import engine as engine_module
+    from app.tools import deck_tools
+
+    for module, marker in (
+        (engine_module, "_settled_proposal_batch"),
+        (conversations_api, "get_conversation"),
+        (deck_tools, "propose_deck_changes"),
+    ):
+        source = inspect.getsource(module)
+        assert '"reasoning"' in source, marker
+        assert '"scores"' in source, f"{marker} serialises proposals without scores"

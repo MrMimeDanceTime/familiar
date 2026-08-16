@@ -442,6 +442,11 @@ def _settled_proposal_batch(
             "category": p.category,
             "commander_name": p.commander_name,
             "reasoning": p.reasoning,
+            # The brain map's verdict. This payload is what the review UI
+            # actually renders, so omitting it here made every proposal read
+            # "no scoring data" even when the row carried full scores — the
+            # database was right and the wire format was lying.
+            "scores": p.scores,
         })
     return {"ok": True, "summary": summary, "proposals": proposals}
 
