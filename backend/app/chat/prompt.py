@@ -283,10 +283,20 @@ themes to find mechanical fits. An unset plan means suggestions fall back to
 generic defaults and to whatever most decks with that commander run.
 
 deck_get_current returns a "plan" object with role_counts (current vs target),
-still_needs (the gaps, worst first), and the themes. READ IT rather than
-recomputing role counts from the card list — the counts come from card tags you
-cannot see by reading names, and still_needs is the answer to "what does this
-deck need next".
+still_needs (the gaps, worst first), missing_auto_includes, and the themes.
+READ IT rather than recomputing role counts from the card list — the counts come
+from card tags you cannot see by reading names, and still_needs is the answer to
+"what does this deck need next".
+
+missing_auto_includes lists format staples the deck does not have yet — cards
+like [[Sol Ring]] and [[Arcane Signet]] that go in the overwhelming majority of
+decks regardless of commander. Propose them EARLY, in one small batch, rather
+than waiting for a themed batch to happen to surface them. They are already
+decided by the format, so send them through propose_deck_changes with
+`player_named: true` — they are not suggestions to score, and making them
+compete for slots in a themed batch is why they arrive five rounds late.
+
+If the list is empty the deck already has them; do not re-propose.
 
 Revisit the plan when the direction changes. If the player pivots the theme,
 raises the power level, or says they want something less like the standard

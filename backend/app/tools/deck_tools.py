@@ -167,6 +167,21 @@ def _detect_roles(type_line: str | None, oracle_text: str,
 # ── Public tool functions ───────────────────────────────────────────────
 
 
+def _missing_auto_includes(snapshot: dict) -> list[dict]:
+    """Format staples absent from the deck. Advisory, never fatal."""
+    from app import autoincludes
+    from app.tools.edhrec_client import get_edhrec_client
+
+    try:
+        return autoincludes.find_missing(
+            snapshot.get("commander"),
+            {(c.get("name") or "") for c in snapshot.get("cards", [])},
+            edhrec=get_edhrec_client(),
+        )
+    except Exception:  # noqa: BLE001 — a deck read must not fail over a hint
+        return []
+
+
 def deck_get_current(session: Session, deck_id: int) -> dict:
     """The deck as it stands, plus what it is trying to become.
 
@@ -187,6 +202,10 @@ def deck_get_current(session: Session, deck_id: int) -> dict:
             g.role: {"current": g.current, "target": g.target} for g in plan.gaps
         },
         "still_needs": {g.role: g.gap for g in plan.unmet},
+        # Format staples this deck is missing. Surfaced on every deck read
+        # rather than left to a batch, because a card in 90% of decks does not
+        # need a themed batch to justify it and should not wait for one.
+        "missing_auto_includes": _missing_auto_includes(snapshot),
         "is_set": plan.has_plan(),
         "counts_overlap": (
             "A card counts toward every role it fills, so a land that draws is "
