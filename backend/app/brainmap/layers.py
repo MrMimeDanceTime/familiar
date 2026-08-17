@@ -126,6 +126,11 @@ class ScoringContext:
 # this floor exists to prevent.
 _MIN_CONFIDENCE = 0.70
 
+# Fraction of consensus weight that survives even at off_meta=1.0. Without a
+# floor the layer is switched off entirely, which does not de-emphasise
+# popularity so much as make popularity-only cards unscoreable.
+_CONSENSUS_FLOOR_SHARE = 0.3
+
 DEFAULT_WEIGHTS: dict[str, float] = {
     CONSENSUS: 0.5,
     MECHANICAL: 0.3,
@@ -154,10 +159,21 @@ def blend(
     """
     weights = dict(weights or DEFAULT_WEIGHTS)
 
+    # Shift weight from consensus to mechanical, but never to zero.
+    #
+    # Draining consensus entirely at off_meta=1.0 made a card scored ONLY by
+    # consensus total 0.000 — its whole weight was gone — so those cards
+    # collapsed and the pool fell back to raw edhrec_rank order. Measured on a
+    # real pool that INVERTED the knob: off_meta=1.0, the "surface what this
+    # commander specifically wants" setting, returned a top 10 with a median
+    # rank of 34, MORE popular than off_meta=0.0 at 3,021.
+    #
+    # A residual share means high off_meta de-emphasises popularity without
+    # deleting it, which is what the control is for.
     shift = max(0.0, min(1.0, off_meta))
     consensus_weight = weights.get(CONSENSUS, 0.0)
     mechanical_weight = weights.get(MECHANICAL, 0.0)
-    movable = consensus_weight * shift
+    movable = consensus_weight * (1.0 - _CONSENSUS_FLOOR_SHARE) * shift
     weights[CONSENSUS] = consensus_weight - movable
     weights[MECHANICAL] = mechanical_weight + movable
 

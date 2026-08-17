@@ -25,6 +25,35 @@ def _normalise_synergy(value: float) -> float:
     return max(0.0, min(1.0, value / _SYNERGY_CEILING))
 
 
+# Global EDHREC rank bands, as a fallback for cards absent from the commander's
+# own page. Measured against the legal pool: rank 1,600 is the 5th percentile,
+# 7,956 the 25th, 15,897 the median.
+#
+# Capped well below what a real per-commander score can reach. "Widely played in
+# the format" is genuinely weaker evidence than "played in THIS commander's
+# decks", and this must not let a generically popular card outrank one the
+# commander's own page endorses.
+_GLOBAL_RANK_BANDS: tuple[tuple[int, float, str], ...] = (
+    (500, 0.45, "a format staple"),
+    (2000, 0.35, "widely played"),
+    (8000, 0.22, "commonly played"),
+    (16000, 0.12, "occasionally played"),
+)
+
+
+def _global_rank_score(rank: int | None) -> LayerScore | None:
+    """Score a card on global popularity when the commander's page omits it."""
+    if not isinstance(rank, int) or rank <= 0:
+        return None
+    for threshold, score, label in _GLOBAL_RANK_BANDS:
+        if rank <= threshold:
+            return LayerScore(
+                layer=CONSENSUS, score=score,
+                reason=f"{label} (EDHREC rank {rank:,}), not on this commander's page",
+            )
+    return None
+
+
 class ConsensusLayer:
     """Scores cards on EDHREC play rate blended with commander-specific synergy."""
 
@@ -55,7 +84,22 @@ class ConsensusLayer:
         for card in cards:
             data = card.get("edhrec")
             name = (card.get("name") or "").strip()
-            if not data or not name:
+            if not name:
+                continue
+
+            if not data:
+                # Not on this commander's EDHREC page — but that page lists ~200
+                # cards while the global rank covers 100% of the legal pool. A
+                # card absent from the page is not unknown, only not SPECIFIC to
+                # this deck, and it still has a measured popularity.
+                #
+                # Without this the layer stayed silent and every unlisted card
+                # tied on mechanical alone: a rank-12,860 card scored exactly
+                # level with a rank-1,766 one, and both sat above Rampant Growth
+                # at rank 26.
+                fallback = _global_rank_score(card.get("edhrec_rank"))
+                if fallback is not None:
+                    out[name.lower()] = fallback
                 continue
 
             rate = data.get("inclusion_rate")

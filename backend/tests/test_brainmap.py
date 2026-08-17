@@ -43,7 +43,7 @@ class FakeStore:
     """Minimal store: commander text, tag vocabulary, and per-card tags."""
 
     def __init__(self, commander_text="", tags=None, vocabulary=None,
-                 related=None, colour_artifacts=None):
+                 related=None, colour_artifacts=None, breadth=None):
         self._commander_text = commander_text
         self._tags = tags or {}
         self._vocabulary = vocabulary or set(
@@ -51,6 +51,7 @@ class FakeStore:
         )
         self._related = related or {}
         self._colour_artifacts = colour_artifacts or set()
+        self._breadth = breadth or {}
 
     def by_name(self, name):
         return {
@@ -81,6 +82,10 @@ class FakeStore:
 
     def is_colour_artifact(self, slug, threshold=0.5):
         return slug in self._colour_artifacts
+
+    def tag_breadth(self, slugs):
+        # Fake store tags are all narrow unless a test says otherwise.
+        return {s: self._breadth.get(s, 0.001) for s in slugs}
 
 
 # ── Blending ─────────────────────────────────────────────────────────────
@@ -674,3 +679,111 @@ def test_a_staple_is_not_penalised_for_low_synergy():
         ScoringContext(),
     )
     assert scored["staple"].score >= 0.34
+
+
+def test_global_rank_carries_cards_off_the_commanders_page():
+    """EDHREC's per-commander page lists ~200 cards; the global rank covers 100%
+    of the legal pool. Without a fallback, every unlisted card scored on
+    mechanical alone and tied — a rank-12,860 card sat level with a rank-1,766
+    one, and both above Rampant Growth at rank 26."""
+    from app.brainmap.consensus import ConsensusLayer
+
+    scored = ConsensusLayer().score(
+        [
+            {"name": "Staple", "edhrec_rank": 300},
+            {"name": "Fringe", "edhrec_rank": 12000},
+        ],
+        ScoringContext(),
+    )
+    assert scored["staple"].score > scored["fringe"].score
+    assert "not on this commander's page" in scored["staple"].reason
+
+
+def test_global_rank_never_beats_a_real_commander_score():
+    """"Widely played in the format" is weaker evidence than "played in THIS
+    commander's decks", so the fallback must stay below a genuine page entry."""
+    from app.brainmap.consensus import ConsensusLayer
+
+    scored = ConsensusLayer().score(
+        [
+            {"name": "Global", "edhrec_rank": 1},
+            {"name": "OnPage", "edhrec": {"inclusion_rate": 0.5, "synergy": 0.1}},
+        ],
+        ScoringContext(),
+    )
+    assert scored["onpage"].score > scored["global"].score
+
+
+def test_unranked_card_still_scores_nothing():
+    """A card with neither page data nor a rank has no consensus opinion, and
+    the layer must stay silent rather than invent one."""
+    from app.brainmap.consensus import ConsensusLayer
+
+    assert ConsensusLayer().score(
+        [{"name": "Unknown"}], ScoringContext()
+    ) == {}
+
+
+def test_deep_fringe_gets_no_consensus_score():
+    """Past the last band the rank stops meaning anything useful."""
+    from app.brainmap.consensus import ConsensusLayer
+
+    assert ConsensusLayer().score(
+        [{"name": "Obscure", "edhrec_rank": 25000}], ScoringContext()
+    ) == {}
+
+
+def test_generic_tags_are_discounted():
+    """`activated-ability` covers 26.5% of the legal pool. Rin and Seri carries
+    it, so Sol Ring and Command Tower matched at exact strength and scored
+    mechanical 1.00 — meaning RAISING mechanical weight surfaced MORE staples.
+    That inverted the off-meta control: at 1.0 the top ten had a median EDHREC
+    rank of 34 against 3,021 at 0.0."""
+    store = _commander_store(
+        {"typal-cat", "activated-ability"},
+        {"oid-generic": {"activated-ability"}, "oid-specific": {"typal-cat"}},
+        breadth={"activated-ability": 0.265, "typal-cat": 0.001},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Sol Ring", oracle_id="oid-generic"),
+         _card("Cat Lord", oracle_id="oid-specific")],
+        ScoringContext(commander="Rin and Seri"),
+    )
+    assert scored["cat lord"].score > scored["sol ring"].score
+
+
+def test_a_specific_tag_wins_over_a_generic_one_on_the_same_card():
+    """A card sharing both must be graded on the specific relationship, or every
+    card with an activated ability ranks alongside real tribal payoffs."""
+    store = _commander_store(
+        {"typal-cat", "activated-ability"},
+        {"oid-both": {"typal-cat", "activated-ability"}},
+        breadth={"activated-ability": 0.265, "typal-cat": 0.001},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Both", oracle_id="oid-both")],
+        ScoringContext(commander="Rin and Seri"),
+    )
+    assert scored["both"].score == 1.0
+    assert "typal-cat" in scored["both"].reason
+
+
+def test_a_generic_match_still_scores_something():
+    """Discounted, not dropped — a card can legitimately relate through a broad
+    tag, it just must not outrank a specific one."""
+    store = _commander_store(
+        {"activated-ability"}, {"oid-g": {"activated-ability"}},
+        breadth={"activated-ability": 0.265},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Generic", oracle_id="oid-g")],
+        ScoringContext(commander="Cmd"),
+    )
+    assert 0 < scored["generic"].score < 1.0
+
+
+def test_off_meta_never_zeroes_the_consensus_layer():
+    """Draining consensus entirely made consensus-only cards total 0.000, so
+    they collapsed and the pool fell back to raw edhrec_rank order."""
+    scores = {CONSENSUS: {"popular": LayerScore(CONSENSUS, 0.45)}}
+    assert blend(scores, off_meta=1.0)[0].total > 0

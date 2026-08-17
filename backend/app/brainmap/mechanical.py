@@ -80,6 +80,22 @@ _RELATED_PER_TAG = 12
 # Minimum lift for a tag to enter the relationship set at all.
 _MIN_LIFT = 5.0
 
+# A tag on this share of the legal pool describes the format, not the deck.
+#
+# Measured: `activated-ability` covers 26.5% of commander-legal cards and
+# `triggered-ability` 21%, while genuine relationships sit far lower —
+# `typal-cat` 0.1%, `your-sacrifice-matters` 0.3%, `drain-life` 1.1%. Because
+# Rin and Seri carries `activated-ability`, Sol Ring and Command Tower matched
+# it at exact strength and scored mechanical 1.00, so RAISING mechanical weight
+# surfaced MORE staples. That inverted the off-meta control: at 1.0 the top ten
+# had a median EDHREC rank of 34, against 3,021 at 0.0.
+_GENERIC_TAG_SHARE = 0.05
+
+# A generic tag is not dropped outright — a card can legitimately relate through
+# one — but its match is discounted toward the weakest tier so it cannot
+# outscore a specific relationship.
+_GENERIC_PENALTY = 0.45
+
 # Tags that describe a card's FLAVOUR, NAME, or PRINTING rather than what it
 # does. Tagger records plenty of these and they are useless here — Korvold
 # carries `alliteration`, and expanding that would relate him to every card with
@@ -123,17 +139,35 @@ class Relationship:
     # tie, which is how a rank-6,410 card outranked a staple.
     themed: set[str] = field(default_factory=set)
 
-    def strength(self, tags: set[str]) -> tuple[float, str] | None:
-        """Best match between a card's tags and this deck's relationships."""
-        shared_own = tags & self.own
-        if shared_own:
-            return _SCORE_EXACT, sorted(shared_own)[0]
+    # Tags too broad to identify a deck; matches through them are discounted.
+    generic: set[str] = field(default_factory=set)
 
-        shared_theme = tags & self.themed
-        if shared_theme:
-            return _SCORE_THEMED, sorted(shared_theme)[0]
+    def _grade(self, score: float, tag: str) -> tuple[float, str]:
+        if tag in self.generic:
+            return score * _GENERIC_PENALTY, tag
+        return score, tag
+
+    def strength(self, tags: set[str]) -> tuple[float, str] | None:
+        """Best match between a card's tags and this deck's relationships.
+
+        Prefers a SPECIFIC match over a broad one rather than taking the first
+        hit: a card sharing both `typal-cat` and `activated-ability` relates
+        through the former, and grading it on the latter would rank every card
+        with an activated ability alongside real tribal payoffs.
+        """
+        specific_own = sorted(tags & self.own - self.generic)
+        if specific_own:
+            return _SCORE_EXACT, specific_own[0]
+
+        specific_theme = sorted(tags & self.themed - self.generic)
+        if specific_theme:
+            return _SCORE_THEMED, specific_theme[0]
 
         best: tuple[float, str] | None = None
+        for tag in sorted(tags & self.own):
+            best = max(best or (0.0, ""), self._grade(_SCORE_EXACT, tag))
+        for tag in sorted(tags & self.themed):
+            best = max(best or (0.0, ""), self._grade(_SCORE_THEMED, tag))
         for tag in tags:
             lift = self.related.get(tag)
             if lift is None:
@@ -144,9 +178,10 @@ class Relationship:
                 score = _SCORE_MODERATE
             else:
                 score = _SCORE_WEAK
-            if best is None or score > best[0]:
-                best = (score, tag)
-        return best
+            graded = self._grade(score, tag)
+            if best is None or graded[0] > best[0]:
+                best = graded
+        return best if best and best[0] > 0 else None
 
     def is_empty(self) -> bool:
         return not self.own and not self.related and not self.themed
@@ -203,7 +238,15 @@ def build_relationship(
     related = {
         k: v for k, v in related.items() if k not in own and k not in themed
     }
-    return Relationship(own=own, related=related, themed=themed)
+    breadth = store.tag_breadth(sorted(own | themed | set(related)))
+    generic = {
+        slug for slug, share in breadth.items() if share >= _GENERIC_TAG_SHARE
+    }
+    if generic:
+        logger.info("mechanical: discounting %d generic tag(s)", len(generic))
+    return Relationship(
+        own=own, related=related, themed=themed, generic=generic
+    )
 
 
 class MechanicalLayer:

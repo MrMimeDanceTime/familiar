@@ -296,6 +296,29 @@ def related_tags(
     return out
 
 
+def tag_breadth(slugs: list[str]) -> dict[str, float]:
+    """Share of the commander-legal pool each tag covers, 0.0-1.0.
+
+    Used to tell a relationship from a description of the format. Measured,
+    `activated-ability` covers 26.5% of the pool and `triggered-ability` 21%,
+    while real relationships sit near 0.1-1%.
+    """
+    if not slugs:
+        return {}
+    with get_engine().begin() as conn:
+        total = conn.execute(text(
+            "SELECT count(*) FROM cards WHERE legal_commander = 1 AND playable = 1"
+        )).scalar() or 0
+        if not total:
+            return {}
+        placeholders = ", ".join(f":s{i}" for i in range(len(slugs)))
+        params = {f"s{i}": s for i, s in enumerate(slugs)}
+        rows = conn.execute(text(
+            f"SELECT slug, card_count FROM tag_traits WHERE slug IN ({placeholders})"
+        ), params).fetchall()
+    return {slug: (count or 0) / total for slug, count in rows}
+
+
 def is_colour_artifact(slug: str, threshold: float = 0.5) -> bool:
     """Whether a tag describes a card's COLOUR rather than what it does.
 
