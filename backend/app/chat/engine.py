@@ -57,13 +57,22 @@ WITHDRAW_ONLY_TOOLS = [t for t in TOOL_SPECS if t.name == "withdraw_pending_prop
 _HANDPICK_LIMIT = 3
 
 
-def _redirect_to_pipeline(tool_name: str, args: dict[str, Any]) -> str | None:
-    """Refuse a hand-picked multi-card ADD batch, naming the tool to use instead.
+def _split_handpicked_adds(
+    tool_name: str, args: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Strip a hand-picked ADD batch out of a call, keeping the rest.
 
-    Returns the refusal text, or None to let the call through. Deliberately
-    narrow — everything the direct path is genuinely for stays allowed:
-    single named cards, cuts, commander proposals, and mixed batches whose
-    adds are below the limit.
+    Returns ``(kept_args, stripped_adds)``, or None to let the call through
+    untouched.
+
+    Splitting rather than refusing the whole call matters because the prompt
+    tells the model to batch `set_commander` WITH its opening cards. Refusing
+    outright discarded the commander too, and a deck with no commander blocks
+    everything downstream — so the model followed its instructions, got refused,
+    and had no way forward.
+
+    Deliberately narrow otherwise: single named cards, cuts, and commander
+    proposals all pass through, as does any batch whose adds are below the limit.
     """
     if tool_name != "propose_deck_changes":
         return None
@@ -78,6 +87,17 @@ def _redirect_to_pipeline(tool_name: str, args: dict[str, Any]) -> str | None:
     ]
     if len(adds) < _HANDPICK_LIMIT:
         return None
+
+    kept = [c for c in changes if c not in adds]
+    return {**args, "changes": kept}, adds
+
+
+def _redirect_to_pipeline(tool_name: str, args: dict[str, Any]) -> str | None:
+    """The refusal text for a hand-picked ADD batch, or None to allow the call."""
+    split = _split_handpicked_adds(tool_name, args)
+    if split is None:
+        return None
+    _kept, adds = split
 
     named = ", ".join(str(c.get("card_name")) for c in adds[:4] if c.get("card_name"))
     return (
@@ -218,15 +238,37 @@ def run_chat_turn(
                 if call.name in PROPOSAL_TOOLS:
                     args["conversation_id"] = conversation_id
 
-                redirect = _redirect_to_pipeline(call.name, args)
-                if redirect is not None:
-                    # Refused rather than dispatched: the model gets the reason
-                    # as a tool result and re-issues through suggest_cards. The
-                    # prompt asked for this routing and was ignored — a batch of
-                    # hand-picked cards reaches the player with no play rate, no
-                    # mechanical fit, and nothing for the deck to learn from, so
-                    # the choice cannot be left to instruction.
-                    logger.info("chat: redirected %s to suggest_cards", call.name)
+                # A hand-picked ADD batch is stripped out and redirected to the
+                # scoring pipeline; anything else in the same call still runs.
+                # The prompt tells the model to batch set_commander WITH its
+                # opening cards, so refusing the whole call discarded the
+                # commander too and left the deck unable to proceed.
+                split = _split_handpicked_adds(call.name, args)
+                if split is not None:
+                    kept_args, stripped = split
+                    redirect = _redirect_to_pipeline(call.name, args) or ""
+                    logger.info(
+                        "chat: redirected %d hand-picked add(s) to suggest_cards"
+                        "%s", len(stripped),
+                        "; running the rest of the call" if kept_args["changes"] else "",
+                    )
+                    if kept_args["changes"]:
+                        kept_result = dispatch(
+                            call.name, kept_args, session, provider=provider
+                        )
+                        if kept_result.ok:
+                            kept_batch = kept_result.content.get("proposals", [])
+                            for p in kept_batch:
+                                if p.get("id") is not None:
+                                    proposal_ids_this_turn.append(p["id"])
+                            if kept_batch:
+                                proposals_emitted = True
+                                redirect = (
+                                    f"{redirect}\n\nThe non-add changes in this "
+                                    "call (commander, cuts) WERE applied — do not "
+                                    "re-send them; only re-issue the adds via "
+                                    "suggest_cards."
+                                )
                     results.append(ToolResult(call_id=call.id, content=redirect))
                     tool_calls_log.append(
                         {"id": call.id, "name": call.name, "arguments": call.arguments}

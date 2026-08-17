@@ -611,7 +611,13 @@ def test_declared_themes_add_relationships():
     rel = build_relationship(
         {"damage-increaser"}, store, themes=["creature tokens"]
     )
-    assert "repeatable-creature-tokens" in rel.own
+    # Themed tags are tracked separately from the commander's own: they resolve
+    # from free text and are far broader, so they score below an exact match.
+    # "enchantment ramp" resolves to `land-ramp`, which every ramp spell in the
+    # format carries — scoring that at exact strength let a rank-6,410 card tie
+    # a rank-26 staple.
+    assert "repeatable-creature-tokens" in rel.themed
+    assert "repeatable-creature-tokens" not in rel.own
 
 
 def test_no_commander_yields_no_scores():
@@ -627,3 +633,44 @@ def test_reason_names_the_relationship():
         [_card("A", oracle_id="oid-a")], ScoringContext(commander="Korvold"),
     )
     assert "your-sacrifice-matters" in scored["a"].reason
+
+
+def test_themed_match_scores_below_an_exact_one():
+    """A commander's own tag is a stronger claim than a word the player typed."""
+    store = _commander_store(
+        {"your-sacrifice-matters"},
+        {"oid-own": {"your-sacrifice-matters"}, "oid-theme": {"land-ramp"}},
+        vocabulary={"your-sacrifice-matters", "land-ramp"},
+    )
+    scored = MechanicalLayer(store).score(
+        [_card("Own", oracle_id="oid-own"), _card("Themed", oracle_id="oid-theme")],
+        ScoringContext(commander="Korvold", themes=["land ramp"]),
+    )
+    assert scored["own"].score > scored["themed"].score
+
+
+def test_more_evidence_never_lowers_a_score():
+    """Measured on the real Myrkul pool: Font of Fertility (EDHREC rank 6,410,
+    mechanical only) beat Rampant Growth (rank 26, mechanical AND consensus)
+    because the extra layer dragged the weighted average down. Being known by
+    more layers must never cost a card."""
+    one_layer = blend({MECHANICAL: {"a": LayerScore(MECHANICAL, 0.70)}})[0].total
+    two_layers = blend({
+        MECHANICAL: {"a": LayerScore(MECHANICAL, 0.70)},
+        CONSENSUS: {"a": LayerScore(CONSENSUS, 0.70)},
+    })[0].total
+    assert two_layers >= one_layer
+
+
+def test_a_staple_is_not_penalised_for_low_synergy():
+    """Synergy measures how much MORE a card appears here than in other decks of
+    the same colours, so a card played everywhere has near-zero synergy BY
+    DEFINITION. Averaging the two buried staples: Rampant Growth at 34% play and
+    +0.08 synergy scored 0.245."""
+    from app.brainmap.consensus import ConsensusLayer
+
+    scored = ConsensusLayer().score(
+        [_card("Staple", {"inclusion_rate": 0.34, "synergy": 0.08})],
+        ScoringContext(),
+    )
+    assert scored["staple"].score >= 0.34

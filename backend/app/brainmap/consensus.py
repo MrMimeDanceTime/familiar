@@ -66,10 +66,24 @@ class ConsensusLayer:
                 if isinstance(synergy, (int, float)) else 0.0
             )
 
-            score = (
+            # Take the BETTER of the two signals rather than averaging them.
+            #
+            # Averaging structurally penalises staples: a card played in 34% of
+            # this commander's decks has near-zero synergy BY DEFINITION, since
+            # synergy measures how much MORE it appears here than in other decks
+            # of the same colours. Rampant Growth (EDHREC rank 26, 34% play,
+            # +0.08 synergy) averaged to 0.245 and ranked below cards EDHREC has
+            # never heard of.
+            #
+            # The two numbers answer different questions — "is this widely
+            # played" and "is this specific to this commander" — and a card
+            # answering either strongly is worth surfacing. `off_meta` already
+            # controls which of those the deck cares about, one level up.
+            blended = (
                 (1.0 - self._synergy_weight) * rate_value
                 + self._synergy_weight * synergy_value
             )
+            score = max(rate_value, synergy_value, blended)
             if score <= 0:
                 continue
 

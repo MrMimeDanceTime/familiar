@@ -64,6 +64,11 @@ _MODERATE_LIFT = 8.0
 # Scores per match quality. A card carrying the commander's OWN tag is doing
 # exactly what the commander cares about and is the strongest possible signal.
 _SCORE_EXACT = 1.0
+# A declared theme resolves from free text and is much broader than a
+# commander's own tag, so it must not reach exact-match strength. Sits below a
+# strong co-occurrence partner: "the commander demonstrably relates to this"
+# beats "the player used a word that matched this tag".
+_SCORE_THEMED = 0.7
 _SCORE_STRONG = 0.8
 _SCORE_MODERATE = 0.6
 _SCORE_WEAK = 0.4
@@ -110,12 +115,23 @@ class Relationship:
     own: set[str] = field(default_factory=set)
     # Related tag -> lift. Higher means more reliably part of the same package.
     related: dict[str, float] = field(default_factory=dict)
+    # Tags resolved from the deck's DECLARED themes. Kept separate from `own`
+    # because they are matched from free text and are far broader: the theme
+    # "enchantment ramp" resolves to `land-ramp`, which every ramp spell in the
+    # format carries. Scoring those at exact-match strength made Rampant Growth
+    # (EDHREC rank 26) and Font of Fertility (rank 6,410) both score 1.00 and
+    # tie, which is how a rank-6,410 card outranked a staple.
+    themed: set[str] = field(default_factory=set)
 
     def strength(self, tags: set[str]) -> tuple[float, str] | None:
         """Best match between a card's tags and this deck's relationships."""
         shared_own = tags & self.own
         if shared_own:
             return _SCORE_EXACT, sorted(shared_own)[0]
+
+        shared_theme = tags & self.themed
+        if shared_theme:
+            return _SCORE_THEMED, sorted(shared_theme)[0]
 
         best: tuple[float, str] | None = None
         for tag in tags:
@@ -133,7 +149,7 @@ class Relationship:
         return best
 
     def is_empty(self) -> bool:
-        return not self.own and not self.related
+        return not self.own and not self.related and not self.themed
 
 
 def _theme_tags(themes: list[str], store: Any) -> set[str]:
@@ -172,17 +188,22 @@ def build_relationship(
     if dropped:
         logger.info("mechanical: ignoring colour-artifact tag(s) %s", sorted(dropped))
 
-    own |= {t for t in _theme_tags(themes or [], store) if not is_flavour_tag(t)}
-    if not own:
+    themed = {
+        t for t in _theme_tags(themes or [], store)
+        if not is_flavour_tag(t) and t not in own
+    }
+    if not own and not themed:
         return Relationship()
 
     related = store.related_tags(
-        sorted(own), min_lift=_MIN_LIFT, limit=_RELATED_PER_TAG
+        sorted(own | themed), min_lift=_MIN_LIFT, limit=_RELATED_PER_TAG
     )
-    # The commander's own tags come back at infinite strength; they are tracked
-    # separately, so drop them from the related map to keep the two distinct.
-    related = {k: v for k, v in related.items() if k not in own}
-    return Relationship(own=own, related=related)
+    # Own and themed tags are tracked separately, so drop them from the related
+    # map to keep the three tiers distinct.
+    related = {
+        k: v for k, v in related.items() if k not in own and k not in themed
+    }
+    return Relationship(own=own, related=related, themed=themed)
 
 
 class MechanicalLayer:

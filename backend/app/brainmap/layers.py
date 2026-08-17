@@ -117,6 +117,15 @@ class ScoringContext:
 # a card nobody has thought to play yet. Personal is small by default and grows
 # in influence naturally as history accumulates — it scores nothing when there
 # is no history, so its weight is simply unused rather than diluting the rest.
+# Floor on the confidence multiplier. A card scored by one layer keeps most of
+# its value — the layer that spoke may well be right — but still ranks below an
+# equally-scored card several layers agree on.
+#
+# 0.70 is the highest value that preserves that ordering: at 0.75 a lone 1.00
+# ties a three-layer 0.80, which is the "overconfident from thin evidence" bug
+# this floor exists to prevent.
+_MIN_CONFIDENCE = 0.70
+
 DEFAULT_WEIGHTS: dict[str, float] = {
     CONSENSUS: 0.5,
     MECHANICAL: 0.3,
@@ -179,8 +188,20 @@ def blend(
     # the "unlisted is punished" bug for an "overconfident from thin evidence"
     # bug. A card is not better than a broadly-endorsed one just because only
     # one layer happened to have an opinion.
+    # Shading pulls a thinly-evidenced score DOWN toward neutral, never up.
+    #
+    # Blending toward a fixed midpoint moved thin scores in whichever direction
+    # the midpoint lay, which quietly rewarded ignorance: a card scoring 0.70 on
+    # mechanical ALONE was lifted toward 0.35 from below... but a card scoring
+    # 0.70 mechanical AND 0.30 consensus averaged to 0.43 and then got shaded
+    # too. Measured on the real Myrkul pool, Font of Fertility (EDHREC rank
+    # 6,410, mechanical only) beat Rampant Growth (rank 26, mechanical AND
+    # consensus) 0.455 to 0.430 — being known by more layers made a card score
+    # WORSE.
+    #
+    # More evidence must never cost a card. So confidence can only reduce a
+    # score, and a fully-evidenced card keeps its raw value.
     full_weight = sum(weights.get(name, 0.0) for name in LAYER_NAMES) or 1.0
-    neutral = 0.35
 
     for card in by_card.values():
         contributing = [name for name in card.layers if name in weights]
@@ -191,8 +212,13 @@ def blend(
         raw = sum(
             card.get(name) * weights[name] for name in contributing
         ) / card_weight
-        confidence = card_weight / full_weight
-        card.total = raw * confidence + neutral * (1.0 - confidence)
+        # Floored at a partial credit rather than scaling linearly, so a card
+        # known to one layer is discounted for thin evidence without being
+        # buried beneath cards no layer has an opinion about.
+        confidence = _MIN_CONFIDENCE + (1.0 - _MIN_CONFIDENCE) * (
+            card_weight / full_weight
+        )
+        card.total = raw * confidence
 
     # Consensus breaks ties. The mechanical layer scores in a few discrete bands
     # (engine piece / payoff / enabler), so at high off_meta many cards land on

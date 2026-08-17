@@ -790,3 +790,79 @@ def test_failed_turn_still_reveals_its_proposals(session):
     assert any(e.startswith("event: error") for e in events)
     # The proposal is pending in the database...
     assert repo.get_proposal(session, provider.created_id).status == "pending"
+
+
+# ── The redirect must not swallow the commander ──────────────────────────
+#
+# The prompt tells the model to batch set_commander WITH its opening cards.
+# Refusing the whole call discarded the commander too, and a deck with no
+# commander blocks everything downstream — so the model followed its
+# instructions, got refused, and had no way forward.
+
+
+def test_commander_survives_a_redirected_batch():
+    from app.chat.engine import _split_handpicked_adds
+
+    split = _split_handpicked_adds("propose_deck_changes", {"changes": [
+        {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+        {"action": "add", "card_name": "A"},
+        {"action": "add", "card_name": "B"},
+        {"action": "add", "card_name": "C"},
+    ]})
+
+    assert split is not None
+    kept, stripped = split
+    assert kept["changes"] == [
+        {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"}
+    ]
+    assert len(stripped) == 3
+
+
+def test_cuts_survive_a_redirected_batch():
+    """A cut names a card already in the deck; there is nothing to score, and
+    re-sending it through suggest_cards is not possible."""
+    from app.chat.engine import _split_handpicked_adds
+
+    kept, stripped = _split_handpicked_adds("propose_deck_changes", {"changes": [
+        {"action": "remove", "card_name": "Bad Card"},
+        {"action": "add", "card_name": "A"},
+        {"action": "add", "card_name": "B"},
+        {"action": "add", "card_name": "C"},
+    ]})
+
+    assert kept["changes"] == [{"action": "remove", "card_name": "Bad Card"}]
+    assert len(stripped) == 3
+
+
+def test_pure_add_batch_keeps_nothing():
+    from app.chat.engine import _split_handpicked_adds
+
+    kept, stripped = _split_handpicked_adds("propose_deck_changes", {"changes": [
+        {"action": "add", "card_name": "A"},
+        {"action": "add", "card_name": "B"},
+        {"action": "add", "card_name": "C"},
+    ]})
+
+    assert kept["changes"] == []
+    assert len(stripped) == 3
+
+
+def test_commander_alone_is_never_split():
+    from app.chat.engine import _split_handpicked_adds
+
+    assert _split_handpicked_adds("propose_deck_changes", {"changes": [
+        {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+    ]}) is None
+
+
+def test_redirect_tells_the_model_what_was_already_applied():
+    """Without this the model re-sends the commander it already got, which the
+    proposal path then rejects as a duplicate."""
+    msg = _redirect_to_pipeline("propose_deck_changes", {"changes": [
+        {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+        {"action": "add", "card_name": "A"},
+        {"action": "add", "card_name": "B"},
+        {"action": "add", "card_name": "C"},
+    ]})
+    assert msg is not None
+    assert "suggest_cards" in msg
