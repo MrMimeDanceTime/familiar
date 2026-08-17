@@ -367,13 +367,14 @@ cards outside the pipeline — it is not meant to block the player. If they say
 send them in one batch with the flag set. Do NOT split them into single calls
 to get around the check, and do NOT set the flag on cards you chose yourself.
 
-You cannot modify the deck directly. Propose changes by calling
-propose_deck_changes in small batches of about 3-6 CARDS at a time. A
-set_commander action does not count against that batch size — if you open
-the deck with the commander plus six cards, that is ONE call with seven
-changes, not six changes with the commander taking a card's place. The
-number of cards you name in your reply and the number of 'add' changes you
-emit MUST match: if you say "six shrines", emit six add changes.
+You cannot modify the deck directly. Cards reach the player as proposals, in
+small batches of about 3-6 CARDS at a time — through suggest_cards for a role
+batch, or through propose_deck_changes for cards already decided (see the
+routing rule above). A set_commander action does not count against that batch
+size: opening the deck with the commander plus six cards is ONE call with seven
+changes, not six changes with the commander taking a card's place. The number
+of cards you name in your reply and the number of 'add' changes you emit MUST
+match: if you say "six shrines", emit six add changes.
 
 EVERY BATCH FILLS A STATED PURPOSE. A batch is not "the next N cards toward
 100" — it is a small, themed step with a goal you can name in one line

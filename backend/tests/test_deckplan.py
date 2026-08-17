@@ -467,3 +467,87 @@ def test_rendered_plan_explains_where_targets_come_from():
     them; it should know missing them means scoring below the stated level."""
     text = render_plan(build_plan(_snapshot([], power_level="7")))
     assert "power-level scorer" in text or "power 7" in text
+
+
+# ── Singleton enforcement on the direct path ─────────────────────────────
+#
+# Found by building a real deck: two copies each of Ashnod's Altar and
+# Phyrexian Altar reached the list. The suggestion pipeline filters owned cards
+# during retrieval, but propose_deck_changes had no such check, so a card
+# approved in an earlier batch could be proposed and approved again.
+
+
+def _proposing_engine(tmp_path, name):
+    from sqlmodel import SQLModel, create_engine
+
+    engine = create_engine(f"sqlite:///{tmp_path / name}")
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+def test_cannot_propose_a_card_already_in_the_deck(tmp_path):
+    from unittest.mock import patch
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.tools.deck_tools import propose_deck_changes
+
+    engine = _proposing_engine(tmp_path, "dupe.db")
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="T", format="commander")
+        convo = repo.create_conversation(session)
+        with patch("app.tools.deck_tools.get_scryfall_client") as client, \
+             patch("app.tools.deck_tools.get_tags_for_card", return_value=[]):
+            client.return_value.named.side_effect = lambda n, **k: {
+                "name": n, "oracle_id": f"o-{n}", "cmc": 2.0,
+                "color_identity": [], "type_line": "Artifact", "oracle_text": "x",
+            }
+            first = propose_deck_changes(
+                session, deck.id, "b",
+                [{"action": "add", "card_name": "Ashnod's Altar", "reasoning": "x"}],
+                conversation_id=convo.id,
+            )
+            repo.apply_proposal(session, first["proposals"][0]["id"])
+
+            with pytest.raises(ValueError, match="already in the deck"):
+                propose_deck_changes(
+                    session, deck.id, "b2",
+                    [{"action": "add", "card_name": "Ashnod's Altar",
+                      "reasoning": "x"}],
+                    conversation_id=convo.id,
+                )
+
+
+def test_basic_lands_can_still_stack(tmp_path):
+    """The singleton rule exempts basics, and a deck runs many."""
+    from unittest.mock import patch
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.tools.deck_tools import propose_deck_changes
+
+    engine = _proposing_engine(tmp_path, "basics.db")
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="T", format="commander")
+        convo = repo.create_conversation(session)
+        with patch("app.tools.deck_tools.get_scryfall_client") as client, \
+             patch("app.tools.deck_tools.get_tags_for_card", return_value=[]):
+            client.return_value.named.side_effect = lambda n, **k: {
+                "name": n, "oracle_id": f"o-{n}", "cmc": 0.0,
+                "color_identity": [], "type_line": "Basic Land", "oracle_text": "",
+            }
+            first = propose_deck_changes(
+                session, deck.id, "b",
+                [{"action": "add", "card_name": "Swamp", "reasoning": "x"}],
+                conversation_id=convo.id,
+            )
+            repo.apply_proposal(session, first["proposals"][0]["id"])
+
+            again = propose_deck_changes(
+                session, deck.id, "b2",
+                [{"action": "add", "card_name": "Swamp", "reasoning": "x"}],
+                conversation_id=convo.id,
+            )
+    assert again["proposals"]

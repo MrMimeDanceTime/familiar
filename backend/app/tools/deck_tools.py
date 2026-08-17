@@ -17,6 +17,13 @@ from app.tools.scryfall_client import ScryfallNotFoundError, get_scryfall_client
 
 _LINE_RE = re.compile(r"^(?:(\d+)\s*x?\s+)?(.+)$")
 
+# Basic lands are the singleton exception — a deck runs many copies.
+_BASIC_LAND_NAMES = frozenset({
+    "plains", "island", "swamp", "mountain", "forest", "wastes",
+    "snow-covered plains", "snow-covered island", "snow-covered swamp",
+    "snow-covered mountain", "snow-covered forest",
+})
+
 
 def _normalize_category(category: str | None) -> str | None:
     if not category:
@@ -1142,6 +1149,23 @@ def propose_deck_changes(
                 raise ValueError(
                     f"'{canonical_name}' is banned in Commander — cannot propose it. "
                     "Suggest a legal alternative instead."
+                )
+            # Singleton: a card already in the deck cannot be added again.
+            # The suggestion pipeline filters owned cards during retrieval, but
+            # the direct path had no such check, so a card approved in an
+            # earlier batch could be re-proposed and approved a second time —
+            # observed on a real build, with two copies each of Ashnod's Altar
+            # and Phyrexian Altar reaching the deck.
+            if (
+                action == "add"
+                and is_commander
+                and canonical_name.lower() in deck_cards_by_lower
+                and canonical_name.lower() not in _BASIC_LAND_NAMES
+            ):
+                raise ValueError(
+                    f"'{canonical_name}' is already in the deck — Commander is "
+                    "singleton, so it cannot be added again. Propose a different "
+                    "card, or remove it first if you meant to replace it."
                 )
         elif action == "remove":
             canonical_name = deck_cards_by_lower.get(card_name.lower())
