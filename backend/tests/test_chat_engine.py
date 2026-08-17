@@ -866,3 +866,59 @@ def test_redirect_tells_the_model_what_was_already_applied():
     ]})
     assert msg is not None
     assert "suggest_cards" in msg
+
+
+# ── The player must be able to name cards ────────────────────────────────
+#
+# The guard trapped the model: asked for four specific staples by name, it
+# could not propose them as a batch and offered to smuggle them through one at
+# a time instead. A rule with no legitimate way past it gets worked around,
+# which is worse than the behaviour it prevents.
+
+
+def test_player_named_batch_is_allowed():
+    named = [
+        {"action": "add", "card_name": n, "player_named": True}
+        for n in ["Necropotence", "Rampant Growth", "Nature's Lore", "Three Visits"]
+    ]
+    assert _redirect_to_pipeline("propose_deck_changes", {"changes": named}) is None
+
+
+def test_model_picked_batch_is_still_refused():
+    """The flag is an escape hatch for the player, not for the model."""
+    mine = [{"action": "add", "card_name": n} for n in ["A", "B", "C", "D"]]
+    assert _redirect_to_pipeline("propose_deck_changes", {"changes": mine}) is not None
+
+
+def test_mixed_batch_keeps_named_and_strips_the_rest():
+    from app.chat.engine import _split_handpicked_adds
+
+    kept, stripped = _split_handpicked_adds("propose_deck_changes", {"changes": [
+        {"action": "add", "card_name": "Necropotence", "player_named": True},
+        {"action": "add", "card_name": "Rampant Growth", "player_named": True},
+        {"action": "add", "card_name": "Mine A"},
+        {"action": "add", "card_name": "Mine B"},
+        {"action": "add", "card_name": "Mine C"},
+    ]})
+
+    assert [c["card_name"] for c in kept["changes"]] == [
+        "Necropotence", "Rampant Growth",
+    ]
+    assert len(stripped) == 3
+
+
+def test_two_named_cards_do_not_need_the_flag():
+    """Below the limit nothing changes; the flag only matters at 3+."""
+    assert _redirect_to_pipeline("propose_deck_changes", {"changes": [
+        {"action": "add", "card_name": "A"},
+        {"action": "add", "card_name": "B"},
+    ]}) is None
+
+
+def test_player_named_is_in_the_tool_schema():
+    """The model can only set what the schema exposes."""
+    from app.tools.schemas import TOOL_SPECS
+
+    spec = next(s for s in TOOL_SPECS if s.name == "propose_deck_changes")
+    item = spec.parameters["properties"]["changes"]["items"]
+    assert "player_named" in item["properties"]

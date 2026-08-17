@@ -223,6 +223,18 @@ TOOL_SPECS: list[ToolSpec] = [
                             },
                             "category": {"type": "string", "description": "Free-text role (add only), e.g. ramp, removal, draw, win-con"},
                             "reasoning": {"type": "string", "description": "Why this change — shown to the player for approval"},
+                            "player_named": {
+                                "type": "boolean",
+                                "description": (
+                                    "TRUE only when the PLAYER named this exact card. "
+                                    "Role batches you assembled must go through "
+                                    "suggest_cards, and a batch of 3+ adds without this "
+                                    "flag is refused — but a card the player asked for "
+                                    "by name is their decision, not a suggestion to "
+                                    "score, so mark it and it goes through. Never set "
+                                    "this to route around the check on cards you chose."
+                                ),
+                            },
                         },
                         "required": ["action", "reasoning"],
                     },

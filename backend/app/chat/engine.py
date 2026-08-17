@@ -81,9 +81,16 @@ def _split_handpicked_adds(
     if not isinstance(changes, list):
         return None
 
+    # A card the player named is their decision, not a suggestion to score.
+    # Without this escape hatch the guard trapped the model: asked for four
+    # specific staples by name, it could not propose them as a batch and had to
+    # smuggle them through one at a time. A rule with no legitimate way past it
+    # gets worked around, which is worse than the behaviour it prevents.
     adds = [
         c for c in changes
-        if isinstance(c, dict) and c.get("action", "add") == "add"
+        if isinstance(c, dict)
+        and c.get("action", "add") == "add"
+        and not c.get("player_named")
     ]
     if len(adds) < _HANDPICK_LIMIT:
         return None
