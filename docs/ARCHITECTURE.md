@@ -14,10 +14,9 @@ engine.
 - Backend: FastAPI + SQLModel (SQLite) + a hand-rolled agentic tool-calling
   loop (no LangChain/LangGraph). Python ≥3.10.
 - Frontend: React + TypeScript + Vite, plain CSS (no component library).
-- LLM: provider-neutral abstraction supporting Anthropic (Claude) and
-  DeepSeek. **deepseek-v4-pro (thinking mode) is the default/primary provider** in this
-  deployment, with deepseek-v4-flash available as a per-call fast seam — see
-  [PROVIDERS.md](PROVIDERS.md).
+- LLM: DeepSeek behind a provider-neutral `ChatProvider` protocol.
+  **deepseek-v4-pro runs the chat loop**, with deepseek-v4-flash as a per-call
+  fast seam for the retrieval pipeline — see [PROVIDERS.md](PROVIDERS.md).
 - Data sources: Scryfall REST API (self-throttled httpx client), EDHREC's
   unofficial JSON endpoint (disk-cached, defensively parsed since it's
   undocumented), and Scryfall's Oracle Tags bulk export (disk-cached ~24h)
@@ -26,7 +25,7 @@ engine.
   via SQLite FTS5 (BM25 ranked), seeded on startup and queried as a tool.
 - Deck-platform integrations (Archidekt/Moxfield) behind a provider interface
   for importing external decklists.
-- Best-effort DB backup on startup (synced-folder or pCloud), fully guarded.
+- Best-effort DB backup on startup and on a timer (synced-folder or pCloud), fully guarded.
 
 ## Running locally
 
@@ -84,7 +83,7 @@ type-checking or by clicking around, and it is where the bugs were.
 backend/app/
   main.py            FastAPI app; startup lifespan (init_db, FTS setup, seed KB, backup); mounts built frontend/dist/ as static files if present
   config.py          pydantic-settings, reads .env from repo root
-  backup.py          best-effort startup DB snapshot -> synced folder or pCloud (guarded, never blocks startup)
+  backup.py          best-effort DB snapshot at startup and on a timer -> synced folder or pCloud (guarded, never blocks startup)
   deckplan.py        the deck plan: role targets derived from the stated power level, themes, gaps (what the deck still needs)
   autoincludes.py    format staples the deck is missing (high play rate, no commander-specific synergy), surfaced on every deck read
   cards/
@@ -99,7 +98,7 @@ backend/app/
     personal.py        layer 3: the player's own approve/deny history, weighted by denial reason
   llm/
     base.py           ChatProvider Protocol + neutral types (AssistantTurn, ToolCallRequest, ToolResult, ToolSpec)
-    anthropic_provider.py / deepseek_provider.py
+    deepseek_provider.py   the only backend (OpenAI-compatible wire shape)
     factory.py        get_provider(name)
   tools/
     scryfall_client.py / edhrec_client.py   external data clients
@@ -198,6 +197,18 @@ cards from flashing into the UI and back out, and stops the
 propose→withdraw→propose churn. The player approves/denies through the
 `/api/decks/proposals/{id}/apply|deny` REST endpoints.
 
+One live card batch per deck: when a turn creates its first batch, any card
+proposals still pending from earlier turns are denied with reason
+`superseded` (a pending `set_commander` is left alone). Proposals the model
+trims itself get `withdrawn`. Both reasons are written by the app, not the
+player, and the personal scoring layer weights them at zero.
+
+Context is bounded at send time, not in the record. `bound_history` in
+`engine.py` replays the last four tool results in full and cuts older, large
+ones to a stub before each provider call; `Message.provider_native` keeps
+everything. `deck_get_current` returns oracle text for the commander(s) only
+unless asked for the whole list.
+
 ## Subsystems
 
 ### Tools
@@ -251,8 +262,9 @@ decklist text `import_decklist` already accepts, imports it, then designates
 commanders. Push is scaffolded (returns 501) — no write-capable provider yet.
 
 ### Backup (`app/backup.py`)
-Best-effort DB snapshot on startup via SQLite's online backup API (consistent
-even mid-write). `BACKUP_MODE`: `folder` (default — write into a synced folder
+Best-effort DB snapshot on startup and then every `BACKUP_INTERVAL_HOURS`
+(default 24, 0 disables the timer) from a daemon thread, via SQLite's online
+backup API (consistent even mid-write). `BACKUP_MODE`: `folder` (default — write into a synced folder
 like Drive/OneDrive/Dropbox; no API token), `pcloud` (upload via the pCloud
 API), or `off`. Keeps the newest `BACKUP_KEEP` timestamped snapshots. Every
 step is guarded so a backup failure can never block startup. Configured in

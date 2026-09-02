@@ -16,7 +16,7 @@ import { useChatStream } from './hooks/useChatStream'
 import type { ProposalBatch } from './hooks/useChatStream'
 import { useDeck } from './hooks/useDeck'
 import { useTheme } from './hooks/useTheme'
-import type { Conversation, Deck, DeckProposal, DeckStats } from './types/api'
+import type { Conversation, Deck, DeckProposal, DeckStats, DeckSummary } from './types/api'
 import './styles/global.css'
 
 type MobileView = 'chats-list' | 'chat' | 'decks-list' | 'deck-detail' | 'pins'
@@ -55,7 +55,7 @@ function groupProposalsIntoBatches(proposals: DeckProposal[]): ProposalBatch[] {
 
 function App() {
   const [conversations, setConversations] = useState<Conversation[]>([])
-  const [decks, setDecks] = useState<Deck[]>([])
+  const [decks, setDecks] = useState<DeckSummary[]>([])
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('conversations')
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null)
   const [deckStats, setDeckStats] = useState<DeckStats | null>(null)
@@ -215,7 +215,7 @@ function App() {
   )
 
   const handleSelectDeck = useCallback(
-    async (d: Deck) => {
+    async (d: DeckSummary) => {
       loadDeck(d.id)
     },
     [loadDeck],
@@ -342,7 +342,7 @@ function App() {
   )
 
   const handleMobileSelectDeck = useCallback(
-    async (d: Deck) => {
+    async (d: DeckSummary) => {
       loadDeck(d.id)
       setMobileView('deck-detail')
     },

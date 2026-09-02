@@ -129,6 +129,58 @@ def _load_history(session: Session, conversation_id: int) -> list[dict[str, Any]
     return history
 
 
+# How many of the most recent tool results are replayed in full. Everything
+# older is cut down to a stub before each provider call.
+#
+# Nothing bounded the context before this. Every call replayed the whole
+# conversation, and a deck read carries up to a hundred cards, so a build done
+# in 3-6 card batches (twenty-odd turns, several tool calls each) grew without
+# limit and the oldest, least relevant results cost the most. Four keeps the
+# current reasoning intact — a turn rarely needs more than the last couple of
+# reads — while the transcript in the database stays complete for replay.
+KEEP_RECENT_TOOL_RESULTS = 4
+# A result shorter than this is kept whatever its age: small results are the
+# ones the model actually refers back to (a proposal batch, a stats summary)
+# and eliding them saves nothing worth the confusion.
+KEEP_SHORT_RESULT_CHARS = 600
+# How much of an elided result survives, so the model can still see what the
+# call was and what it returned in outline.
+ELIDED_RESULT_HEAD_CHARS = 200
+
+
+def bound_history(
+    history: list[dict[str, Any]],
+    *,
+    keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+    keep_short: int = KEEP_SHORT_RESULT_CHARS,
+) -> list[dict[str, Any]]:
+    """A copy of the history with old, large tool results cut to a stub.
+
+    Applied at send time only. The persisted ``provider_native`` record is
+    untouched, so a conversation can still be replayed in full, and the stub
+    tells the model the result was elided rather than leaving a hole it might
+    read as an empty result.
+    """
+    tool_positions = [i for i, m in enumerate(history) if m.get("role") == "tool"]
+    to_elide = set(tool_positions[:-keep_recent]) if keep_recent > 0 else set(tool_positions)
+
+    bounded: list[dict[str, Any]] = []
+    for i, message in enumerate(history):
+        content = message.get("content")
+        if i in to_elide and isinstance(content, str) and len(content) > keep_short:
+            head = content[:ELIDED_RESULT_HEAD_CHARS]
+            message = {
+                **message,
+                "content": (
+                    f"{head}… [{len(content) - ELIDED_RESULT_HEAD_CHARS} more characters "
+                    "elided: this is an earlier result. Call the tool again if you need "
+                    "the current data.]"
+                ),
+            }
+        bounded.append(message)
+    return bounded
+
+
 def run_chat_turn(
     session: Session,
     provider: ChatProvider,
@@ -216,7 +268,9 @@ def run_chat_turn(
             tools_for_turn = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
             pipeline_followup_allowed = False
             send_started = time.perf_counter()
-            turn = provider.send(system_prompt, history, tools_for_turn, thinking=False)
+            turn = provider.send(
+                system_prompt, bound_history(history), tools_for_turn, thinking=False
+            )
             send_dt = time.perf_counter() - send_started
             tool_names = [c.name for c in turn.tool_calls] if turn.tool_calls else []
             logger.info(
@@ -280,6 +334,9 @@ def run_chat_turn(
                             if kept_batch:
                                 proposals_emitted = True
                                 pipeline_followup_allowed = True
+                                _supersede_stale_batches(
+                                    session, deck_id, proposal_ids_this_turn
+                                )
                                 redirect = (
                                     f"{redirect}\n\nThe non-add changes in this "
                                     "call (commander, cuts) WERE applied — do not "
@@ -311,6 +368,7 @@ def run_chat_turn(
                     if batch:
                         proposals_emitted = True
                         pending_summary = result.content.get("summary") or pending_summary
+                        _supersede_stale_batches(session, deck_id, proposal_ids_this_turn)
                     # NB: no deck_proposal event here — the batch is revealed once,
                     # settled, at turn end (see _settled_proposal_batch). This
                     # keeps trimmed cards from flashing into the UI and back out.
@@ -320,11 +378,11 @@ def run_chat_turn(
             new_history = provider.append_tool_results(history, turn, results)
             # provider.append_tool_results appends the assistant's tool-call
             # message followed by one or more tool-result-bearing messages
-            # (Anthropic bundles all results into a single user message;
-            # OpenAI-style providers emit one tool message per call). Persist
-            # the assistant entry and all result entries in that same native
-            # shape so replay can feed this conversation back into the same
-            # provider exactly.
+            # (OpenAI-style providers emit one tool message per call; a provider
+            # that bundled them would emit one). Persist the assistant entry and
+            # all result entries in that same native shape so replay can feed
+            # this conversation back into the same provider exactly. Never
+            # assume a count here — see PROVIDER_SHAPES.md.
             appended = new_history[len(history) :]
             assistant_native, tool_result_natives = appended[0], appended[1:]
 
@@ -367,7 +425,7 @@ def run_chat_turn(
             "chat: hit MAX_TOOL_ITERATIONS (%d) after %.2fs — forcing toolless wrap-up",
             MAX_TOOL_ITERATIONS, time.perf_counter() - turn_started,
         )
-        wrap = provider.send(system_prompt, history, [], thinking=False)
+        wrap = provider.send(system_prompt, bound_history(history), [], thinking=False)
         yield from _finalize_turn(
             session, conversation_id, sequence,
             wrap.text or _MAX_ITER_FALLBACK_TEXT, wrap.raw_assistant_message,
@@ -391,6 +449,28 @@ def run_chat_turn(
         except Exception:  # noqa: BLE001 - never let recovery mask the real error
             logger.exception("chat: could not reveal proposals after a failed turn")
         yield error_event(str(exc))
+
+
+def _supersede_stale_batches(
+    session: Session, deck_id: int | None, keep_ids: list[int]
+) -> None:
+    """Withdraw card proposals left pending by earlier turns once this turn
+    has produced its own batch.
+
+    The prompt asked the model to withdraw a stale batch before proposing a new
+    one, and the UI used to pretend it had. Doing it here makes the rule hold
+    whether or not the model remembers: one live card batch per deck, and a
+    pending commander proposal untouched. Best-effort, never fatal to the turn.
+    """
+    if deck_id is None or not keep_ids:
+        return
+    try:
+        count = repo.supersede_pending_card_proposals(session, deck_id, keep_ids)
+    except Exception:  # noqa: BLE001 - housekeeping must not sink the turn
+        logger.exception("chat: could not supersede stale proposals")
+        return
+    if count:
+        logger.info("chat: superseded %d stale pending proposal(s)", count)
 
 
 _MAX_ITER_FALLBACK_TEXT = (

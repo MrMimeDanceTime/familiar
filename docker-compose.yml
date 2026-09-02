@@ -35,7 +35,6 @@ services:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DEEPSEEK_MODEL=${FAMILIAR_DEEPSEEK_MODEL:-deepseek-v4-pro}
       - DEEPSEEK_MODEL_FAST=${FAMILIAR_DEEPSEEK_MODEL_FAST:-deepseek-v4-flash}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - LLM_TIMEOUT_SECONDS=90
       - CHAT_MAX_TOKENS=1000
       - LOG_LEVEL=INFO
@@ -54,6 +53,7 @@ services:
       - BACKUP_MODE=folder
       - BACKUP_DIR=/data/backups
       - BACKUP_KEEP=10
+      - BACKUP_INTERVAL_HOURS=24
     volumes:
       - /data/config/familiar:/data
     ports:

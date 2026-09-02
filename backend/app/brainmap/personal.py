@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.brainmap.layers import PERSONAL, LayerScore, ScoringContext
+from app.db.models import DENIAL_SUPERSEDED, DENIAL_WITHDRAWN
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,10 @@ _OTHER_DECK_WEIGHT = 0.4
 # stick. Treating every denial identically throws that distinction away and
 # slowly poisons the pool against cards that were only ever mistimed.
 _REASON_WEIGHT: dict[str, float] = {
+    # Written by the app, not the player: the model trimmed its own batch, or a
+    # newer batch displaced this one. Neither is a verdict on the card.
+    DENIAL_WITHDRAWN: 0.0,
+    DENIAL_SUPERSEDED: 0.0,
     "don't need this role": 0.2,
     "don’t need this role": 0.2,   # curly apostrophe, as the UI sends it
     "off-theme": 0.5,

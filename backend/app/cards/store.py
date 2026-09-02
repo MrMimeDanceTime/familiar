@@ -154,6 +154,15 @@ def raw_card(oracle_id: str) -> dict[str, Any] | None:
         return None
 
 
+def game_changer_names() -> list[str]:
+    """Every card Scryfall flags as a Commander Game Changer."""
+    with get_engine().begin() as conn:
+        rows = conn.execute(text(
+            "SELECT name FROM cards WHERE game_changer = 1 AND playable = 1"
+        )).fetchall()
+    return [r[0] for r in rows]
+
+
 def tags_for(oracle_id: str) -> set[str]:
     """Oracle tag slugs for one card."""
     with get_engine().begin() as conn:

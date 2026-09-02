@@ -127,6 +127,14 @@ class UserPreferences(SQLModel, table=True):
     build_preferences: str | None = None
 
 
+# Denial reasons the APP writes, as opposed to the ones the player picks in the
+# review UI. Both mean "this proposal went away without the player passing on
+# the card", and the personal scoring layer must weight them at zero — a card
+# withdrawn by the model or displaced by a newer batch says nothing about the
+# player's taste.
+DENIAL_WITHDRAWN = "withdrawn"
+DENIAL_SUPERSEDED = "superseded"
+
 # Turn statuses. A turn is terminal when it is not RUNNING.
 TURN_RUNNING = "running"
 TURN_DONE = "done"

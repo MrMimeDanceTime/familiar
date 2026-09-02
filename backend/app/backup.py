@@ -1,9 +1,11 @@
 """Automatic backup of the SQLite DB at app startup.
 
-Runs once in the FastAPI lifespan startup (see main.py). Startup — not
-shutdown — is the trigger on purpose: it captures the previous session's
-committed state even if the app previously crashed, and a hard crash can't
-skip it. Every step is guarded so a backup failure can never stop the app.
+Runs once in the FastAPI lifespan startup (see main.py) and then on a timer
+(``BACKUP_INTERVAL_HOURS``). Startup — not shutdown — is the first trigger on
+purpose: it captures the previous session's committed state even if the app
+previously crashed, and a hard crash can't skip it. The timer exists because
+a long-lived container may not restart for weeks. Every step is guarded so a
+backup failure can never stop the app.
 
 The DB copy uses SQLite's online backup API, so it's a consistent snapshot
 even if a write is in flight — a plain file copy of a live SQLite DB can tear.
@@ -22,8 +24,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -155,11 +159,11 @@ def _backup_via_folder(db_path: Path, filename: str) -> None:
     logger.info("backup: wrote %s to %s", filename, dest_dir)
 
 
-def run_startup_backup() -> None:
+def run_backup() -> None:
     """Snapshot the DB and back it up per settings.backup_mode.
 
-    Best-effort and fully guarded: logs and returns on any failure so app
-    startup is never blocked by backup problems.
+    Best-effort and fully guarded: logs and returns on any failure so neither
+    startup nor the periodic loop is ever broken by backup problems.
     """
     mode = settings.backup_mode.lower()
     if mode == "off":
@@ -182,3 +186,44 @@ def run_startup_backup() -> None:
             logger.warning("backup: unknown backup_mode=%r; skipping", settings.backup_mode)
     except Exception:  # noqa: BLE001 - never let backup break startup
         logger.warning("backup: failed, continuing without backup", exc_info=True)
+
+
+def run_startup_backup() -> None:
+    """The snapshot taken once at startup. Same operation as the periodic one."""
+    run_backup()
+
+
+def _backup_loop(
+    stop: threading.Event, interval_seconds: float, run: Callable[[], None] = run_backup
+) -> None:
+    """Take a backup every interval until stopped. ``stop.wait`` doubles as the
+    sleep, so a shutdown does not wait out a whole interval."""
+    while not stop.wait(interval_seconds):
+        try:
+            run()
+        except Exception:  # noqa: BLE001 - the loop outlives any one failure
+            logger.warning("backup: periodic run failed", exc_info=True)
+
+
+def start_periodic_backup(
+    interval_hours: float | None = None,
+) -> tuple[threading.Thread, threading.Event] | None:
+    """Back the DB up on a schedule, not only at startup.
+
+    The container restarts rarely (``restart: unless-stopped``), so a startup
+    snapshot alone could go weeks between copies. ``BACKUP_INTERVAL_HOURS``
+    sets the cadence; 0 disables the loop and keeps the startup snapshot. The
+    thread is a daemon and shares the guarded ``run_backup`` path, so a failure
+    logs and the next interval tries again. Returns the thread and its stop
+    event, or None when nothing was started.
+    """
+    hours = settings.backup_interval_hours if interval_hours is None else interval_hours
+    if hours <= 0 or settings.backup_mode.lower() == "off":
+        return None
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_backup_loop, args=(stop, hours * 3600.0), name="periodic-backup", daemon=True,
+    )
+    thread.start()
+    logger.info("backup: periodic snapshot every %.1fh", hours)
+    return thread, stop

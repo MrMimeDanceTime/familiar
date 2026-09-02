@@ -10,7 +10,7 @@ from starlette.responses import Response
 from sqlmodel import Session
 
 from app.api import chat, conversations, decks, preferences
-from app.backup import run_startup_backup
+from app.backup import run_startup_backup, start_periodic_backup
 from app.cards import importer as card_importer
 from app.cards import schema as card_schema
 from app.config import settings
@@ -89,8 +89,11 @@ async def lifespan(app: FastAPI):
     # so it captures the prior session even after a hard crash; fully guarded
     # so a backup failure never blocks the app from serving.
     run_startup_backup()
+    periodic = start_periodic_backup()
     _reconcile_turns()
     yield
+    if periodic is not None:
+        periodic[1].set()
 
 
 app = FastAPI(title="Familiar", lifespan=lifespan)

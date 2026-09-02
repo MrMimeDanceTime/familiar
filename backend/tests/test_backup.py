@@ -164,3 +164,41 @@ def test_pcloud_mode_noop_without_token(monkeypatch, tmp_path):
     with patch("app.backup.httpx.Client") as client:
         backup.run_startup_backup()
         client.assert_not_called()
+
+
+def test_periodic_loop_runs_until_stopped():
+    import threading
+
+    calls = []
+    stop = threading.Event()
+
+    def run():
+        calls.append(1)
+        if len(calls) == 3:
+            stop.set()
+
+    backup._backup_loop(stop, 0.001, run=run)
+    assert len(calls) == 3
+
+
+def test_periodic_loop_survives_a_failing_run():
+    import threading
+
+    calls = []
+    stop = threading.Event()
+
+    def run():
+        calls.append(1)
+        if len(calls) == 2:
+            stop.set()
+        raise RuntimeError("disk full")
+
+    backup._backup_loop(stop, 0.001, run=run)
+    assert len(calls) == 2
+
+
+def test_start_periodic_backup_is_off_at_zero_interval(monkeypatch):
+    monkeypatch.setattr(settings, "backup_mode", "folder")
+    assert backup.start_periodic_backup(interval_hours=0) is None
+    monkeypatch.setattr(settings, "backup_mode", "off")
+    assert backup.start_periodic_backup(interval_hours=1) is None

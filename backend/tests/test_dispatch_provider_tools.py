@@ -16,9 +16,7 @@ calls `compute_deck_stats` directly and never goes through dispatch.
 
 from unittest.mock import MagicMock
 
-import pytest
 
-from app.tools import dispatch as dispatch_mod
 from app.tools.dispatch import PROVIDER_SESSION_TOOLS, dispatch
 
 

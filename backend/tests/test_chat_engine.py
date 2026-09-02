@@ -109,7 +109,6 @@ def test_max_iterations_forces_a_final_text_response(session):
     """When the loop exhausts its tool-call budget, the engine must force one
     toolless wrap-up send so the player gets a real summary — not the old bare
     'reached max iterations' error that discarded a nearly-finished turn."""
-    from app.chat.engine import MAX_TOOL_ITERATIONS
 
     class NeverStopsProvider:
         """Returns a tool call on every tool-bearing send (so the loop never
@@ -577,7 +576,7 @@ def test_history_replay_reconstructs_provider_native_messages(session):
 # stayed available for the job.
 
 
-from app.chat.engine import _redirect_to_pipeline
+from app.chat.engine import _redirect_to_pipeline  # noqa: E402 - section import
 
 
 def _changes(*specs):
@@ -972,3 +971,104 @@ def test_redirect_with_kept_commander_still_offers_suggest_cards(mock_get_client
     assert names_per_send[2] == ["withdraw_pending_proposals"], "one iteration only"
     assert "call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"] \
         or "may call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"]
+
+
+# ── Bounded context ──────────────────────────────────────────────────────
+
+
+def test_bound_history_elides_old_large_tool_results_only():
+    from app.chat.engine import bound_history
+
+    big = "x" * 5000
+    small = "short"
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "tool_calls": ["a"]},
+        {"role": "tool", "tool_call_id": "a", "content": big},        # old, large: elided
+        {"role": "tool", "tool_call_id": "b", "content": small},      # old, small: kept
+        {"role": "tool", "tool_call_id": "c", "content": big},        # recent: kept
+        {"role": "tool", "tool_call_id": "d", "content": big},        # recent: kept
+        {"role": "assistant", "content": big},                        # never touched
+    ]
+
+    bounded = bound_history(history, keep_recent=2)
+
+    assert "elided" in bounded[2]["content"] and len(bounded[2]["content"]) < 500
+    assert bounded[3]["content"] == small
+    assert bounded[4]["content"] == big and bounded[5]["content"] == big
+    assert bounded[6]["content"] == big
+    # The original is untouched: this is a send-time view, not the record.
+    assert history[2]["content"] == big
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_provider_sees_bounded_history_but_db_keeps_everything(mock_get_client, session):
+    mock_get_client.return_value.named.return_value = {
+        "name": "Sol Ring", "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    # Six earlier tool results, all large.
+    seq = 0
+    for i in range(6):
+        repo.add_message(session, convo.id, role="assistant", sequence=seq,
+                         provider_native=[{"role": "assistant", "tool_calls": [f"c{i}"]}])
+        repo.add_message(session, convo.id, role="tool", sequence=seq + 1,
+                         provider_native=[{"role": "tool", "tool_call_id": f"c{i}", "content": "y" * 3000}])
+        seq += 2
+
+    provider = FakeProvider([AssistantTurn(text="ok", tool_calls=[])])
+    _collect(run_chat_turn(session, provider, convo.id, "next", deck_id=deck.id))
+
+    sent = provider.sent_history_snapshots[0]
+    tool_msgs = [m for m in sent if m.get("role") == "tool"]
+    assert sum("elided" in m["content"] for m in tool_msgs) == 2
+    assert sum(m["content"] == "y" * 3000 for m in tool_msgs) == 4
+    stored = [m for m in repo.list_messages(session, convo.id) if m.role == "tool"]
+    assert all(m.provider_native[0]["content"] == "y" * 3000 for m in stored)
+
+
+# ── A new batch supersedes the old one ───────────────────────────────────
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_new_batch_supersedes_stale_pending_cards_but_not_the_commander(mock_get_client, session):
+    from app.db.models import DENIAL_SUPERSEDED
+
+    mock_get_client.return_value.named.side_effect = lambda name, **k: {
+        "name": name, "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    from app.tools.deck_tools import propose_deck_changes
+    stale = propose_deck_changes(session, deck.id, "old", [
+        {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+        {"action": "add", "card_name": "Old Pick"},
+    ], conversation_id=convo.id)
+    stale_ids = {p["card_name"]: p["id"] for p in stale["proposals"]}
+
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "new", "changes": [
+                    {"action": "add", "card_name": "New Pick"},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="Here.", tool_calls=[]),
+    ])
+    _collect(run_chat_turn(session, provider, convo.id, "something else", deck_id=deck.id))
+
+    old_pick = repo.get_proposal(session, stale_ids["Old Pick"])
+    assert old_pick.status == "denied"
+    assert old_pick.denial_reason == DENIAL_SUPERSEDED
+    commander = repo.get_proposal(session, stale_ids["Myrkul, Lord of Bones"])
+    assert commander.status == "pending"
+    new = [p for p in repo.list_proposals(session, convo.id) if p.card_name == "New Pick"]
+    assert new and new[0].status == "pending"

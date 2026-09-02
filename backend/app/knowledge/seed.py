@@ -12,7 +12,7 @@ already populated).
 from sqlmodel import Session, select
 
 from app.knowledge.models import KnowledgeEntry
-from app.tools.deck_tools import _BANNED_COMMANDER, _GAME_CHANGERS, _FAST_MANA, _MLD_CARDS, _TUTORS
+from app.tools.deck_tools import _BANNED_COMMANDER, _GAME_CHANGERS, _FAST_MANA
 
 ENTRIES: list[dict[str, str]] = [
     # ── Mana Curve ───────────────────────────────────────────────────────
@@ -362,7 +362,7 @@ ENTRIES: list[dict[str, str]] = [
             "almost no counterspells), and graveyard hate. Green is the "
             "most self-sufficient color but is predictable. Pairs well "
             "with Blue for value (Simic), Black for graveyard (Golgari), "
-            "or White for tokens/\+1/+1 counters (Selesnya)."
+            r"or White for tokens/\+1/+1 counters (Selesnya)."
         ),
         "category": "color-pie",
         "format": "commander",
@@ -828,7 +828,6 @@ def seed_knowledge_base() -> None:
     card sets (Game Changers, fast mana), so they can change without the
     count changing, and a stale copy would misrepresent what the tool scores.
     """
-    from sqlmodel import Session, select
 
     from app.db.session import get_engine
 

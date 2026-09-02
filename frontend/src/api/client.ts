@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, ImportMode, ImportResult, UserPreferences } from '../types/api'
+import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, DeckSummary, ImportMode, ImportResult, UserPreferences } from '../types/api'
 
 async function asJson<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -18,7 +18,7 @@ export const api = {
   deleteConversation: (id: number): Promise<{ ok: boolean }> =>
     fetch(`/api/conversations/${id}`, { method: 'DELETE' }).then((r) => asJson<{ ok: boolean }>(r)),
 
-  listDecks: (): Promise<Deck[]> => fetch('/api/decks').then((r) => asJson<Deck[]>(r)),
+  listDecks: (): Promise<DeckSummary[]> => fetch('/api/decks').then((r) => asJson<DeckSummary[]>(r)),
 
   getDeck: (id: number): Promise<Deck> =>
     fetch(`/api/decks/${id}`).then((r) => asJson<Deck>(r)),

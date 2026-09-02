@@ -13,8 +13,6 @@ import pytest
 
 from app.deckplan import (
     DEFAULT_TARGETS,
-    DeckPlan,
-    RoleGap,
     build_plan,
     count_roles,
     render_card_rationale,
@@ -383,9 +381,9 @@ def test_missing_score_does_not_break_the_change():
 # 33-35 at +1.0, and 8 removal scores +0.5 where 10 earns +1.0.
 
 
-import pytest as _pytest
+import pytest as _pytest  # noqa: E402 - section import
 
-from app.deckplan import DEFAULT_POWER, TARGETS_BY_POWER, targets_for_power
+from app.deckplan import DEFAULT_POWER, TARGETS_BY_POWER, targets_for_power  # noqa: E402 - section import
 
 
 @_pytest.mark.parametrize("level", sorted(TARGETS_BY_POWER))

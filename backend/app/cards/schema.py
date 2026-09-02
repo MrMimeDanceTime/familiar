@@ -179,6 +179,13 @@ def card_count() -> int:
         return conn.execute(text("SELECT count(*) FROM cards")).scalar() or 0
 
 
+def has_tags() -> bool:
+    """Whether the index holds any taggings at all. Cheaper than tag_count()
+    for the callers that only need to know which tag source to read."""
+    with get_engine().begin() as conn:
+        return conn.execute(text("SELECT 1 FROM card_tags LIMIT 1")).first() is not None
+
+
 def tag_count() -> int:
     with get_engine().begin() as conn:
         return conn.execute(text("SELECT count(*) FROM card_tags")).scalar() or 0

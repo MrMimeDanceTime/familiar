@@ -15,4 +15,11 @@ def test_get_fast_model_returns_flash_for_deepseek():
 
 
 def test_get_fast_model_is_none_for_providers_without_a_fast_tier():
-    assert factory.get_fast_model("anthropic") is None
+    assert factory.get_fast_model("someday-provider") is None
+
+
+def test_unknown_provider_is_a_clear_error():
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
+        factory.get_provider("anthropic")

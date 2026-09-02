@@ -28,6 +28,19 @@ from typing import Any
 
 from sqlmodel import Session
 
+from app import deckplan
+from app.brainmap import layers as brain_layers
+from app.brainmap import map as brain_map
+from app.cards import schema as card_schema
+from app.cards import store as card_store
+from app.db import repository as repo
+from app.knowledge.tag_lookup import get_tag_lookup
+from app.pipeline import candidates as candidates_stage
+from app.pipeline import selection as selection_stage
+from app.pipeline import spec as spec_stage
+from app.pipeline.shaping import DeckContext, shape
+from app.pipeline.validate import validate_to_proposals
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,19 +58,6 @@ def _timed(stage: str, timings: dict[str, float]):
         timings[stage] = round(dt, 2)
         level = logging.WARNING if dt > 20 else logging.INFO
         logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
-
-from app import deckplan
-from app.brainmap import layers as brain_layers
-from app.brainmap import map as brain_map
-from app.cards import schema as card_schema
-from app.cards import store as card_store
-from app.db import repository as repo
-from app.knowledge.tag_lookup import get_tag_lookup
-from app.pipeline import candidates as candidates_stage
-from app.pipeline import selection as selection_stage
-from app.pipeline import spec as spec_stage
-from app.pipeline.shaping import DeckContext, shape
-from app.pipeline.validate import validate_to_proposals
 
 
 @dataclass

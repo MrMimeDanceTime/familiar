@@ -155,11 +155,25 @@ TOOL_SPECS: list[ToolSpec] = [
             "in your history may name cards that were resolved long ago. Trust "
             "pending_proposals over your own memory of what you proposed. Note "
             "pending cards are NOT counted in total_cards — a proposal is not "
-            "yet part of the deck."
+            "yet part of the deck. Oracle text comes back for the commander(s) "
+            "only; set include_oracle_text=true when you need to reason about "
+            "the rules text of the whole list, or look up specific cards with "
+            "scryfall_card_collection."
         ),
         parameters={
             "type": "object",
-            "properties": {"deck_id": {"type": "integer"}},
+            "properties": {
+                "deck_id": {"type": "integer"},
+                "include_oracle_text": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Include oracle_text for every card, not just the "
+                        "commander(s). Costs a lot of context on a full deck; "
+                        "use it when you genuinely need the whole list's text."
+                    ),
+                },
+            },
             "required": ["deck_id"],
         },
     ),

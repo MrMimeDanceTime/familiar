@@ -103,7 +103,6 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
         turn = repo.get_turn(session, turn_id, owner_id=owner_id)
         if turn is None:
             raise HTTPException(status_code=404, detail="Turn not found")
-        status, error = turn.status, turn.error
 
     bus = get_event_bus()
 

@@ -9,7 +9,7 @@ written as tool-agnostic docs in [`docs/`](docs/) so any coding assistant
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — stack, run/test commands, code layout, data model
 - [docs/PRODUCT.md](docs/PRODUCT.md) — product philosophy behind the chat behavior
-- [docs/PROVIDERS.md](docs/PROVIDERS.md) — DeepSeek vs Anthropic, which is primary and why
+- [docs/PROVIDERS.md](docs/PROVIDERS.md) — the DeepSeek backend, its model/thinking policy, and why it is the only one
 - [docs/PROVIDER_SHAPES.md](docs/PROVIDER_SHAPES.md) — the most important implementation detail in this codebase; read before touching `app/chat/engine.py`
 - [docs/PIPELINE.md](docs/PIPELINE.md) — the card-suggestion retrieval pipeline as built (stages, model/thinking policy, deck-aware selection, timing/timeout diagnostics)
 

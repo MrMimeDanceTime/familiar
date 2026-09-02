@@ -95,7 +95,6 @@ def _render_deck(snapshot: dict[str, Any], base_score: int, base_factors: list[s
         if "land" in type_line and (c.get("category") or "") != "Commander":
             land_count += 1
             continue
-        roles = ", ".join(c.get("tags") or []) or "—"
         qty = c.get("quantity") or 1
         prefix = f"{qty}x " if qty > 1 else ""
         nonland.append(f"{prefix}{c.get('name')} [{c.get('category') or 'uncategorized'}]")

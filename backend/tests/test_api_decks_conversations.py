@@ -149,3 +149,20 @@ def test_second_turn_on_a_running_conversation_is_rejected(client, test_engine, 
 
     second = client.post("/api/chat", json={"conversation_id": convo_id, "message": "again"})
     assert second.status_code == 409
+
+
+def test_deck_list_is_a_summary_not_a_snapshot(client, test_engine):
+    deck = client.post("/api/decks", json={"name": "Listed", "commander": "Korvold"}).json()
+    with Session(test_engine) as session:
+        repo.add_deck_card(session, deck["id"], "Sol Ring", quantity=1, oracle_text="{T}: Add {C}{C}.")
+        repo.add_deck_card(session, deck["id"], "Swamp", quantity=30)
+
+    rows = client.get("/api/decks").json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "Listed"
+    assert row["commander"] == "Korvold"
+    assert row["total_cards"] == 31
+    assert "cards" not in row
+    # The full snapshot is still one request away.
+    assert len(client.get(f"/api/decks/{deck['id']}").json()["cards"]) == 2

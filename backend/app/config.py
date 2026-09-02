@@ -12,10 +12,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Only "deepseek" is implemented. Kept as a setting so a second backend can
+    # slot in behind ChatProvider without a config change of shape.
     llm_provider: str = "deepseek"
-
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-6"
 
     deepseek_api_key: str = ""
     # Default to Pro everywhere: V4 pricing makes the Flash/Pro gap negligible, so
@@ -94,6 +93,10 @@ class Settings(BaseSettings):
     #   "pcloud" — upload via the pCloud API (needs pcloud_auth_token).
     backup_mode: str = "folder"
     backup_keep: int = 10
+    # Hours between periodic snapshots after the startup one. 0 keeps only the
+    # startup snapshot, which is enough for a laptop that restarts daily and
+    # not for a container that runs for weeks.
+    backup_interval_hours: float = 24.0
 
     # folder mode: destination directory for snapshots (a synced folder).
     # Empty disables folder mode even if selected.

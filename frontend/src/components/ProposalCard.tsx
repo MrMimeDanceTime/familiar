@@ -39,6 +39,15 @@ function ScoreBars({ scores }: { scores: ProposalScores }) {
   )
 }
 
+// Reasons the app writes are not the player's verdict and should not read as
+// one: the model trimmed its own batch, or a newer batch replaced this one.
+function resolvedLabel(proposal: DeckProposal): string {
+  if (proposal.status === 'approved') return 'Applied'
+  if (proposal.denial_reason === 'withdrawn') return 'Withdrawn'
+  if (proposal.denial_reason === 'superseded') return 'Replaced by a newer batch'
+  return proposal.denial_reason ? `Denied — ${proposal.denial_reason}` : 'Denied'
+}
+
 export function ProposalCard({ proposal, onApply, onDeny }: ProposalCardProps) {
   const [loading, setLoading] = useState(false)
   const [denying, setDenying] = useState(false)
@@ -69,9 +78,7 @@ export function ProposalCard({ proposal, onApply, onDeny }: ProposalCardProps) {
           {approved ? '✓' : '✗'}
         </span>
         <span className="proposal-swap__name">{name}</span>
-        <span className="proposal-swap__note">
-          {approved ? 'Applied' : proposal.denial_reason ? `Denied — ${proposal.denial_reason}` : 'Denied'}
-        </span>
+        <span className="proposal-swap__note">{resolvedLabel(proposal)}</span>
       </div>
     )
   }

@@ -11,7 +11,7 @@ from typing import Any
 from sqlmodel import Session
 
 from app.db import repository as repo
-from app.db.models import DeckProposal
+from app.db.models import DENIAL_WITHDRAWN, DeckProposal
 from app.knowledge.tag_lookup import get_tags_for_card
 from app.tools.scryfall_client import ScryfallNotFoundError, get_scryfall_client
 
@@ -158,13 +158,11 @@ def _detect_roles(type_line: str | None, oracle_text: str,
     gets only its land role from the type line; it is NOT role-guessed from
     oracle text, which would silently disagree with the tags.
     """
-    from app.knowledge.tag_lookup import get_tag_lookup
-
     if tags:
         return _roles_from_tag_set(tags, type_line)
 
     if oracle_id:
-        return _roles_from_tag_set(get_tag_lookup().get(oracle_id, set()), type_line)
+        return _roles_from_tag_set(set(get_tags_for_card(oracle_id)), type_line)
 
     # No tags available: the only role we can assert from the type line
     # alone is land. Everything else waits for the tag backfill.
@@ -189,17 +187,34 @@ def _missing_auto_includes(snapshot: dict) -> list[dict]:
         return []
 
 
-def deck_get_current(session: Session, deck_id: int) -> dict:
+def deck_get_current(
+    session: Session, deck_id: int, include_oracle_text: bool = False
+) -> dict:
     """The deck as it stands, plus what it is trying to become.
 
     The snapshot carries the raw plan fields; this attaches the computed
     current-vs-target view so the model reads "still needs: draw (short 4)"
     rather than deriving it from role targets and a 99-card list — arithmetic
     it does unreliably and would have to redo every turn.
+
+    Oracle text is kept for the commander(s) and dropped for the rest unless
+    asked for. A full deck's rules text is the single largest thing in a turn's
+    context and the model reads this tool several times per conversation; the
+    tags and category answer "what does this card do for the deck" for most
+    reasoning, and a card the model needs the text of is one lookup away.
     """
     from app import deckplan
 
     snapshot = repo.deck_snapshot(session, deck_id)
+    if not include_oracle_text:
+        for card in snapshot["cards"]:
+            if card.get("category") != "Commander":
+                card.pop("oracle_text", None)
+        snapshot["oracle_text_note"] = (
+            "oracle_text is included for the commander(s) only. Pass "
+            "include_oracle_text=true to get it for every card, or look "
+            "specific cards up with scryfall_card_collection."
+        )
     plan = deckplan.build_plan(snapshot)
     snapshot["plan"] = {
         "themes": plan.themes,
@@ -806,6 +821,44 @@ _GAME_CHANGERS: set[str] = {
     "The Tabernacle at Pendrell Vale",
 }
 
+# The list above is the fallback. Scryfall marks every Game Changer with a
+# per-card flag that the local index stores, so the live list is read from
+# there and the hand-typed copy only serves a cold install whose index has not
+# landed yet. A hit is held for an hour; a miss (empty index) for a minute, so
+# the switch to real data happens shortly after the first import finishes.
+_GC_HIT_TTL = 3600.0
+_GC_MISS_TTL = 60.0
+_gc_cache: tuple[float, float, frozenset[str]] | None = None
+
+
+def game_changer_names() -> frozenset[str]:
+    """Current Game Changers: from the card index when it has them, else the
+    hand-maintained fallback."""
+    global _gc_cache
+    import time
+
+    now = time.monotonic()
+    if _gc_cache is not None:
+        stamped, ttl, names = _gc_cache
+        if now - stamped < ttl:
+            return names
+
+    names: frozenset[str] = frozenset()
+    try:
+        from app.cards import store as card_store
+
+        names = frozenset(card_store.game_changer_names())
+    except Exception:  # noqa: BLE001 - the index is optional, the fallback is not
+        names = frozenset()
+
+    if names:
+        _gc_cache = (now, _GC_HIT_TTL, names)
+    else:
+        names = frozenset(_GAME_CHANGERS)
+        _gc_cache = (now, _GC_MISS_TTL, names)
+    return names
+
+
 # Cards banned in Commander (EDH) as of the official banned & restricted list
 # current on 2026-07-01 (the June 29, 2026 B&R made no Commander changes; the
 # most recent Commander change was February 9, 2026, which unbanned Biorhythm
@@ -975,7 +1028,7 @@ def _estimate_bracket(card_names: set[str], avg_mv: float, land_count: int,
                 found.add(original)
         return found
 
-    gc = _match(_GAME_CHANGERS)
+    gc = _match(game_changer_names())
     tutors = _match(_TUTORS)
     mld = _match(_MLD_CARDS)
     fast = _match(_FAST_MANA)
@@ -1279,6 +1332,10 @@ def withdraw_pending_proposals(
             preserved_commander += 1
             continue
         p.status = "denied"
+        # The model changed its mind, not the player. Without the marker this
+        # counted as a player denial and slowly taught the personal layer to
+        # dislike cards the player never saw.
+        p.denial_reason = DENIAL_WITHDRAWN
         session.add(p)
         withdrawn += 1
         matched.add(name_lower)

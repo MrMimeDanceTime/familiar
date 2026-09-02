@@ -57,6 +57,20 @@ export interface Deck {
   cards: DeckCard[]
 }
 
+/** A deck as the list endpoint returns it: enough for a sidebar row and to
+ *  route to its conversation, without the card list. */
+export interface DeckSummary {
+  id: number
+  name: string
+  commander: string | null
+  partner_commander: string | null
+  format: string
+  power_level: string | null
+  conversation_id: number | null
+  total_cards: number
+  updated_at: string
+}
+
 export type ImportMode = 'merge' | 'replace'
 
 export interface ImportResult extends Deck {

@@ -449,3 +449,24 @@ def test_pipeline_tag_lookup_falls_back_when_index_empty(card_db, monkeypatch):
     )
     tags = service._tags_for_pool([{"oracle_id": "oid-x"}])
     assert tags["oid-x"] == {"ramp"}
+
+
+def test_get_tags_for_card_reads_the_index_when_it_has_taggings(card_db, monkeypatch):
+    """The index and the gzip cache hold the same taggings; the index is the
+    one that never downloads inside a request, so it answers first."""
+    from sqlalchemy import text
+
+    from app.db.session import get_engine
+    from app.knowledge import tag_lookup
+
+    schema.ensure_schema()
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO card_tags (oracle_id, slug) VALUES ('oid-1', 'ramp'), ('oid-1', 'mana-rock')"
+        ))
+    monkeypatch.setattr(tag_lookup, "_index_has_tags", False)
+    # A cache that disagrees, to prove which source answered.
+    monkeypatch.setattr(tag_lookup, "_lookup", {"oid-1": {"stale-cache-tag"}})
+
+    assert tag_lookup.get_tags_for_card("oid-1") == ["mana-rock", "ramp"]
+    assert tag_lookup.get_tags_for_card("oid-unknown") == []

@@ -17,7 +17,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.tools import dispatch as dispatch_mod
 from app.tools.dispatch import dispatch
 
 RECS = {

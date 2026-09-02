@@ -116,7 +116,7 @@ def test_half_point_adjustment_is_preserved_not_rounded(session):
     # The whole point of ±0.5 granularity: a half-point nuance must show as a
     # .5 final score, not get rounded away (and not hit banker's rounding).
     deck = _seed_deck(session)
-    base = deck_tools.compute_deck_stats(session, deck.id, None)["power_level_base"]
+    deck_tools.compute_deck_stats(session, deck.id, None)
 
     for adj in (0.5, -0.5):
         # fresh deck each time so the cache doesn't reuse a prior adj

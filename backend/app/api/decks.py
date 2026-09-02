@@ -84,9 +84,13 @@ def create_deck(body: CreateDeckIn):
 
 @router.get("")
 def list_decks():
+    """Deck summaries for the sidebar: identity and size, no card list.
+
+    A full snapshot per deck carried every card's oracle text to populate a
+    list of names. The selected deck is fetched on its own by id."""
     with Session(get_engine()) as session:
         decks = repo.list_decks(session)
-        return [repo.deck_snapshot(session, d.id) for d in decks]
+        return [repo.deck_summary(session, d) for d in decks]
 
 
 # Must precede "/{deck_id}" — otherwise "providers" is parsed as a deck id.

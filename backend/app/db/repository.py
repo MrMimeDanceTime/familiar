@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from app.db.models import (
+    DENIAL_SUPERSEDED,
     SINGLE_USER_ID,
     TURN_DONE,
     TURN_ERROR,
@@ -534,6 +535,60 @@ def pending_commander_for_deck(session: Session, deck_id: int) -> str | None:
     )
     proposal = session.exec(statement).first()
     return proposal.commander_name if proposal else None
+
+
+def supersede_pending_card_proposals(
+    session: Session, deck_id: int, keep_ids: list[int]
+) -> int:
+    """Deny every pending card proposal for a deck except the ones in keep_ids.
+
+    Called when a turn creates a new batch, so an older batch the player never
+    finished reviewing does not sit beside the new one. A pending set_commander
+    is the deck's identity and is never touched here. Marked ``superseded``
+    rather than a bare denial so the personal layer ignores it. Returns how
+    many were superseded.
+    """
+    keep = set(keep_ids)
+    statement = select(DeckProposal).where(
+        DeckProposal.deck_id == deck_id,
+        DeckProposal.status == "pending",
+        DeckProposal.action != "set_commander",
+    )
+    count = 0
+    for proposal in session.exec(statement):
+        if proposal.id in keep:
+            continue
+        proposal.status = "denied"
+        proposal.denial_reason = DENIAL_SUPERSEDED
+        session.add(proposal)
+        count += 1
+    if count:
+        session.commit()
+    return count
+
+
+def deck_summary(session: Session, deck: Deck) -> dict:
+    """The deck as a list row: identity and size, no cards.
+
+    ``deck_snapshot`` carries every card with its oracle text, which is right
+    for the panel and wrong for a sidebar that only needs the name; the list
+    endpoint was building a full snapshot per deck.
+    """
+    linked = get_conversation_by_deck_id(session, deck.id)
+    total = session.exec(
+        select(DeckCard.quantity).where(DeckCard.deck_id == deck.id)
+    ).all()
+    return {
+        "id": deck.id,
+        "name": deck.name,
+        "commander": deck.commander,
+        "partner_commander": deck.partner_commander,
+        "format": deck.format,
+        "power_level": deck.power_level,
+        "conversation_id": linked.id if linked else None,
+        "total_cards": sum(total),
+        "updated_at": deck.updated_at.isoformat(),
+    }
 
 
 def running_turn_for_conversation(session: Session, conversation_id: int) -> Turn | None:

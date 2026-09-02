@@ -12,7 +12,7 @@ backs up its SQLite database on startup.
 
 ## Structure
 
-- `backend/` — FastAPI app, SQLite persistence, LLM tool-calling loop (Claude or DeepSeek), knowledge base (FTS5), deck-platform integrations, startup backups
+- `backend/` — FastAPI app, SQLite persistence, LLM tool-calling loop (DeepSeek), knowledge base (FTS5), deck-platform integrations, scheduled DB backups
 - `frontend/` — React + TypeScript + Vite chat UI with a live deck side panel
 - `docs/` — architecture, product philosophy, and provider-specific gotchas for anyone (or any coding assistant) working on this codebase
 - `design-package/` — the UI visual-refresh design brief and approved handoff (reference material; not built or imported by the app)
@@ -35,11 +35,12 @@ Pass `-Port` to use a different port, e.g. `.\run.ps1 -Port 8080`.
 
 All settings live in `.env` (copied from `.env.example` on first run):
 
-- **LLM provider** — `LLM_PROVIDER` (`deepseek` default, or `anthropic`) plus
-  the matching API key/model. See `docs/PROVIDERS.md`.
-- **Backups** — `BACKUP_MODE` controls the startup DB snapshot: `folder`
-  (default; point `BACKUP_DIR` at a synced folder like Drive/OneDrive/Dropbox),
-  `pcloud` (set `PCLOUD_AUTH_TOKEN`), or `off`. `BACKUP_KEEP` caps retained
+- **LLM provider** — DeepSeek, via `DEEPSEEK_API_KEY` and the `DEEPSEEK_MODEL*`
+  settings. See `docs/PROVIDERS.md`.
+- **Backups** — `BACKUP_MODE` controls DB snapshots: `folder` (default; point
+  `BACKUP_DIR` at a synced folder like Drive/OneDrive/Dropbox), `pcloud` (set
+  `PCLOUD_AUTH_TOKEN`), or `off`. One snapshot is taken at startup and then
+  every `BACKUP_INTERVAL_HOURS` (default 24). `BACKUP_KEEP` caps retained
   snapshots.
 
 ### Frontend development (hot reload)

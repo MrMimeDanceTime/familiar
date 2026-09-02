@@ -1,5 +1,10 @@
 # Critical invariant: provider-native history shapes differ
 
+> DeepSeek is now the only backend (the Anthropic provider was removed, see
+> [PROVIDERS.md](PROVIDERS.md)). The invariant below still holds: the engine
+> must stay generic over how many history entries a turn appends, and any
+> future provider must be checked against a live multi-tool-call turn.
+
 This is the single most important implementation detail in this codebase.
 Read this before touching `app/chat/engine.py`, `app/llm/*_provider.py`, or
 `tests/test_chat_engine.py`'s `FakeProvider`.

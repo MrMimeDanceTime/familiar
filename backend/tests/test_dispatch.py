@@ -692,3 +692,34 @@ def test_tool_schemas_and_dispatch_registry_in_sync():
         f"these directly, add them to DISPATCH_ONLY_TOOLS; otherwise add a "
         f"ToolSpec."
     )
+
+
+def test_withdraw_marks_the_reason_as_the_models_not_the_players(session):
+    from app.db.models import DENIAL_WITHDRAWN
+
+    deck = repo.create_deck(session, name="W", format="commander")
+    convo = repo.create_conversation(session)
+    p = _pending(session, convo.id, deck.id, "add", "Sol Ring")
+
+    deck_tools.withdraw_pending_proposals(session, deck.id, card_names=["Sol Ring"])
+
+    session.refresh(p)
+    assert p.status == "denied"
+    assert p.denial_reason == DENIAL_WITHDRAWN
+
+
+def test_deck_get_current_omits_oracle_text_except_for_the_commander(session):
+    deck = repo.create_deck(session, name="O", format="commander", commander="Korvold, Fae-Cursed King")
+    repo.add_deck_card(session, deck.id, "Korvold, Fae-Cursed King", quantity=1,
+                       category="Commander", oracle_text="Whenever you sacrifice...")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1, oracle_text="{T}: Add {C}{C}.")
+
+    with patch("app.tools.deck_tools._missing_auto_includes", return_value=[]):
+        lean = deck_tools.deck_get_current(session, deck.id)
+        full = deck_tools.deck_get_current(session, deck.id, include_oracle_text=True)
+
+    by_name = {c["name"]: c for c in lean["cards"]}
+    assert by_name["Korvold, Fae-Cursed King"]["oracle_text"] == "Whenever you sacrifice..."
+    assert "oracle_text" not in by_name["Sol Ring"]
+    assert "oracle_text_note" in lean
+    assert {c["name"]: c for c in full["cards"]}["Sol Ring"]["oracle_text"] == "{T}: Add {C}{C}."
