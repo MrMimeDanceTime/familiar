@@ -243,3 +243,41 @@ def test_off_identity_pick_cannot_be_selected(session):
         session, deck.id, "removal", provider, scryfall=sf, edhrec=FakeEdhrec(),
     )
     assert result.selection.picks == []
+
+
+def test_pending_commander_proposal_supplies_the_identity(session):
+    """With the commander still a pending proposal, the deck field is empty
+    and the identity used to resolve to colourless — every coloured candidate
+    was illegal and the opening batch came back as artifacts."""
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Opening", format="commander")
+    convo = repo.create_conversation(session)
+    session.add(DeckProposal(
+        conversation_id=convo.id, deck_id=deck.id, status="pending",
+        action="set_commander", card_name="Judith, the Scourge Diva",
+        commander_name="Judith, the Scourge Diva",
+    ))
+    session.commit()
+
+    provider = TwoStageProvider(
+        stage1={"queries": ["otag:removal"], "intent_summary": "removal"},
+        stage4={"picks": [{"name": "Terminate", "reason": "clean"}], "summary": "ok"},
+    )
+    scry = FakeScryfall([_pool_card("Terminate", "o-term")])
+    scry.named_calls = []
+    scry.named = lambda name, **k: (
+        scry.named_calls.append(name) or {"name": name, "color_identity": ["B", "R"]}
+    )
+
+    # Preview mode: stage 5 goes through the real Scryfall client, and the
+    # identity question is settled by stage 3.
+    result = build_suggestions(
+        session, deck.id, "removal", provider,
+        scryfall=scry, edhrec=FakeEdhrec(),
+        model="fake", spec_thinking=False, select_thinking=False,
+    )
+
+    assert scry.named_calls == ["Judith, the Scourge Diva"]
+    assert result.debug["legal_shaped"] == 1
+    assert "Judith" in provider.calls[-1]["user"]

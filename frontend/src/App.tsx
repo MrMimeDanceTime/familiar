@@ -66,16 +66,13 @@ function App() {
   const { deck, setDeck, loadDeck, clearDeck } = useDeck()
   const { messages, sendMessage, reset, activeTool, isStreaming, error } = useChatStream({
     onDeckUpdated: setDeck,
+    // Earlier batches are left exactly as the server has them. Marking their
+    // pending cards denied here only changed the screen: the rows stayed
+    // pending in the database, the model kept seeing them in pending_proposals,
+    // and a reload brought them back. If a stale batch should go, the model
+    // withdraws it and the server says so.
     onDeckProposal: (batch) => {
-      setProposalBatches((prev) => {
-        const cleaned = prev.map((b) => ({
-          ...b,
-          proposals: b.proposals.map((p) =>
-            p.status === 'pending' ? { ...p, status: 'denied' as const } : p,
-          ),
-        }))
-        return [...cleaned, batch]
-      })
+      setProposalBatches((prev) => [...prev, batch])
     },
     onTurnComplete: (finalMessageId) => {
       // Pin this turn's freshly-streamed batches (still anchor-less) to the

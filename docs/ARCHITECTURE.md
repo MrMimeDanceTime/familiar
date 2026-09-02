@@ -54,6 +54,11 @@ Always run the full suite after engine or provider changes — `app/chat/engine.
 and the provider shape contract (see [PROVIDER_SHAPES.md](PROVIDER_SHAPES.md))
 are the highest-risk area in this codebase.
 
+The suite never reaches the network. `tests/conftest.py` turns off the startup
+card-index refresh and pins the oracle-tag lookup to an empty in-memory map;
+tests that need Scryfall or EDHREC patch the client. A test that only passes
+with a cached bulk file sitting in `backend/` is a bug in the test.
+
 Frontend tests run with vitest from `frontend/`:
 
 ```
@@ -80,6 +85,18 @@ backend/app/
   main.py            FastAPI app; startup lifespan (init_db, FTS setup, seed KB, backup); mounts built frontend/dist/ as static files if present
   config.py          pydantic-settings, reads .env from repo root
   backup.py          best-effort startup DB snapshot -> synced folder or pCloud (guarded, never blocks startup)
+  deckplan.py        the deck plan: role targets derived from the stated power level, themes, gaps (what the deck still needs)
+  autoincludes.py    format staples the deck is missing (high play rate, no commander-specific synergy), surfaced on every deck read
+  cards/
+    schema.py / importer.py   local Scryfall card index (oracle cards + oracle tags + FTS5), refreshed in a background thread at startup
+    store.py                  read side: name/oracle_id lookups, tag lookups, text search, tag co-occurrence queries
+    cooccurrence.py           derives which oracle tags relate (lift) and which describe colour rather than function
+  brainmap/
+    map.py             score_pool(): runs every layer over a candidate pool and blends the result
+    layers.py          the three-layer model, weights, the off_meta blend, and per-card confidence
+    consensus.py       layer 1: EDHREC play rate + synergy
+    mechanical.py      layer 2: commander tags expanded through co-occurrence, with colour-artifact and generic-tag guards
+    personal.py        layer 3: the player's own approve/deny history, weighted by denial reason
   llm/
     base.py           ChatProvider Protocol + neutral types (AssistantTurn, ToolCallRequest, ToolResult, ToolSpec)
     anthropic_provider.py / deepseek_provider.py
@@ -112,6 +129,8 @@ backend/app/
     engine.py           THE agentic loop — see PROVIDER_SHAPES.md
     prompt.py            system prompt (behavior contract, see PRODUCT.md)
     streaming.py          SSE event formatting
+    turn_runner.py        runs a turn to completion on a worker thread, writing every event to the durable turn log
+    turn_bus.py           how a reader learns new turn events exist (polling today; the log is the source of truth)
   api/
     chat.py / conversations.py / decks.py / preferences.py
 
@@ -131,9 +150,11 @@ frontend/src/
 
 - **Conversation**: `id, title, deck_id (FK, nullable), created_at, updated_at`
 - **Message**: `id, conversation_id (FK), role, text_content, provider_native (JSON), tool_calls (JSON), tool_results (JSON), sequence, created_at`
-- **Deck**: `id, name, commander, partner_commander, notes, power_level, format, created_at, updated_at`
+- **Deck**: `id, name, commander, partner_commander, notes, power_level, format, created_at, updated_at` plus the cached power nuance (`power_nuance_adj, power_nuance_reason, power_nuance_key`) and the plan (`role_targets` (JSON), `themes` (JSON), `plan_notes, off_meta`) — see `app/deckplan.py`
 - **DeckCard**: `id, deck_id (FK), card_name, quantity, category, mana_value, color_identity, type_line, oracle_text, oracle_id, tags (JSON), notes, added_at` — `oracle_id`/`tags` feed the functional-role stats (see `tag_lookup.py`)
-- **DeckProposal**: `id, conversation_id (FK), deck_id (FK), message_id, status (pending|approved|denied), action (add|remove|set_commander), card_name, quantity, category, commander_name, reasoning, created_at` — the model never edits a deck directly; it proposes changes the player approves/denies (see `propose_deck_changes` tool and `apply_proposal`/`deny_proposal`)
+- **DeckProposal**: `id, conversation_id (FK), deck_id (FK), message_id, status (pending|approved|denied), action (add|remove|set_commander), card_name, quantity, category, commander_name, reasoning, scores (JSON), denial_reason, created_at` — the model never edits a deck directly; it proposes changes the player approves/denies (see `propose_deck_changes` tool and `apply_proposal`/`deny_proposal`). `scores` is the brain map's verdict at proposal time; `denial_reason` feeds the personal scoring layer. A batch is written atomically: a change that fails validation writes nothing.
+- **Turn**: `id (uuid hex), conversation_id (FK), owner_id, status (running|done|error), error, created_at, updated_at` — one execution of the chat loop, independent of any HTTP connection. Only one turn may be running per conversation (`POST /api/chat` returns 409 otherwise).
+- **TurnEvent**: `id, turn_id (FK), seq (per-turn, unique with turn_id), event, data (JSON), created_at` — the replay buffer clients tail from a cursor; purged for terminal turns older than a day.
 - **UserPreferences**: single row (`id=1`): `preferred_bracket, preferred_power, budget, rule0_notes, build_preferences` — surfaced in the system prompt so advice respects the player's standing preferences
 - **KnowledgeEntry** (+ `knowledge_fts` FTS5 mirror): `id, title, body, category, format` — seeded on startup, searched by the `search_deckbuilding_knowledge` tool
 
@@ -152,6 +173,15 @@ once against `backend/familiar.db` — no migration framework, no data loss.
 Wipe the DB (delete `backend/familiar.db`, let `init_db` recreate it) only
 when the change can't be done in place — a column type change, a table
 restructure, or intentionally dropping data.
+
+## Durable turns
+
+`POST /api/chat` starts a turn and returns its id immediately; the turn then
+runs on a worker thread (`app/chat/turn_runner.py`) and appends every event to
+`turn_event`. `GET /api/chat/turns/{id}/events?after=N` replays from a cursor
+and follows live, so reconnect, refresh, and cold load are one code path. A
+single stream is capped at 15 minutes; the client treats a clean close with
+no `done`/`error` event as a cap, checks the turn's status, and resumes.
 
 ## SSE event vocabulary
 
@@ -202,6 +232,15 @@ an FTS5 index. `_ensure_fts()` creates the virtual table + sync triggers once;
 runs a BM25-ranked `MATCH` with optional format/category narrowing. Separately,
 `tag_lookup.py` caches Scryfall's Oracle Tags bulk file (~24h) and maps a card's
 `oracle_id` to functional roles (ramp/draw/removal/land) that drive deck stats.
+
+### Brain map (`app/brainmap/`) and card index (`app/cards/`)
+The retrieval pipeline ranks its candidate pool through three independent
+scoring layers (consensus, mechanical, personal) before capping it; the
+per-layer scores ride on each proposal so the review UI can say why a card was
+suggested. The mechanical layer reads the local card index, a SQLite copy of
+Scryfall's oracle cards and oracle tags with derived tag co-occurrence, so it
+works from what a card *does* rather than a hand-written theme list. Any change
+here must be measured with `tools/coverage_report.py` (see `CLAUDE.md`).
 
 ### Integrations (`app/integrations/`)
 `DeckProvider` ABC with a registry and explicit `supports_fetch`/`supports_push`

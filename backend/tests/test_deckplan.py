@@ -551,3 +551,61 @@ def test_basic_lands_can_still_stack(tmp_path):
                 conversation_id=convo.id,
             )
     assert again["proposals"]
+
+
+def test_a_bad_change_sinks_the_whole_batch_not_half_of_it(tmp_path):
+    """Proposals used to commit one at a time, so a banned card in position
+    three left two pending rows the engine never learned about."""
+    from unittest.mock import patch
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.tools.deck_tools import propose_deck_changes
+
+    engine = _proposing_engine(tmp_path, "atomic.db")
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="T", format="commander")
+        convo = repo.create_conversation(session)
+        with patch("app.tools.deck_tools.get_scryfall_client") as client:
+            client.return_value.named.side_effect = lambda n, **k: {"name": n}
+            with pytest.raises(ValueError, match="banned"):
+                propose_deck_changes(
+                    session, deck.id, "b",
+                    [
+                        {"action": "add", "card_name": "Sol Ring", "reasoning": "x"},
+                        {"action": "add", "card_name": "Arcane Signet", "reasoning": "x"},
+                        {"action": "add", "card_name": "Mana Crypt", "reasoning": "x"},
+                    ],
+                    conversation_id=convo.id,
+                )
+        assert repo.list_proposals(session, convo.id) == []
+
+
+def test_setting_a_commander_already_in_the_list_keeps_one_copy(tmp_path):
+    """The upsert adds an explicit quantity to an existing stack, which is
+    right for a merge import and wrong for a commander: a decklist that named
+    its commander plus an approved set_commander produced two copies."""
+    from unittest.mock import patch
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.tools.deck_tools import deck_set_commander
+
+    engine = _proposing_engine(tmp_path, "cmdr.db")
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="T", format="commander")
+        repo.add_deck_card(session, deck.id, "Korvold, Fae-Cursed King", quantity=1)
+        with patch("app.tools.deck_tools.get_scryfall_client") as client, \
+             patch("app.tools.deck_tools.get_tags_for_card", return_value=[]):
+            client.return_value.named.return_value = {
+                "name": "Korvold, Fae-Cursed King", "cmc": 5.0,
+                "color_identity": ["B", "R", "G"], "oracle_id": "o-korvold",
+                "type_line": "Legendary Creature — Dragon Noble", "oracle_text": "",
+            }
+            snapshot = deck_set_commander(session, deck.id, "Korvold, Fae-Cursed King")
+
+    korvold = next(c for c in snapshot["cards"] if c["name"] == "Korvold, Fae-Cursed King")
+    assert korvold["quantity"] == 1
+    assert snapshot["total_cards"] == 1

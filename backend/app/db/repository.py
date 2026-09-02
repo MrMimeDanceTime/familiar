@@ -250,6 +250,13 @@ def delete_deck(session: Session, deck_id: int) -> None:
         session.delete(card)
     for proposal in list_proposals_by_deck_id(session, deck_id):
         session.delete(proposal)
+    # Conversations keep their history but stop pointing at a deck that no
+    # longer exists. SQLite is not enforcing the FK, so without this the
+    # dangling id survived and every later read of the conversation tried to
+    # load the deleted deck.
+    for conversation in list_conversations_by_deck_id(session, deck_id):
+        conversation.deck_id = None
+        session.add(conversation)
     session.delete(deck)
     session.commit()
 
@@ -508,6 +515,33 @@ def anchor_proposals_to_message(
             proposal.message_id = message_id
             session.add(proposal)
     session.commit()
+
+
+def pending_commander_for_deck(session: Session, deck_id: int) -> str | None:
+    """The commander a still-pending set_commander proposal names, if any.
+
+    Newest first, so a re-proposed commander wins over an earlier one the
+    player has not yet acted on.
+    """
+    statement = (
+        select(DeckProposal)
+        .where(
+            DeckProposal.deck_id == deck_id,
+            DeckProposal.status == "pending",
+            DeckProposal.action == "set_commander",
+        )
+        .order_by(DeckProposal.created_at.desc())
+    )
+    proposal = session.exec(statement).first()
+    return proposal.commander_name if proposal else None
+
+
+def running_turn_for_conversation(session: Session, conversation_id: int) -> Turn | None:
+    """The turn currently executing for a conversation, if one is."""
+    statement = select(Turn).where(
+        Turn.conversation_id == conversation_id, Turn.status == TURN_RUNNING
+    )
+    return session.exec(statement).first()
 
 
 def list_proposals_by_deck_id(session: Session, deck_id: int) -> list[DeckProposal]:

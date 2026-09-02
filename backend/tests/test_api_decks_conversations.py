@@ -129,3 +129,23 @@ def test_delete_conversation(client, test_engine):
 def test_delete_conversation_missing_is_a_noop(client):
     resp = client.delete("/api/conversations/999")
     assert resp.status_code == 200
+
+
+def test_delete_deck_unlinks_its_conversations(client, test_engine):
+    deck = client.post("/api/decks", json={"name": "Doomed"}).json()
+    convo = client.post(f"/api/decks/{deck['id']}/start-conversation").json()
+
+    assert client.delete(f"/api/decks/{deck['id']}").status_code == 200
+
+    detail = client.get(f"/api/conversations/{convo['id']}").json()
+    assert detail["conversation"]["deck_id"] is None
+
+
+def test_second_turn_on_a_running_conversation_is_rejected(client, test_engine, monkeypatch):
+    monkeypatch.setattr(chat, "submit_turn", lambda *a, **k: None)
+    first = client.post("/api/chat", json={"conversation_id": "new", "message": "hi"})
+    assert first.status_code == 200
+    convo_id = first.json()["conversation_id"]
+
+    second = client.post("/api/chat", json={"conversation_id": convo_id, "message": "again"})
+    assert second.status_code == 409

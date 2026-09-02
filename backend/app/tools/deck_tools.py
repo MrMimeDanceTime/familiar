@@ -286,13 +286,18 @@ def deck_set_commander(session: Session, deck_id: int, commander_name: str) -> d
         raise ValueError(f"No Scryfall card found matching '{commander_name}'")
 
     repo.update_deck(session, deck_id, commander=card["name"])
-    # Ensure the commander is in the card list.  Upsert so it always
-    # has qty=1 and category="Commander" regardless of prior state.
-    repo.add_deck_card(
+    # Ensure the commander is in the card list with exactly one copy. The upsert
+    # ADDS an explicit quantity to an existing stack (that is what merge-import
+    # relies on), so passing quantity=1 here doubled a commander that was already
+    # in the list — an imported decklist that named its commander, followed by
+    # an approved set_commander proposal, produced a 101-card deck with two
+    # copies. quantity=None leaves an existing stack alone (and creates a new
+    # row at 1), and the count is then pinned to 1 explicitly.
+    row = repo.add_deck_card(
         session,
         deck_id=deck_id,
         card_name=card["name"],
-        quantity=1,
+        quantity=None,
         category=_normalize_category("Commander"),
         mana_value=card["cmc"],
         color_identity="".join(card["color_identity"] or []),
@@ -301,6 +306,10 @@ def deck_set_commander(session: Session, deck_id: int, commander_name: str) -> d
         oracle_id=card.get("oracle_id"),
         tags=get_tags_for_card(card.get("oracle_id")),
     )
+    if row.quantity != 1:
+        row.quantity = 1
+        session.add(row)
+        session.commit()
     return repo.deck_snapshot(session, deck_id)
 
 
@@ -467,13 +476,17 @@ def import_decklist(
 
         parsed.append((qty, card_name, category))
 
+    # Phase 2: batch-resolve all names BEFORE touching the deck. Resolution is
+    # the step that talks to Scryfall, and a Scryfall failure mid-import used to
+    # land after the replace-mode wipe below had already committed — leaving the
+    # player with an empty deck and a 500. Nothing is deleted until every name
+    # that can resolve has.
+    resolved_map = _resolve_many(scryfall, [name for _, name, _ in parsed])
+
     # In replace mode, wipe the existing cards now that we know the list parsed
     # into at least one card — a fully-unparseable paste shouldn't nuke the deck.
     if mode == "replace" and parsed:
         cleared = repo.clear_deck_cards(session, deck_id)
-
-    # Phase 2: batch-resolve all names, then insert.
-    resolved_map = _resolve_many(scryfall, [name for _, name, _ in parsed])
 
     for qty, card_name, line_category in parsed:
         resolved = resolved_map.get(card_name.lower())
@@ -1120,6 +1133,13 @@ def propose_deck_changes(
     is_commander = deck is not None and deck.format == "commander"
     banned_lower = {n.lower() for n in _BANNED_COMMANDER}
 
+    # The whole batch is validated before any row is written. Committing per
+    # change meant a banned or duplicate card in position four left the first
+    # three as pending rows the engine never learned about: not anchored to a
+    # message, not revealed in the deck_proposal event, but sitting in
+    # pending_proposals on every deck read and resurfacing as a stray batch on
+    # reload. A batch either lands whole or not at all.
+    rows: list[DeckProposal] = []
     for change in changes:
         action = change.get("action", "add")
         card_name = change.get("card_name", "")
@@ -1172,7 +1192,7 @@ def propose_deck_changes(
             if canonical_name is None:
                 raise ValueError(f"'{card_name}' is not in the deck — cannot propose removing it.")
 
-        proposal = DeckProposal(
+        rows.append(DeckProposal(
             conversation_id=conversation_id,
             deck_id=deck_id,
             message_id=message_id,
@@ -1184,9 +1204,11 @@ def propose_deck_changes(
             scores=scores if isinstance(scores, dict) else None,
             commander_name=canonical_name if action == "set_commander" else None,
             reasoning=reasoning,
-        )
-        session.add(proposal)
-        session.commit()
+        ))
+
+    session.add_all(rows)
+    session.commit()
+    for proposal in rows:
         session.refresh(proposal)
         proposals.append({
             "id": proposal.id,

@@ -922,3 +922,53 @@ def test_player_named_is_in_the_tool_schema():
     spec = next(s for s in TOOL_SPECS if s.name == "propose_deck_changes")
     item = spec.parameters["properties"]["changes"]["items"]
     assert "player_named" in item["properties"]
+
+
+# ── A redirect that applied the commander must let suggest_cards run ─────
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_redirect_with_kept_commander_still_offers_suggest_cards(mock_get_client, session):
+    """The refusal text tells the model to re-issue the adds via suggest_cards.
+    The tool list on the very next send used to be withdraw-only, so the model
+    was instructed to do something it could not."""
+    mock_get_client.return_value.named.side_effect = lambda name, **k: {
+        "name": name, "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "open", "changes": [
+                    {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+                    {"action": "add", "card_name": "A"},
+                    {"action": "add", "card_name": "B"},
+                    {"action": "add", "card_name": "C"},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_2", name="propose_deck_changes",
+                arguments={"summary": "one", "changes": [
+                    {"action": "add", "card_name": "Sol Ring", "player_named": True},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_2"]},
+        ),
+        AssistantTurn(text="Done.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "build it", deck_id=deck.id))
+
+    names_per_send = [[t.name for t in tools] for tools in provider.tools_per_send]
+    assert "suggest_cards" in names_per_send[1], "the follow-up send must allow the pipeline"
+    assert names_per_send[2] == ["withdraw_pending_proposals"], "one iteration only"
+    assert "call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"] \
+        or "may call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"]

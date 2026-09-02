@@ -207,21 +207,81 @@ def test_deepseek_complete_json_enables_thinking_explicitly(mock_openai_cls):
 
 
 @patch("app.llm.anthropic_provider.anthropic.Anthropic")
-def test_anthropic_complete_json_prefills_brace(mock_anthropic_cls):
+def test_anthropic_complete_json_asks_for_json_and_strips_wrapping(mock_anthropic_cls):
+    """Assistant prefill returns 400 on current Claude models, so the format is
+    requested in the prompt and any fence or lead-in is stripped off."""
     mock_client = MagicMock()
     mock_anthropic_cls.return_value = mock_client
-    # model replies with the body AFTER the prefilled "{"
     mock_client.messages.create.return_value = SimpleNamespace(
-        content=[_block("text", text='"queries": []}')]
+        content=[_block("text", text='Here you go:\n```json\n{"queries": []}\n```')]
     )
 
     provider = AnthropicProvider(api_key="fake", model="claude-sonnet-4-6")
     out = provider.complete_json("sys", "user")
 
-    assert out == '{"queries": []}'  # brace re-prepended
+    assert out == '{"queries": []}'
     call_kwargs = mock_client.messages.create.call_args.kwargs
-    assert call_kwargs["messages"][-1] == {"role": "assistant", "content": "{"}
-    assert call_kwargs["system"] == "sys"
+    assert call_kwargs["messages"] == [{"role": "user", "content": "user"}]
+    assert call_kwargs["system"].startswith("sys")
+    assert "JSON" in call_kwargs["system"]
+
+
+@patch("app.llm.anthropic_provider.anthropic.Anthropic")
+def test_anthropic_raw_message_is_json_serialisable(mock_anthropic_cls):
+    """The raw assistant message is persisted as JSON. The SDK returns pydantic
+    blocks, and storing those raised at commit time on every tool turn."""
+    import json
+
+    from anthropic.types import TextBlock, ToolUseBlock
+
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = SimpleNamespace(
+        content=[
+            TextBlock(type="text", text="Checking."),
+            ToolUseBlock(type="tool_use", id="call_1", name="get_weather", input={"city": "Oslo"}),
+        ],
+        stop_reason="tool_use",
+    )
+
+    provider = AnthropicProvider(api_key="fake", model="claude-sonnet-4-6")
+    turn = provider.send("sys", [{"role": "user", "content": "hi"}], [TOOL])
+
+    encoded = json.dumps(turn.raw_assistant_message)
+    assert '"tool_use"' in encoded
+    assert turn.raw_assistant_message["content"][1] == {
+        "type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Oslo"},
+    }
+
+
+@patch("app.llm.anthropic_provider.anthropic.Anthropic")
+def test_anthropic_toolless_send_keeps_tools_declared_but_forbidden(mock_anthropic_cls):
+    """The API rejects a request whose history has tool blocks but defines no
+    tools. A toolless wrap-up re-declares what it last saw and sets
+    tool_choice none instead."""
+    mock_client = MagicMock()
+    mock_anthropic_cls.return_value = mock_client
+    mock_client.messages.create.return_value = SimpleNamespace(
+        content=[_block("text", text="ok")], stop_reason="end_turn",
+    )
+    provider = AnthropicProvider(api_key="fake", model="claude-sonnet-4-6")
+    provider.send("sys", [{"role": "user", "content": "hi"}], [TOOL])
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "get_weather", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "sunny"}]},
+    ]
+    provider.send("sys", history, [])
+    call_kwargs = mock_client.messages.create.call_args.kwargs
+    assert call_kwargs["tools"][0]["name"] == "get_weather"
+    assert call_kwargs["tool_choice"] == {"type": "none"}
+
+    # No tool blocks in history: nothing to declare, nothing to forbid.
+    provider.send("sys", [{"role": "user", "content": "name this deck"}], [])
+    call_kwargs = mock_client.messages.create.call_args.kwargs
+    assert "tools" not in call_kwargs
+    assert "tool_choice" not in call_kwargs
 
 
 @patch("app.llm.deepseek_provider.OpenAI")

@@ -67,6 +67,16 @@ def post_chat(body: ChatIn, request: Request):
             if not conversation:
                 raise HTTPException(status_code=404, detail="Conversation not found")
             deck_id = conversation.deck_id
+            # One turn at a time per conversation. Two concurrent turns would
+            # interleave message sequence numbers and replay a corrupted history
+            # on the next call; the UI disables the composer while streaming,
+            # but a refresh or a second tab does not know that.
+            running = repo.running_turn_for_conversation(session, conversation_id)
+            if running is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A turn is already running for this conversation (turn {running.id}).",
+                )
 
         turn_id = new_turn_id()
         repo.create_turn(

@@ -15,6 +15,7 @@ from app.integrations.base import (
 )
 from app.integrations.service import fetch_into_deck
 from app.tools.deck_tools import compute_deck_stats, import_decklist, set_deck_commanders
+from app.tools.scryfall_client import ScryfallError
 
 router = APIRouter(prefix="/api/decks", tags=["decks"])
 
@@ -139,6 +140,10 @@ def import_deck(deck_id: int, body: ImportDecklistIn):
             return import_decklist(session, deck_id, body.text, mode=body.mode)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except ScryfallError as exc:
+            # Upstream trouble, not a bad request. The import resolves every
+            # name before it touches the deck, so the deck is intact here.
+            raise HTTPException(status_code=502, detail=f"Scryfall lookup failed: {exc}")
 
 
 @router.post("/{deck_id}/fetch")
@@ -155,7 +160,7 @@ def fetch_deck(deck_id: int, body: FetchDeckIn):
             )
         try:
             return fetch_into_deck(session, deck_id, body.provider, body.ref, mode=body.mode)
-        except ProviderError as exc:
+        except (ProviderError, ScryfallError) as exc:
             raise HTTPException(status_code=502, detail=str(exc))
 
 

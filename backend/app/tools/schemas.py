@@ -1,4 +1,13 @@
+from app.deckplan import DEFAULT_POWER, DEFAULT_TARGETS
 from app.llm.base import ToolSpec
+
+# Rendered from the plan module so the model is told the defaults the scorer
+# actually uses. A hand-typed copy here drifted to numbers two changes old.
+_DEFAULT_TARGETS_TEXT = (
+    f"{DEFAULT_TARGETS['land']} land / {DEFAULT_TARGETS['ramp']} ramp / "
+    f"{DEFAULT_TARGETS['draw']} draw / {DEFAULT_TARGETS['removal']} removal, "
+    f"the targets for power {DEFAULT_POWER}"
+)
 
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
@@ -370,9 +379,10 @@ TOOL_SPECS: list[ToolSpec] = [
                     "type": "object",
                     "description": (
                         "How many cards each role should end up with. Omit a role "
-                        "to keep its default (36 land / 10 ramp / 10 draw / 8 "
-                        "removal). Match the deck's actual plan: a low-curve aggro "
-                        "deck wants fewer lands than a big-mana deck."
+                        f"to keep its default ({_DEFAULT_TARGETS_TEXT}; a stated "
+                        "power_level changes them). Match the deck's actual plan: "
+                        "a low-curve aggro deck wants fewer lands than a big-mana "
+                        "deck."
                     ),
                     "properties": {
                         "land": {"type": "integer"},

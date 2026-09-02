@@ -13,8 +13,9 @@ Flow:
   4. selection  select(provider, shaped, intent)                     -> Selection
   5. validate   validate_to_proposals(session, deck, selection)      -> proposals
 
-Stages 1 and 4 run on the provider default (Pro, per the "Pro everywhere"
-decision); the Flash seam exists but nothing routes to it here.
+Both LLM stages route to the provider's fast model by default (see
+``build_suggestions`` and PIPELINE.md): stage 1 with thinking off, stage 4 with
+thinking on at a capped reasoning effort.
 """
 
 from __future__ import annotations
@@ -307,6 +308,16 @@ def build_suggestions(
     )
 
     snapshot = repo.deck_snapshot(session, deck_id)
+    # The prompt has the model batch set_commander with the opening cards, and
+    # the hand-pick guard sends those cards here. At that moment the commander
+    # is a PENDING proposal, not a deck field, so the identity resolved to
+    # colourless and every coloured candidate was marked illegal — the opening
+    # batch came back as Sol Ring and friends. A proposed commander is the best
+    # available statement of what the deck is, so use it until it is decided.
+    if not snapshot.get("commander"):
+        proposed = repo.pending_commander_for_deck(session, deck_id)
+        if proposed:
+            snapshot["commander"] = proposed
     identity = _commander_identity(snapshot, scryfall)
     ctx = DeckContext.from_snapshot(snapshot, identity)
 

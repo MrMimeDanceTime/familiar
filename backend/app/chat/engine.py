@@ -197,6 +197,13 @@ def run_chat_turn(
     # summary and emit ONE deck_proposal event at turn end, carrying only the
     # proposals still pending after any trims.
     pending_summary = ""
+    # A redirect that still applied part of the call (the commander, the cuts)
+    # tells the model to re-issue the adds through suggest_cards. That has to be
+    # possible in the same turn, so the withdraw-only restriction is held off for
+    # exactly one iteration after such a redirect; the first batch suggest_cards
+    # then produces locks the turn down as usual. Without this the refusal text
+    # said "call suggest_cards" while the very next tool list omitted it.
+    pipeline_followup_allowed = False
     try:
         turn_started = time.perf_counter()
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -205,7 +212,9 @@ def run_chat_turn(
             # made through the tool sequence — the deep reasoning lives in the
             # tool choices and in the pipeline/nuance calls (which keep thinking
             # on). Turning it off here is the biggest lever on perceived turn lag.
-            tools_for_turn = WITHDRAW_ONLY_TOOLS if proposals_emitted else TOOL_SPECS
+            restrict = proposals_emitted and not pipeline_followup_allowed
+            tools_for_turn = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
+            pipeline_followup_allowed = False
             send_started = time.perf_counter()
             turn = provider.send(system_prompt, history, tools_for_turn, thinking=False)
             send_dt = time.perf_counter() - send_started
@@ -270,11 +279,12 @@ def run_chat_turn(
                                     proposal_ids_this_turn.append(p["id"])
                             if kept_batch:
                                 proposals_emitted = True
+                                pipeline_followup_allowed = True
                                 redirect = (
                                     f"{redirect}\n\nThe non-add changes in this "
                                     "call (commander, cuts) WERE applied — do not "
                                     "re-send them; only re-issue the adds via "
-                                    "suggest_cards."
+                                    "suggest_cards, which you may call now."
                                 )
                     results.append(ToolResult(call_id=call.id, content=redirect))
                     tool_calls_log.append(
