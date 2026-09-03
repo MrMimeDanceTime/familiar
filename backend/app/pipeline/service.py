@@ -36,6 +36,7 @@ from app.cards import store as card_store
 from app.db import repository as repo
 from app.knowledge.tag_lookup import get_tag_lookup
 from app.pipeline import candidates as candidates_stage
+from app.pipeline import local_retrieval
 from app.pipeline import selection as selection_stage
 from app.pipeline import spec as spec_stage
 from app.pipeline.shaping import DeckContext, shape
@@ -273,6 +274,8 @@ def build_suggestions(
     scryfall: Any | None = None,
     edhrec: Any | None = None,
     off_meta: float | None = None,
+    local_store: Any | None = None,
+    local_pool_min: int = 25,
 ) -> SuggestionResult:
     """Run the full retrieval pipeline for a deck and intent.
 
@@ -328,11 +331,30 @@ def build_suggestions(
     )
     ctx = DeckContext.from_snapshot(snapshot, identity, max_card_price=ceiling)
 
-    with _timed("stage1_spec", timings):
-        spec = spec_stage.generate_query_spec(
-            provider, user_intent, identity,
-            model=model, max_queries=max_queries, thinking=spec_thinking,
-        )
+    # Local first. The index answers the common intents (a role, a phrase in
+    # rules text) in milliseconds with no model call and no network; the
+    # model's query planning and Scryfall's API are the fallback for an intent
+    # the index cannot fill. A pool that never leaves the machine is also a
+    # pool that cannot be rate-limited or time out.
+    with _timed("stage1_local", timings):
+        local_pool: list[dict[str, Any]] = []
+        try:
+            local_pool = local_retrieval.retrieve(
+                user_intent, identity, store=local_store or card_store,
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back to the model
+            logger.warning("local retrieval failed, falling back to query planning: %s", exc)
+        logger.info("pipeline: local retrieval found %d candidate(s)", len(local_pool))
+
+    stage1_skipped = len(local_pool) >= local_pool_min
+    if stage1_skipped:
+        spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
+    else:
+        with _timed("stage1_spec", timings):
+            spec = spec_stage.generate_query_spec(
+                provider, user_intent, identity,
+                model=model, max_queries=max_queries, thinking=spec_thinking,
+            )
 
     with _timed("stage2_candidates", timings):
         gathered = candidates_stage.gather_candidates_detailed(
@@ -341,7 +363,16 @@ def build_suggestions(
             identity=identity,
             off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
         )
-        pool = gathered.cards
+        # EDHREC's commander-specific picks lead, then the local hits, then
+        # whatever the fallback queries added; dedupe keeps the first seen.
+        seen = {c.get("oracle_id") for c in gathered.cards if c.get("oracle_id")}
+        pool = list(gathered.cards)
+        for card in local_pool:
+            oid = card.get("oracle_id")
+            if oid in seen:
+                continue
+            seen.add(oid)
+            pool.append(card)
 
     with _timed("stage3_shape", timings):
         pool = _apply_brain_map(
@@ -364,6 +395,8 @@ def build_suggestions(
         "queries": spec.queries,
         "intent_summary": spec.intent_summary,
         "broadened": gathered.broadened,
+        "local_pool": len(local_pool),
+        "stage1_skipped": stage1_skipped,
         "pool_size": len(pool),
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),

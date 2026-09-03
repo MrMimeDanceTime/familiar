@@ -199,6 +199,12 @@ _SLUG_RULES: dict[str, tuple[frozenset[str], tuple[str, ...], tuple[str, ...]]] 
 }
 
 
+def slug_rules_for(fine_role: str) -> tuple[frozenset[str], tuple[str, ...], tuple[str, ...]]:
+    """The (exact, prefixes, suffixes) slug rules behind a fine role, so a
+    retriever can ask the index for the cards that would be labelled with it."""
+    return _SLUG_RULES.get(fine_role, (frozenset(), (), ()))
+
+
 def _slug_matches(slug: str, exact: frozenset[str],
                   prefixes: tuple[str, ...], suffixes: tuple[str, ...]) -> bool:
     if slug in exact:

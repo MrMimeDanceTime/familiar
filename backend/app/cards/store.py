@@ -221,6 +221,47 @@ def cards_with_tag(slug: str, *, limit: int = 200, legal_only: bool = True) -> l
     return [_row_to_card(r) for r in rows]
 
 
+def cards_matching_slug_rules(
+    exact: frozenset[str] | set[str],
+    prefixes: tuple[str, ...],
+    suffixes: tuple[str, ...],
+    *,
+    limit: int = 200,
+    legal_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Cards carrying any tag that a fine-role rule matches, EDHREC-ordered.
+
+    The role taxonomy matches slugs by exact value, prefix, or suffix; this
+    turns those rules into one query so a retriever can ask for "the cards
+    shaping would label ramp" without enumerating the vocabulary.
+    """
+    clauses: list[str] = []
+    params: dict[str, Any] = {"limit": limit}
+    for i, slug in enumerate(sorted(exact)):
+        clauses.append(f"t.slug = :e{i}")
+        params[f"e{i}"] = slug
+    for i, prefix in enumerate(prefixes):
+        clauses.append(f"t.slug LIKE :p{i}")
+        params[f"p{i}"] = prefix.replace("%", "") + "%"
+    for i, suffix in enumerate(suffixes):
+        clauses.append(f"t.slug LIKE :s{i}")
+        params[f"s{i}"] = "%" + suffix.replace("%", "")
+    if not clauses:
+        return []
+    legal_clause = "AND c.legal_commander = 1" if legal_only else ""
+    sql = f"""
+        SELECT DISTINCT {_columns('c')}
+        FROM cards c
+        JOIN card_tags t ON t.oracle_id = c.oracle_id
+        WHERE ({' OR '.join(clauses)}) AND c.playable = 1 {legal_clause}
+        ORDER BY CASE WHEN c.edhrec_rank IS NULL THEN 1 ELSE 0 END, c.edhrec_rank
+        LIMIT :limit
+    """
+    with get_engine().begin() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+    return [_row_to_card(r) for r in rows]
+
+
 def cards_with_any_tag(
     slugs: list[str], *, limit: int = 200, legal_only: bool = True
 ) -> list[dict[str, Any]]:

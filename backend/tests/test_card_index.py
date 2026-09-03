@@ -497,3 +497,11 @@ def test_index_version_mismatch_counts_as_stale(imported):
     assert importer.is_stale() is False
     schema.set_meta("index_version", "0")
     assert importer.is_stale() is True
+
+
+def test_cards_matching_slug_rules_uses_exact_and_prefix(imported):
+    hits = store.cards_matching_slug_rules(frozenset({"mana-rock"}), (), ())
+    assert [c["name"] for c in hits] == ["Sol Ring"]
+    hits = store.cards_matching_slug_rules(frozenset(), ("sacrifice-outlet",), (), legal_only=False)
+    assert [c["name"] for c in hits] == ["Black Lotus"]
+    assert store.cards_matching_slug_rules(frozenset(), (), ()) == []

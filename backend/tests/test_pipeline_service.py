@@ -281,3 +281,54 @@ def test_pending_commander_proposal_supplies_the_identity(session):
     assert scry.named_calls == ["Judith, the Scourge Diva"]
     assert result.debug["legal_shaped"] == 1
     assert "Judith" in provider.calls[-1]["user"]
+
+
+class _LocalStore:
+    """A local index with enough on-colour hits to make query planning unnecessary."""
+
+    def cards_matching_slug_rules(self, exact, prefixes, suffixes, *, limit=200):
+        return [_pool_card(f"Local Removal {i}", f"o-local-{i}") for i in range(30)]
+
+    def search_text(self, query, *, limit=50, identity=None):
+        return []
+
+
+def test_local_hits_skip_the_query_planning_call(session):
+    deck = _rakdos_deck(session)
+    provider = TwoStageProvider(
+        stage1={"queries": ["should not run"], "intent_summary": "x"},
+        stage4={"picks": [{"name": "Local Removal 3", "reason": "fits"}], "summary": "ok"},
+    )
+    scry = FakeScryfall([])
+    result = build_suggestions(
+        session, deck.id, "some removal", provider,
+        scryfall=scry, edhrec=FakeEdhrec(), local_store=_LocalStore(),
+        model="fake", spec_thinking=False, select_thinking=False,
+    )
+    assert result.debug["stage1_skipped"] is True
+    assert result.debug["local_pool"] == 30
+    assert all("query-planning stage" not in c["system"] for c in provider.calls)
+    assert scry.queries == []
+    assert result.selection.picks[0].name == "Local Removal 3"
+
+
+def test_thin_local_pool_falls_back_to_query_planning(session):
+    deck = _rakdos_deck(session)
+    provider = TwoStageProvider(
+        stage1={"queries": ["otag:removal"], "intent_summary": "removal"},
+        stage4={"picks": [], "summary": "ok"},
+    )
+
+    class Thin(_LocalStore):
+        def cards_matching_slug_rules(self, *a, **k):
+            return [_pool_card("Only One", "o-only")]
+
+    scry = FakeScryfall([_pool_card("Terminate", "o-term")])
+    result = build_suggestions(
+        session, deck.id, "some removal", provider,
+        scryfall=scry, edhrec=FakeEdhrec(), local_store=Thin(),
+        model="fake", spec_thinking=False, select_thinking=False,
+    )
+    assert result.debug["stage1_skipped"] is False
+    assert any("query-planning stage" in c["system"] for c in provider.calls)
+    assert result.debug["local_pool"] == 1

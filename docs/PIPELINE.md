@@ -253,3 +253,15 @@ churn that used to burn the 12-iteration budget and drop the turn.
 Fakes pin `model`/`thinking` so no network is hit. The golden test asserts the
 exact stage-4 text block; changing `render_pool` will (intentionally) require
 updating the fixture.
+
+## Local first (September 2026)
+
+Before stage 1 runs, `pipeline/local_retrieval.py` builds a pool from the
+local card index: the intent's words are matched to the fine roles in
+`roles.py` and each role's slug rules become one tag query, and the intent's
+remaining content words are searched in name, rules text, and type line.
+Colour identity is applied there. When that pool reaches `local_pool_min`
+(25) the model's query-planning call and the Scryfall API queries are skipped
+entirely; EDHREC's recommendations still lead the pool. A thin local pool
+falls back to stage 1 as before. `debug.local_pool` and `debug.stage1_skipped`
+say which path a suggestion took.
