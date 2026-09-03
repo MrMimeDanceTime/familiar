@@ -657,6 +657,7 @@ def _settled_proposal_batch(
             # "no scoring data" even when the row carried full scores — the
             # database was right and the wire format was lying.
             "scores": p.scores,
+            "price_usd": p.price_usd,
         })
     return {"ok": True, "summary": summary, "proposals": proposals}
 

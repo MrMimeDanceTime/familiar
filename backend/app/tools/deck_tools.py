@@ -206,6 +206,7 @@ def deck_get_current(
     from app import deckplan
 
     snapshot = repo.deck_snapshot(session, deck_id)
+    snapshot["budget_preference"] = repo.get_or_create_preferences(session).budget
     if not include_oracle_text:
         for card in snapshot["cards"]:
             if card.get("category") != "Commander":
@@ -220,6 +221,7 @@ def deck_get_current(
         "themes": plan.themes,
         "notes": plan.notes,
         "off_meta": snapshot.get("off_meta"),
+        "max_card_price": plan.max_card_price,
         "role_counts": {
             g.role: {"current": g.current, "target": g.target} for g in plan.gaps
         },
@@ -390,6 +392,7 @@ def deck_set_plan(
     plan_notes: str | None = None,
     off_meta: float | None = None,
     power_level: str | None = None,
+    max_card_price: float | None = None,
 ) -> dict:
     """Record what the deck is TRYING to be.
 
@@ -422,6 +425,10 @@ def deck_set_plan(
     if isinstance(off_meta, (int, float)) and not isinstance(off_meta, bool):
         clean_off_meta = max(0.0, min(1.0, float(off_meta)))
 
+    clean_price: float | None = None
+    if isinstance(max_card_price, (int, float)) and not isinstance(max_card_price, bool):
+        clean_price = max(0.0, float(max_card_price))
+
     repo.update_deck(
         session, deck_id,
         themes=clean_themes,
@@ -429,6 +436,7 @@ def deck_set_plan(
         plan_notes=plan_notes,
         off_meta=clean_off_meta,
         power_level=power_level,
+        max_card_price=clean_price,
     )
     return repo.deck_snapshot(session, deck_id)
 
@@ -777,6 +785,17 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
         land_count, ramp_count, draw_count, removal_count,
     )
 
+    # Price and mana sources both come from the card index, in one lookup.
+    # Neither is critical: without the index both come back empty.
+    index_cards = _index_cards_for(cards)
+    total_price, priced = _deck_price(cards, index_cards)
+    commander_names = {
+        n.lower()
+        for n in ((deck.commander if deck else None), (deck.partner_commander if deck else None))
+        if n
+    }
+    mana_sources = _mana_sources(cards, index_cards, commander_names=commander_names)
+
     # Nuance is a bonus on top of the deterministic base; a provider/DB failure
     # here must never sink the stats call (see the backfill rationale above).
     try:
@@ -817,7 +836,106 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
         "bracket_factors": bracket_factors,
         "untagged": untagged,
         "deficiencies": deficiencies,
+        "total_price_usd": total_price,
+        "priced_cards": priced,
+        "mana_sources": mana_sources,
     }
+
+
+def _index_cards_for(cards: list[Any]) -> dict[str, dict]:
+    """lower(name) -> index row for the deck's cards; empty without an index."""
+    try:
+        from app.cards import store as card_store
+
+        return card_store.by_names([c.card_name for c in cards])
+    except Exception:  # noqa: BLE001 - the index is optional
+        return {}
+
+
+def _deck_price(cards: list[Any], index_cards: dict[str, dict]) -> tuple[float | None, int]:
+    """Sum of the deck's card prices at the index's representative printing,
+    and how many cards had a price. None when nothing is priced."""
+    total = 0.0
+    priced = 0
+    for c in cards:
+        row = index_cards.get(c.card_name.lower())
+        price = row.get("price_usd") if row else None
+        if isinstance(price, (int, float)):
+            total += price * c.quantity
+            priced += c.quantity
+    return (round(total, 2) if priced else None), priced
+
+
+_PIP_COLORS = ("W", "U", "B", "R", "G")
+
+
+def _pips_in_cost(mana_cost: str | None) -> dict[str, float]:
+    """Coloured pips per colour in a mana cost. A hybrid symbol counts a half
+    for each of its colours; Phyrexian and generic symbols count for the colour
+    they name or nothing."""
+    counts: dict[str, float] = {c: 0.0 for c in _PIP_COLORS}
+    if not mana_cost:
+        return counts
+    for symbol in re.findall(r"\{([^}]+)\}", mana_cost):
+        colours = [part for part in symbol.upper().split("/") if part in _PIP_COLORS]
+        if not colours:
+            continue
+        share = 1.0 / len(colours)
+        for colour in colours:
+            counts[colour] += share
+    return counts
+
+
+def _mana_sources(
+    cards: list[Any], index_cards: dict[str, dict], *, commander_names: set[str]
+) -> list[dict]:
+    """Per colour: how many cards produce it against how many pips ask for it.
+
+    The classic mana-base check. A colour whose share of sources falls well
+    short of its share of pips is the one that will miss its drops. Sources
+    count every producer (lands, rocks, dorks) weighted by quantity; pips
+    count the coloured symbols in nonland, non-commander cards. Empty when the
+    index has nothing to say.
+    """
+    if not index_cards:
+        return []
+    sources: dict[str, float] = {c: 0.0 for c in _PIP_COLORS}
+    pips: dict[str, float] = {c: 0.0 for c in _PIP_COLORS}
+    for c in cards:
+        row = index_cards.get(c.card_name.lower())
+        if not row:
+            continue
+        for colour in row.get("produced_mana") or []:
+            if colour in sources:
+                sources[colour] += c.quantity
+        if "land" in (row.get("type_line") or "").lower():
+            continue
+        if c.card_name.lower() in commander_names:
+            continue
+        for colour, n in _pips_in_cost(row.get("mana_cost")).items():
+            pips[colour] += n * c.quantity
+
+    total_sources = sum(sources.values()) or 1.0
+    total_pips = sum(pips.values()) or 1.0
+    out: list[dict] = []
+    for colour in _PIP_COLORS:
+        if sources[colour] == 0 and pips[colour] == 0:
+            continue
+        source_pct = round(sources[colour] / total_sources * 100)
+        pip_pct = round(pips[colour] / total_pips * 100)
+        # Ten points short is a colour that will come up missing in a real
+        # game; the threshold is deliberately coarse, since produced_mana
+        # counts a triome and a basic alike.
+        status = "LOW" if pips[colour] > 0 and source_pct + 10 < pip_pct else "OK"
+        out.append({
+            "color": colour,
+            "sources": int(sources[colour]),
+            "pips": round(pips[colour], 1),
+            "source_pct": source_pct,
+            "pip_pct": pip_pct,
+            "status": status,
+        })
+    return out
 
 
 # ── Card-name sets for bracket estimation ──────────────────────────────
@@ -1184,10 +1302,14 @@ def _empty_stats() -> dict:
         "power_nuance_adj": 0.0,
         "power_nuance_reason": "",
         "power_factors": [],
+        "power_nuance_pending": False,
         "bracket": 1,
         "bracket_factors": [],
         "untagged": [],
         "deficiencies": [],
+        "total_price_usd": None,
+        "priced_cards": 0,
+        "mana_sources": [],
     }
 
 
@@ -1292,6 +1414,11 @@ def propose_deck_changes(
             reasoning=reasoning,
         ))
 
+    prices = _prices_for([r.card_name for r in rows if r.action != "remove" and r.card_name])
+    for row in rows:
+        if row.card_name:
+            row.price_usd = prices.get(row.card_name.lower())
+
     session.add_all(rows)
     session.commit()
     for proposal in rows:
@@ -1307,9 +1434,28 @@ def propose_deck_changes(
             "commander_name": proposal.commander_name,
             "reasoning": proposal.reasoning,
             "scores": proposal.scores,
+            "price_usd": proposal.price_usd,
         })
 
     return {"ok": True, "summary": summary, "proposals": proposals}
+
+
+def _prices_for(names: list[str]) -> dict[str, float]:
+    """lower(name) -> USD price from the card index. Empty when the index is
+    absent; a missing price is a missing price, never a reason to fail."""
+    if not names:
+        return {}
+    try:
+        from app.cards import store as card_store
+
+        found = card_store.by_names(names)
+    except Exception:  # noqa: BLE001 - the index is optional
+        return {}
+    return {
+        key: card["price_usd"]
+        for key, card in found.items()
+        if isinstance(card.get("price_usd"), (int, float))
+    }
 
 
 def withdraw_pending_proposals(

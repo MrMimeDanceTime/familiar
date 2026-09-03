@@ -56,6 +56,11 @@ def _project_pipeline_card(raw: dict[str, Any]) -> dict[str, Any]:
     existing tool-loop card shape stays byte-for-byte unchanged.
     """
     card = _normalize_card(raw)
+    price = (raw.get("prices") or {}).get("usd")
+    try:
+        price_usd = float(price) if price not in (None, "") else None
+    except (TypeError, ValueError):
+        price_usd = None
     card.update(
         keywords=raw.get("keywords") or [],
         power=raw.get("power"),
@@ -63,6 +68,7 @@ def _project_pipeline_card(raw: dict[str, Any]) -> dict[str, Any]:
         loyalty=raw.get("loyalty"),
         rarity=raw.get("rarity"),
         edhrec_rank=raw.get("edhrec_rank"),
+        price_usd=price_usd,
     )
     return card
 

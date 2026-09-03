@@ -314,6 +314,13 @@ this commander that few decks play. Default is 0.25. Raise it when the player
 wants their build to feel distinctive or says they dislike netdecked lists;
 lower it when they want something proven.
 
+SET max_card_price WHENEVER THE PLAYER NAMES A BUDGET. "Nothing over ten
+dollars" is max_card_price: 10. Candidates above the ceiling are excluded from
+suggest_cards and a proposal shows its price, so the number does real work.
+Without one, the player's standing budget preference applies (budget = $5 a
+card, mid-range = $25, unlimited = none). deck_get_current reports the ceiling
+in effect under plan.max_card_price.
+
 SET power_level WHENEVER THE PLAYER NAMES ONE. The role targets are derived
 from it using the same formula deck_get_stats scores with, so an unset power
 level aims the entire build at the default rather than the player's goal. "I

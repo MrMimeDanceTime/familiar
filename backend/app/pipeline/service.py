@@ -319,7 +319,14 @@ def build_suggestions(
         if proposed:
             snapshot["commander"] = proposed
     identity = _commander_identity(snapshot, scryfall)
-    ctx = DeckContext.from_snapshot(snapshot, identity)
+    # The budget in effect: the deck's own ceiling, else the one the player's
+    # standing preference implies. Read here so the plan render and the
+    # legality check agree on the number.
+    snapshot["budget_preference"] = repo.get_or_create_preferences(session).budget
+    ceiling = deckplan.price_ceiling(
+        snapshot.get("max_card_price"), snapshot.get("budget_preference")
+    )
+    ctx = DeckContext.from_snapshot(snapshot, identity, max_card_price=ceiling)
 
     with _timed("stage1_spec", timings):
         spec = spec_stage.generate_query_spec(

@@ -27,6 +27,7 @@ _COLUMN_NAMES = (
     "oracle_id", "name", "mana_cost", "cmc", "type_line", "oracle_text",
     "color_identity", "keywords", "power", "toughness", "loyalty", "rarity",
     "edhrec_rank", "game_changer", "legal_commander", "image_url", "scryfall_uri",
+    "produced_mana", "price_usd",
 )
 
 
@@ -48,13 +49,17 @@ def _row_to_card(row: Any) -> dict[str, Any]:
     (
         oracle_id, name, mana_cost, cmc, type_line, oracle_text, color_identity,
         keywords, power, toughness, loyalty, rarity, edhrec_rank, game_changer,
-        legal_commander, image_url, scryfall_uri,
+        legal_commander, image_url, scryfall_uri, produced_mana, price_usd,
     ) = row
 
     try:
         parsed_keywords = json.loads(keywords) if keywords else []
     except (json.JSONDecodeError, TypeError):
         parsed_keywords = []
+    try:
+        parsed_produced = json.loads(produced_mana) if produced_mana else []
+    except (json.JSONDecodeError, TypeError):
+        parsed_produced = []
 
     return {
         "name": name,
@@ -74,6 +79,8 @@ def _row_to_card(row: Any) -> dict[str, Any]:
         "rarity": rarity,
         "edhrec_rank": edhrec_rank,
         "game_changer": bool(game_changer),
+        "produced_mana": parsed_produced,
+        "price_usd": price_usd,
     }
 
 

@@ -167,3 +167,47 @@ def test_deck_list_is_a_summary_not_a_snapshot(client, test_engine):
     assert "cards" not in row
     # The full snapshot is still one request away.
     assert len(client.get(f"/api/decks/{deck['id']}").json()["cards"]) == 2
+
+
+def test_revert_undoes_an_approved_add(client, test_engine):
+    from unittest.mock import patch
+
+    deck = client.post("/api/decks", json={"name": "U"}).json()
+    with Session(test_engine) as session:
+        convo = repo.create_conversation(session)
+        with patch("app.tools.deck_tools.get_scryfall_client") as scry, \
+             patch("app.tools.deck_tools.get_tags_for_card", return_value=[]):
+            scry.return_value.named.side_effect = lambda n, **k: {
+                "name": n, "cmc": 1.0, "color_identity": [], "oracle_id": f"o-{n}",
+                "type_line": "Artifact", "oracle_text": "",
+            }
+            from app.tools.deck_tools import propose_deck_changes
+            pid = propose_deck_changes(
+                session, deck["id"], "b",
+                [{"action": "add", "card_name": "Sol Ring", "reasoning": "x"}],
+                conversation_id=convo.id,
+            )["proposals"][0]["id"]
+            repo.apply_proposal(session, pid)
+            assert repo.get_deck_card(session, deck["id"], "Sol Ring") is not None
+
+            resp = client.post(f"/api/decks/proposals/{pid}/revert")
+
+    assert resp.status_code == 200
+    assert [c["name"] for c in resp.json()["cards"]] == []
+    with Session(test_engine) as session:
+        assert repo.get_proposal(session, pid).status == "pending"
+
+
+def test_revert_refuses_a_pending_or_commander_proposal(client, test_engine):
+    deck = client.post("/api/decks", json={"name": "U"}).json()
+    with Session(test_engine) as session:
+        convo = repo.create_conversation(session)
+        from app.db.models import DeckProposal
+        pending = DeckProposal(conversation_id=convo.id, deck_id=deck["id"], action="add", card_name="X")
+        cmd = DeckProposal(conversation_id=convo.id, deck_id=deck["id"], action="set_commander",
+                           card_name="Y", commander_name="Y", status="approved")
+        session.add_all([pending, cmd])
+        session.commit()
+        ids = (pending.id, cmd.id)
+    for pid in ids:
+        assert client.post(f"/api/decks/proposals/{pid}/revert").status_code == 400

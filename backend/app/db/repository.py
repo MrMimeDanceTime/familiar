@@ -189,6 +189,7 @@ def update_deck(
     themes: list | None = None,
     plan_notes: str | None = None,
     off_meta: float | None = None,
+    max_card_price: float | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -213,6 +214,9 @@ def update_deck(
         deck.plan_notes = plan_notes
     if off_meta is not None:
         deck.off_meta = off_meta
+    if max_card_price is not None:
+        # 0 clears the ceiling: "no budget" has to be expressible too.
+        deck.max_card_price = max_card_price if max_card_price > 0 else None
     deck.updated_at = _utcnow()
     session.add(deck)
     session.commit()
@@ -437,6 +441,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "themes": deck.themes or [],
         "plan_notes": deck.plan_notes,
         "off_meta": deck.off_meta,
+        "max_card_price": deck.max_card_price,
         "conversation_id": linked.id if linked else None,
         "total_cards": total_cards,
         "cards": [
@@ -656,6 +661,46 @@ def apply_proposal(session: Session, proposal_id: int) -> dict | None:
         )
 
     proposal.status = "approved"
+    session.add(proposal)
+    session.commit()
+    return deck_snapshot(session, proposal.deck_id)
+
+
+def revert_proposal(session: Session, proposal_id: int) -> dict | None:
+    """Undo an approved add or cut and put the proposal back to pending.
+
+    Approve is one click with no way back except a chat turn. A reverted add
+    is removed from the deck (its proposed quantity only), a reverted cut is
+    added back. A commander change is not reverted: the previous commander is
+    not recorded, so "undo" would have no honest meaning. Returns the deck
+    snapshot, or None when the proposal is missing, not approved, or a
+    commander change.
+    """
+    from app.tools import deck_tools
+
+    proposal = get_proposal(session, proposal_id)
+    if not proposal or proposal.status != "approved":
+        return None
+    if proposal.action == "set_commander":
+        return None
+
+    if proposal.action == "add":
+        deck_tools.deck_remove_card(
+            session,
+            deck_id=proposal.deck_id,
+            card_name=proposal.card_name,
+            quantity=proposal.quantity or 1,
+        )
+    elif proposal.action == "remove":
+        deck_tools.deck_add_card(
+            session,
+            deck_id=proposal.deck_id,
+            card_name=proposal.card_name,
+            qty=proposal.quantity or 1,
+            notes=proposal.reasoning or None,
+        )
+
+    proposal.status = "pending"
     session.add(proposal)
     session.commit()
     return deck_snapshot(session, proposal.deck_id)

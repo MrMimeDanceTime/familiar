@@ -52,6 +52,7 @@ CARD_RECORDS = [
         "object": "card",
         "oracle_id": "oid-sol-ring",
         "name": "Sol Ring",
+        "prices": {"usd": "1.75", "usd_foil": "12.00"},
         "mana_cost": "{1}",
         "cmc": 1.0,
         "type_line": "Artifact",
@@ -483,3 +484,16 @@ def test_search_card_index_tool_reads_the_local_index(imported):
     sol = next(c for c in result.content["cards"] if c["name"] == "Sol Ring")
     assert "mana-rock" in sol["tags"]
     assert "image_url" not in sol
+
+
+def test_import_extracts_the_usd_price(imported):
+    sol = store.by_name("Sol Ring")
+    assert sol["price_usd"] == 1.75
+    # No prices object: no price, not a crash.
+    assert store.by_name("Gigantosaurus")["price_usd"] is None
+
+
+def test_index_version_mismatch_counts_as_stale(imported):
+    assert importer.is_stale() is False
+    schema.set_meta("index_version", "0")
+    assert importer.is_stale() is True

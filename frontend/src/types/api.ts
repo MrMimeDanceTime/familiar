@@ -48,6 +48,19 @@ export interface DeckStats {
     target_high: number
     status: 'LOW' | 'OK' | 'HIGH'
   }[]
+  // Deck price at the card index's representative printing; null when the
+  // index has no prices yet. priced_cards says how many cards the sum covers.
+  total_price_usd?: number | null
+  priced_cards?: number
+  // Per colour: share of mana sources against share of coloured pips.
+  mana_sources?: {
+    color: string
+    sources: number
+    pips: number
+    source_pct: number
+    pip_pct: number
+    status: 'LOW' | 'OK'
+  }[]
 }
 
 export interface Deck {
@@ -59,6 +72,7 @@ export interface Deck {
   power_level: string | null
   format: string
   conversation_id: number | null
+  max_card_price?: number | null
   cards: DeckCard[]
 }
 
@@ -139,6 +153,7 @@ export interface DeckProposal {
   reasoning: string
   scores?: ProposalScores | null
   denial_reason?: string | null
+  price_usd?: number | null
   created_at?: string
 }
 

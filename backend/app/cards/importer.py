@@ -47,8 +47,8 @@ _CARD_COLUMNS = (
     "oracle_id", "name", "mana_cost", "cmc", "type_line", "oracle_text",
     "color_identity", "colors", "keywords", "power", "toughness", "loyalty",
     "rarity", "edhrec_rank", "penny_rank", "layout", "reserved", "game_changer",
-    "legal_commander", "playable", "produced_mana", "image_url", "scryfall_uri",
-    "raw",
+    "legal_commander", "playable", "produced_mana", "price_usd", "image_url",
+    "scryfall_uri", "raw",
 )
 
 _INSERT_CARD = (
@@ -186,6 +186,25 @@ def _mana_cost(raw: dict[str, Any]) -> str | None:
     return " // ".join(parts) if parts else None
 
 
+def _price_usd(raw: dict[str, Any]) -> float | None:
+    """The cheapest USD price Scryfall lists for the representative printing.
+
+    oracle_cards carries one printing per card with its prices object; a
+    non-foil price is preferred, foil or etched only when that is all there is.
+    Good enough for a budget ceiling, not for a shopping list.
+    """
+    prices = raw.get("prices") or {}
+    for key in ("usd", "usd_foil", "usd_etched"):
+        value = prices.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _card_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     oracle_id = raw.get("oracle_id")
     name = raw.get("name")
@@ -214,6 +233,7 @@ def _card_row(raw: dict[str, Any]) -> dict[str, Any] | None:
         "legal_commander": 1 if legalities.get("commander") == "legal" else 0,
         "playable": 0 if raw.get("layout") in _NON_PLAYABLE_LAYOUTS else 1,
         "produced_mana": _as_json_list(raw.get("produced_mana")),
+        "price_usd": _price_usd(raw),
         "image_url": _image_url(raw),
         "scryfall_uri": raw.get("scryfall_uri"),
         "raw": json.dumps(raw, separators=(",", ":")),
@@ -255,6 +275,7 @@ def import_cards(client: httpx.Client, *, batch_size: int = 2000) -> int:
 
     schema.set_meta("cards_updated_at", updated_at)
     schema.set_meta("cards_imported_at", datetime.now(timezone.utc).isoformat())
+    schema.set_meta("index_version", schema.INDEX_VERSION)
     logger.info("card index: wrote %d cards", written)
     return written
 
@@ -308,6 +329,8 @@ def import_tags(client: httpx.Client, *, batch_size: int = 5000) -> int:
 def is_stale(max_age_seconds: int = MAX_AGE_SECONDS) -> bool:
     """True when the index is missing, empty, or older than the max age."""
     if schema.card_count() == 0:
+        return True
+    if schema.get_meta("index_version") != schema.INDEX_VERSION:
         return True
     stamp = schema.get_meta("cards_imported_at")
     if not stamp:

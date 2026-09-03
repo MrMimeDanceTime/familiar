@@ -324,6 +324,22 @@ def apply_proposal(proposal_id: int, background_tasks: BackgroundTasks):
         return result
 
 
+@router.post("/proposals/{proposal_id}/revert")
+def revert_proposal(proposal_id: int):
+    """Undo an approved add or cut; the proposal goes back to pending."""
+    with Session(get_engine()) as session:
+        try:
+            result = repo.revert_proposal(session, proposal_id)
+        except ScryfallError as exc:
+            raise HTTPException(status_code=502, detail=f"Scryfall lookup failed: {exc}")
+        if result is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Only an approved add or cut can be reverted.",
+            )
+        return result
+
+
 class DenyRequest(BaseModel):
     """Why a proposal was denied.
 

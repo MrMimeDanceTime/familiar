@@ -746,3 +746,59 @@ def test_stats_backfill_does_not_refetch_a_card_known_to_have_no_tags(session):
     assert requested == ["Never Checked"]
     checked = repo.get_deck_card(session, deck.id, "Never Checked")
     assert checked.tags == []
+
+
+def test_mana_sources_flag_a_colour_short_on_sources():
+    """Three green pips per card and one green source: green comes up LOW."""
+    cards = [
+        type("C", (), {"card_name": n, "quantity": q})() for n, q in [
+            ("Mountain", 10), ("Forest", 2), ("Fireball", 1), ("Gigantosaurus", 3),
+        ]
+    ]
+    index = {
+        "mountain": {"produced_mana": ["R"], "type_line": "Basic Land — Mountain", "mana_cost": ""},
+        "forest": {"produced_mana": ["G"], "type_line": "Basic Land — Forest", "mana_cost": ""},
+        "fireball": {"produced_mana": [], "type_line": "Sorcery", "mana_cost": "{X}{R}"},
+        "gigantosaurus": {"produced_mana": [], "type_line": "Creature", "mana_cost": "{G}{G}{G}{G}{G}"},
+    }
+    rows = deck_tools._mana_sources(cards, index, commander_names=set())
+    by = {r["color"]: r for r in rows}
+    assert by["G"]["status"] == "LOW"
+    assert by["R"]["status"] == "OK"
+    assert by["G"]["sources"] == 2 and by["R"]["sources"] == 10
+    assert set(by) == {"R", "G"}
+
+
+def test_hybrid_pips_split_between_colours():
+    counts = deck_tools._pips_in_cost("{1}{W/U}{U}")
+    assert counts["W"] == 0.5 and counts["U"] == 1.5 and counts["B"] == 0
+
+
+def test_deck_price_sums_priced_cards_only():
+    cards = [type("C", (), {"card_name": n, "quantity": q})() for n, q in [("A", 2), ("B", 1), ("C", 1)]]
+    index = {"a": {"price_usd": 1.5}, "b": {"price_usd": None}}
+    assert deck_tools._deck_price(cards, index) == (3.0, 2)
+    assert deck_tools._deck_price(cards, {}) == (None, 0)
+
+
+def test_proposals_carry_the_index_price(session):
+    deck = repo.create_deck(session, name="P", format="commander")
+    convo = repo.create_conversation(session)
+    with patch("app.tools.deck_tools.get_scryfall_client") as client, \
+         patch("app.tools.deck_tools._prices_for", return_value={"sol ring": 1.75}):
+        client.return_value.named.side_effect = lambda n, **k: {"name": n}
+        result = deck_tools.propose_deck_changes(
+            session, deck.id, "b",
+            [{"action": "add", "card_name": "Sol Ring", "reasoning": "x"}],
+            conversation_id=convo.id,
+        )
+    assert result["proposals"][0]["price_usd"] == 1.75
+    assert repo.get_proposal(session, result["proposals"][0]["id"]).price_usd == 1.75
+
+
+def test_deck_set_plan_stores_and_clears_the_price_ceiling(session):
+    deck = repo.create_deck(session, name="B", format="commander")
+    snap = deck_tools.deck_set_plan(session, deck.id, max_card_price=10)
+    assert snap["max_card_price"] == 10.0
+    snap = deck_tools.deck_set_plan(session, deck.id, max_card_price=0)
+    assert snap["max_card_price"] is None

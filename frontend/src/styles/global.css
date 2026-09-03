@@ -2646,3 +2646,30 @@ body.has-pinned-tray .deck-detail {
     font-size: 10px;
   }
 }
+
+
+/* ── Proposal price and undo ─────────────────────────────────────────── */
+.proposal-swap__price {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--text-muted, #888);
+}
+.proposal-swap__undo {
+  margin-left: auto;
+}
+
+/* ── Mana sources ────────────────────────────────────────────────────── */
+.mana-source__low {
+  color: var(--danger, #c0392b);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ── Opening hand ────────────────────────────────────────────────────── */
+.opening-hand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.4rem;
+}

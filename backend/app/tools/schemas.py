@@ -215,7 +215,10 @@ TOOL_SPECS: list[ToolSpec] = [
             "counts may undercount, so caveat any count-based advice. The "
             "'deficiencies' field (commander only) compares lands/ramp/draw/"
             "removal against target ranges and flags each LOW/OK/HIGH — use it "
-            "to prioritise what a deck needs instead of re-deriving targets."
+            "to prioritise what a deck needs instead of re-deriving targets. "
+            "'mana_sources' compares each colour's share of mana sources with its "
+            "share of coloured pips and flags a colour that is LOW; "
+            "'total_price_usd' is the deck's price at the index's printing."
         ),
         parameters={
             "type": "object",
@@ -442,6 +445,17 @@ TOOL_SPECS: list[ToolSpec] = [
                         "from it using the same formula deck_get_stats scores "
                         "with, so leaving it unset silently aims the whole build "
                         "at the default instead of the player's goal."
+                    ),
+                },
+                "max_card_price": {
+                    "type": "number",
+                    "description": (
+                        "Budget ceiling per card in US dollars. Set it when the "
+                        "player names a budget ('nothing over $10', 'keep it "
+                        "cheap' = 5). Candidates above it are excluded from "
+                        "suggest_cards. 0 removes the ceiling. Unset, the player's "
+                        "standing budget preference applies (budget = $5, "
+                        "mid-range = $25, unlimited = none)."
                     ),
                 },
                 "off_meta": {

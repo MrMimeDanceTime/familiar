@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { Conversation, Deck, DeckStats } from '../types/api'
+import type { Conversation, Deck, DeckCard, DeckStats } from '../types/api'
 import { DeckCardRow } from './DeckCardRow'
 import {
   BracketDiamonds,
@@ -15,6 +15,34 @@ import { ImportPanel } from './ImportPanel'
 
 const COLOR_NAMES: Record<string, string> = {
   W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green',
+}
+
+// Seven cards from the library (commander excluded, quantities honoured), the
+// way a real shuffle would deal them. Pure and seeded by a counter so "Draw
+// again" gives a fresh hand while a rerender does not.
+function drawHand(cards: DeckCard[], seed: number, size = 7): DeckCard[] {
+  const library: DeckCard[] = []
+  for (const c of cards) {
+    if (c.category === 'Commander') continue
+    for (let i = 0; i < c.quantity; i++) library.push(c)
+  }
+  // Mulberry32: small, deterministic, good enough for a goldfish hand.
+  let t = seed + 0x6d2b79f5
+  const rand = () => {
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  for (let i = library.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1))
+    ;[library[i], library[j]] = [library[j], library[i]]
+  }
+  return library.slice(0, Math.min(size, library.length))
+}
+
+function priceText(price: number | null | undefined): string {
+  if (typeof price !== 'number') return '—'
+  return price >= 1000 ? `$${Math.round(price).toLocaleString()}` : `$${price.toFixed(price < 100 ? 2 : 0)}`
 }
 
 const POWER_TIER = (pl: number): string => {
@@ -304,6 +332,17 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
   const [draftNotes, setDraftNotes] = useState(deck.notes ?? '')
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
+  // Opening hand: a seed of 0 means "not drawn yet"; each draw bumps it, and
+  // mulligans count so the hand can say how many cards go to the bottom.
+  const [handSeed, setHandSeed] = useState(0)
+  const [mulligans, setMulligans] = useState(0)
+  const hand = useMemo(() => (handSeed ? drawHand(deck.cards, handSeed) : []), [deck.cards, handSeed])
+  const handLands = hand.filter((c) => (c.type_line ?? '').toLowerCase().includes('land')).length
+
+  useEffect(() => {
+    setHandSeed(0)
+    setMulligans(0)
+  }, [deck.id])
 
   useEffect(() => {
     api.listDeckConversations(deck.id).then(setDeckConversations).catch(() => {})
@@ -609,6 +648,16 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
             <span className="metric-strip__num">{stats.land_count}</span>
             <div className="metric-strip__muted-line">{stats.land_pct}%</div>
           </div>
+          {typeof stats.total_price_usd === 'number' && (
+            <div className="metric-strip__cell" title="Sum of prices at the card index's printing">
+              <div className="micro-label">Price</div>
+              <span className="metric-strip__num">{priceText(stats.total_price_usd)}</span>
+              <div className="metric-strip__muted-line">
+                {stats.priced_cards} of {stats.total_cards} priced
+                {typeof deck.max_card_price === 'number' && ` · cap ${priceText(deck.max_card_price)}`}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -655,6 +704,23 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
               ))}
             </div>
           </div>
+          {(stats.mana_sources?.length ?? 0) > 0 && (
+            <div className="stat-card">
+              <div className="micro-label">Mana sources</div>
+              <div className="stat-card__rows">
+                {stats.mana_sources!.map((m) => (
+                  <div key={m.color} className="stat-card__row" title={`${m.sources} sources produce ${COLOR_NAMES[m.color] ?? m.color}; ${m.pips} pips ask for it`}>
+                    <ManaPip colorIdentity={m.color} size={13} />
+                    <span className="stat-card__row-label">{COLOR_NAMES[m.color] ?? m.color}</span>
+                    <span className="stat-card__row-val">
+                      {m.sources} src · {m.source_pct}% vs {m.pip_pct}% pips
+                      {m.status === 'LOW' && <span className="mana-source__low"> LOW</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="stat-card">
             <div className="micro-label">Types</div>
             <div className="stat-card__types">
@@ -705,6 +771,41 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
           </button>
         </div>
       </div>
+
+      {/* ── Opening hand ── */}
+      {deck.cards.some((c) => c.category !== 'Commander') && (
+        <div className="deck-detail__section">
+          <div className="deck-detail__notes-head">
+            <div className="micro-label">
+              Opening hand{handSeed ? ` · ${handLands} land${handLands === 1 ? '' : 's'}` : ''}
+              {mulligans > 0 && ` · mulligan ${mulligans}, bottom ${mulligans}`}
+            </div>
+            <span className="deck-detail__chips">
+              <button
+                className="btn btn--ghost btn--chip"
+                onClick={() => { setHandSeed(Date.now() & 0x7fffffff); setMulligans(0) }}
+              >
+                {handSeed ? 'Draw again' : 'Draw seven'}
+              </button>
+              {handSeed > 0 && (
+                <button
+                  className="btn btn--ghost btn--chip"
+                  onClick={() => { setHandSeed((s) => (s * 31 + 7) & 0x7fffffff); setMulligans((m) => m + 1) }}
+                >
+                  Mulligan
+                </button>
+              )}
+            </span>
+          </div>
+          {handSeed > 0 && (
+            <div className="opening-hand">
+              {hand.map((c, i) => (
+                <DeckCardRow key={`${c.name}-${i}`} card={{ ...c, quantity: 1 }} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Notes ── */}
       <div className="deck-detail__section">

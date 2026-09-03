@@ -92,6 +92,9 @@ export const api = {
   applyProposal: (proposalId: number): Promise<Deck> =>
     fetch(`/api/decks/proposals/${proposalId}/apply`, { method: 'POST' }).then((r) => asJson<Deck>(r)),
 
+  revertProposal: (proposalId: number): Promise<Deck> =>
+    fetch(`/api/decks/proposals/${proposalId}/revert`, { method: 'POST' }).then((r) => asJson<Deck>(r)),
+
   denyProposal: (proposalId: number, reason?: string): Promise<{ ok: boolean }> =>
     fetch(`/api/decks/proposals/${proposalId}/deny`, {
       method: 'POST',

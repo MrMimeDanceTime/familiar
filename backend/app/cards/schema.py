@@ -65,11 +65,25 @@ CREATE TABLE IF NOT EXISTS cards (
     legal_commander INTEGER NOT NULL DEFAULT 0,
     playable        INTEGER NOT NULL DEFAULT 1,
     produced_mana   TEXT,
+    price_usd       REAL,
     image_url       TEXT,
     scryfall_uri    TEXT,
     raw             TEXT NOT NULL
 )
 """
+
+# Columns added after the table first shipped. CREATE TABLE IF NOT EXISTS
+# does nothing for an existing index, so these are ALTERed in, guarded by a
+# PRAGMA check, the same way the app schema handles additive columns.
+_CARDS_ADDITIVE: tuple[tuple[str, str], ...] = (
+    ("price_usd", "REAL"),
+)
+
+# Bump when the extracted columns change meaning or a new one needs a
+# re-import to populate. `is_stale` treats a mismatch as stale, so the next
+# startup refresh fills the column instead of waiting for the daily cycle.
+INDEX_VERSION = "2"
+
 
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_cards_name_lower ON cards (lower(name))",
@@ -153,6 +167,10 @@ def ensure_schema() -> None:
         conn.execute(text(_FTS_DDL))
         for stmt in _INDEXES:
             conn.execute(text(stmt))
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(cards)"))}
+        for column, coltype in _CARDS_ADDITIVE:
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE cards ADD COLUMN {column} {coltype}"))
 
 
 def get_meta(key: str) -> str | None:

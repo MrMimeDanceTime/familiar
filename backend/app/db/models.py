@@ -67,6 +67,9 @@ class Deck(SQLModel, table=True):
     # deck gets what everyone plays, at 1 it gets what is specific to this
     # commander even when few decks run it. Defaults to 0.25 when unset.
     off_meta: float | None = None
+    # Budget ceiling per card in USD. Null means "use the player's standing
+    # budget preference", which maps to a ceiling in deckplan.
+    max_card_price: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -114,6 +117,9 @@ class DeckProposal(SQLModel, table=True):
     # this one, wrong slot" mean different things to the learning loop, and
     # only the second is worth generalising from.
     denial_reason: str | None = None
+    # Price at proposal time, from the card index, so the review card can show
+    # what a pick costs without a lookup per render.
+    price_usd: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

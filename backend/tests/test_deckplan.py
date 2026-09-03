@@ -607,3 +607,19 @@ def test_setting_a_commander_already_in_the_list_keeps_one_copy(tmp_path):
     korvold = next(c for c in snapshot["cards"] if c["name"] == "Korvold, Fae-Cursed King")
     assert korvold["quantity"] == 1
     assert snapshot["total_cards"] == 1
+
+
+def test_price_ceiling_prefers_the_deck_then_the_preference():
+    from app.deckplan import price_ceiling
+
+    assert price_ceiling(12.0, "budget") == 12.0
+    assert price_ceiling(None, "budget") == 5.0
+    assert price_ceiling(None, "mid") == 25.0
+    assert price_ceiling(None, "unlimited") is None
+    assert price_ceiling(None, None) is None
+    assert price_ceiling(0, "unlimited") is None
+
+
+def test_plan_renders_the_budget_line():
+    text = render_plan(build_plan(_snapshot([], max_card_price=8)))
+    assert "$8.00" in text

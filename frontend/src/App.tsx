@@ -327,6 +327,23 @@ function App() {
     [setDeck, loadStats, refreshDecks],
   )
 
+  const handleRevertProposal = useCallback(
+    async (proposalId: number) => {
+      const updatedDeck = await api.revertProposal(proposalId)
+      setDeck(updatedDeck)
+      setProposalBatches((prev) =>
+        prev.map((batch) => ({
+          ...batch,
+          proposals: batch.proposals.map((p) =>
+            p.id === proposalId ? { ...p, status: 'pending' as const } : p,
+          ),
+        })),
+      )
+      loadStats(updatedDeck.id)
+    },
+    [setDeck, loadStats],
+  )
+
   const handleDenyProposal = useCallback(
     async (proposalId: number, reason?: string) => {
       await api.denyProposal(proposalId, reason)
@@ -445,6 +462,7 @@ function App() {
               proposalBatches={proposalBatches}
               onApplyProposal={handleApplyProposal}
               onDenyProposal={handleDenyProposal}
+            onRevertProposal={handleRevertProposal}
               cardNames={cardNames}
             />
             <DeckPanel deck={deck} stats={deckStats} onDeckUpdated={handleDeckUpdated} onStartConversation={navigateToDeckConversation} onSelectConversation={handleSelectConversation} />
@@ -531,6 +549,7 @@ function App() {
                 proposalBatches={proposalBatches}
                 onApplyProposal={handleApplyProposal}
                 onDenyProposal={handleDenyProposal}
+            onRevertProposal={handleRevertProposal}
                 cardNames={cardNames}
               />
             )}

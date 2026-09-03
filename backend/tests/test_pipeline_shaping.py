@@ -42,7 +42,7 @@ def test_strip_keeps_only_selection_fields():
     assert set(stripped) == {
         "name", "oracle_id", "mana_cost", "cmc", "type_line", "oracle_text",
         "color_identity", "legal_commander", "keywords", "power", "toughness",
-        "loyalty", "rarity", "edhrec_rank",
+        "loyalty", "rarity", "edhrec_rank", "price_usd",
         # Stage 2 attaches this and the strip used to drop it, so the selection
         # model could read a card's rules text but never that 75% of decks with
         # this commander run it.
@@ -181,3 +181,40 @@ def test_render_is_deterministic():
     a = render_pool(shape(cards, RAKDOS, {}))
     b = render_pool(shape(cards, RAKDOS, {}))
     assert a == b
+
+
+# ── budget ───────────────────────────────────────────────────────────────
+
+
+def test_priced_card_over_the_ceiling_is_illegal_for_the_deck():
+    from app.pipeline.shaping import DeckContext, legal_in_deck
+
+    ctx = DeckContext(identity=frozenset({"B", "R"}), card_names_lower=frozenset(), max_card_price=5.0)
+    ok, reasons = legal_in_deck(_raw("Expensive Rock", price_usd=60.0, color_identity=[]), ctx)
+    assert not ok
+    assert reasons == ["over budget ($60.00 > $5.00)"]
+
+
+def test_unpriced_card_passes_the_ceiling():
+    """Unknown is not "too expensive"."""
+    from app.pipeline.shaping import DeckContext, legal_in_deck
+
+    ctx = DeckContext(identity=frozenset({"B", "R"}), card_names_lower=frozenset(), max_card_price=5.0)
+    ok, _ = legal_in_deck(_raw("Mystery Card", price_usd=None, color_identity=[]), ctx)
+    assert ok
+
+
+def test_no_ceiling_means_no_budget_check():
+    from app.pipeline.shaping import DeckContext, legal_in_deck
+
+    ctx = DeckContext(identity=frozenset({"B", "R"}), card_names_lower=frozenset())
+    ok, _ = legal_in_deck(_raw("Expensive Rock", price_usd=60.0, color_identity=[]), ctx)
+    assert ok
+
+
+def test_rendered_pool_shows_the_price():
+    from app.pipeline.shaping import DeckContext, render_pool, shape
+
+    ctx = DeckContext(identity=frozenset({"R"}), card_names_lower=frozenset())
+    pool = shape([_raw("Lightning Bolt", price_usd=1.5, color_identity=["R"])], ctx, {})
+    assert "$1.50" in render_pool(pool)

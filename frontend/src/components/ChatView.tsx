@@ -12,11 +12,12 @@ interface ProposalBatchBlockProps {
   isDismissed: boolean
   onApply: (id: number) => Promise<void>
   onDeny: (id: number, reason?: string) => Promise<void>
+  onRevert: (id: number) => Promise<void>
   onContinue: () => void
 }
 
 function ProposalBatchBlock({
-  batch, isLastBatch, isStreaming, isDismissed, onApply, onDeny, onContinue,
+  batch, isLastBatch, isStreaming, isDismissed, onApply, onDeny, onRevert, onContinue,
 }: ProposalBatchBlockProps) {
   const pending = batch.proposals.filter((p) => p.status === 'pending')
   const resolved = batch.proposals.filter((p) => p.status !== 'pending')
@@ -55,7 +56,7 @@ function ProposalBatchBlock({
       )}
 
       {(!collapsible || expanded) && resolved.map((p) => (
-        <ProposalCard key={p.id} proposal={p} onApply={onApply} onDeny={onDeny} />
+        <ProposalCard key={p.id} proposal={p} onApply={onApply} onDeny={onDeny} onRevert={onRevert} />
       ))}
 
       {pending.map((p) => (
@@ -80,10 +81,11 @@ interface ChatViewProps {
   proposalBatches: ProposalBatch[]
   onApplyProposal: (id: number) => Promise<void>
   onDenyProposal: (id: number, reason?: string) => Promise<void>
+  onRevertProposal: (id: number) => Promise<void>
   cardNames: string[]
 }
 
-export function ChatView({ messages, activeTool, isStreaming, error, onSend, proposalBatches, onApplyProposal, onDenyProposal, cardNames }: ChatViewProps) {
+export function ChatView({ messages, activeTool, isStreaming, error, onSend, proposalBatches, onApplyProposal, onDenyProposal, onRevertProposal, cardNames }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [dismissedBatches, setDismissedBatches] = useState<Set<number>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -166,6 +168,7 @@ export function ChatView({ messages, activeTool, isStreaming, error, onSend, pro
       isDismissed={dismissedBatches.has(index)}
       onApply={onApplyProposal}
       onDeny={onDenyProposal}
+      onRevert={onRevertProposal}
       onContinue={() => handleContinue(index)}
     />
   )
