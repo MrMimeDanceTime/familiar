@@ -2666,6 +2666,15 @@ body.has-pinned-tray .deck-detail {
   letter-spacing: 0.04em;
 }
 
+/* ── Combos ──────────────────────────────────────────────────────────── */
+.combo-row {
+  align-items: flex-start;
+}
+.combo-row .stat-card__row-val {
+  text-align: right;
+  max-width: 45%;
+}
+
 /* ── Opening hand ────────────────────────────────────────────────────── */
 .opening-hand {
   display: flex;

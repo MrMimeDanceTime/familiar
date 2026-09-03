@@ -277,6 +277,18 @@ prices, proposals carry theirs, and `compute_deck_stats` reports the deck's
 total price and a per-colour `mana_sources` check (share of sources against
 share of pips, LOW where a colour falls well short).
 
+### Combos (`app/cards/combos.py`)
+Commander Spellbook's variant export is imported into `combos` and
+`combo_cards` tables in the same SQLite file, refreshed weekly in the card
+index's background thread (`COMBO_SOURCE_URL`; blank disables it). Two
+queries use it: `combos_in_deck` feeds the stats panel and raises the
+bracket estimate to at least 3 when a two-card combo is present, and
+`combos_one_short` tells the pipeline which candidates would complete a
+combo with cards already in the deck, rendered in the pool as
+`COMPLETES A COMBO with …`. Variants of more than four cards are dropped at
+import. The parser is defensive and the refresh is guarded: a bad or
+unreachable file keeps the previous rows and logs a warning.
+
 ### Power nuance
 The LLM ±1 nuance on the power level runs on the fast model and only once a
 deck has sat unchanged for `POWER_NUANCE_SETTLE_SECONDS`; until then the
@@ -288,8 +300,10 @@ The retrieval pipeline ranks its candidate pool through three independent
 scoring layers (consensus, mechanical, personal) before capping it; the
 per-layer scores ride on each proposal so the review UI can say why a card was
 suggested. The mechanical layer reads the local card index, a SQLite copy of
-Scryfall's oracle cards and oracle tags with derived tag co-occurrence, so it
-works from what a card *does* rather than a hand-written theme list. Any change
+Scryfall's oracle cards, oracle tags, and rulings with derived tag
+co-occurrence, so it works from what a card *does* rather than a hand-written
+theme list. Card lookups attach the rulings so interaction questions are
+answered from the source rather than from memory. Any change
 here must be measured with `tools/coverage_report.py` (see `CLAUDE.md`).
 
 ### Integrations (`app/integrations/`)

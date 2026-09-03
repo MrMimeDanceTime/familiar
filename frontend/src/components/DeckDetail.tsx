@@ -416,6 +416,21 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
               </div>
             </div>
           )}
+          {(stats.combos?.length ?? 0) > 0 && (
+            <div className="stat-card">
+              <div className="micro-label">Combos</div>
+              <div className="stat-card__rows">
+                {stats.combos!.map((combo) => (
+                  <div key={combo.cards.join('+')} className="stat-card__row combo-row" title={combo.description}>
+                    <span className="stat-card__row-label">{combo.cards.join(' + ')}</span>
+                    <span className="stat-card__row-val">
+                      {combo.produces.length > 0 ? combo.produces.join(', ') : `${combo.card_count} cards`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="stat-card">
             <div className="micro-label">Types</div>
             <div className="stat-card__types">

@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # needs an index builds one explicitly.
     card_index_refresh_on_startup: bool = True
 
+    # Commander Spellbook's variant export, the source of the local combo
+    # table. Blank disables combo detection entirely. Refreshed weekly in the
+    # same background thread as the card index.
+    combo_source_url: str = "https://json.commanderspellbook.com/variants.json"
+
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24
 

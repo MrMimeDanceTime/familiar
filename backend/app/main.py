@@ -75,6 +75,12 @@ def _refresh_card_index() -> None:
             card_importer.refresh_if_stale()
         except Exception:  # noqa: BLE001
             logger.exception("Card index refresh failed; continuing with existing index")
+        try:
+            from app.cards import combos
+
+            combos.refresh_if_stale()
+        except Exception:  # noqa: BLE001
+            logger.exception("Combo refresh failed; continuing without combos")
 
     threading.Thread(target=_run, name="card-index-refresh", daemon=True).start()
 

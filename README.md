@@ -8,7 +8,8 @@ deckbuilding knowledge base, and Scryfall's functional card tags.
 It proposes changes you approve, deny, or undo (it never edits the deck on
 its own), scores every suggestion against play rate, mechanical fit with the
 commander, and your own history, respects a per-card budget, computes each
-deck's bracket, power level, price, and mana-source balance, deals opening
+deck's bracket, power level, price, mana-source balance, and the infinite
+combos it contains (from Commander Spellbook), deals opening
 hands, imports decklists from Archidekt/Moxfield and exports them for Arena
 and Archidekt, lets you add your own knowledge entries beside the seeded
 deckbuilding advice, remembers your standing preferences, and backs up its

@@ -774,10 +774,12 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
     land_pct = round(land_count / total_cards * 100)
     card_names = {c.card_name for c in cards}
 
+    combos = _deck_combos(card_names)
     power_base, power_factors = _estimate_power_level(
         avg_mv, land_count, ramp_count, draw_count, interaction_count, total_cards)
     bracket, bracket_factors = _estimate_bracket(
         card_names, avg_mv, land_count, ramp_count, interaction_count, type_counts, total_cards)
+    bracket, bracket_factors = _apply_combo_floor(bracket, bracket_factors, combos)
 
     deck = repo.get_deck(session, deck_id)
     deficiencies = _compute_deficiencies(
@@ -839,7 +841,41 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
         "total_price_usd": total_price,
         "priced_cards": priced,
         "mana_sources": mana_sources,
+        "combos": combos,
     }
+
+
+def _deck_combos(card_names: set[str]) -> list[dict]:
+    """Combos the deck already contains, trimmed for the stats payload."""
+    try:
+        from app.cards import combos as combo_db
+
+        found = combo_db.combos_in_deck(card_names, limit=20)
+    except Exception:  # noqa: BLE001 - the combo table is optional
+        return []
+    return [
+        {
+            "cards": c["cards"],
+            "produces": c["produces"][:4],
+            "description": (c["description"] or "")[:400],
+            "card_count": c["card_count"],
+        }
+        for c in found
+    ]
+
+
+def _apply_combo_floor(bracket: int, factors: list[str], combos: list[dict]) -> tuple[int, list[str]]:
+    """Brackets 1 and 2 exclude two-card infinite combos. A deck that has one
+    is at least a bracket 3, whatever its card names said."""
+    two_card = [c for c in combos if c["card_count"] == 2]
+    if not two_card:
+        return bracket, factors
+    listing = "; ".join(" + ".join(c["cards"]) for c in two_card[:4])
+    factors = [*factors, f"2-card combos ({len(two_card)}): {listing}"]
+    if bracket < 3:
+        factors[0] = f"Bracket 3: two-card combo present ({two_card[0]['cards'][0]} + {two_card[0]['cards'][1]})"
+        return 3, factors
+    return bracket, factors
 
 
 def _index_cards_for(cards: list[Any]) -> dict[str, dict]:
@@ -1310,6 +1346,7 @@ def _empty_stats() -> dict:
         "total_price_usd": None,
         "priced_cards": 0,
         "mana_sources": [],
+        "combos": [],
     }
 
 

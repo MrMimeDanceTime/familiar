@@ -225,7 +225,9 @@ TOOL_SPECS: list[ToolSpec] = [
             "to prioritise what a deck needs instead of re-deriving targets. "
             "'mana_sources' compares each colour's share of mana sources with its "
             "share of coloured pips and flags a colour that is LOW; "
-            "'total_price_usd' is the deck's price at the index's printing."
+            "'total_price_usd' is the deck's price at the index's printing; "
+            "'combos' lists the combos the deck already contains (from Commander "
+            "Spellbook), which the bracket estimate also uses."
         ),
         parameters={
             "type": "object",

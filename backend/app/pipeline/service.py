@@ -233,6 +233,37 @@ def _apply_brain_map(
         return pool
 
 
+def _with_combo_partners(
+    ctx: DeckContext, snapshot: dict[str, Any], pool: list[dict[str, Any]]
+) -> DeckContext:
+    """Annotate the context with the combos each candidate would complete.
+
+    A candidate that finishes a combo with cards already in the deck is the
+    strongest fit signal the pipeline has, and the one the model most often
+    guessed at. Guarded: no combo table, no annotation.
+    """
+    try:
+        from dataclasses import replace
+
+        from app.cards import combos as combo_db
+
+        deck_names = [c.get("name") or "" for c in snapshot.get("cards", [])]
+        one_short = combo_db.combos_one_short(deck_names, [c.get("name") or "" for c in pool])
+        if not one_short:
+            return ctx
+        partners = {
+            name: sorted({
+                partner for combo in combos for partner in combo["cards"]
+                if partner.lower() != name
+            })[:3]
+            for name, combos in one_short.items()
+        }
+        return replace(ctx, combo_partners=partners)
+    except Exception as exc:  # noqa: BLE001 - combos are a bonus
+        logger.warning("combo annotation skipped: %s", exc)
+        return ctx
+
+
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
     cards.
@@ -379,6 +410,7 @@ def build_suggestions(
             session, pool, snapshot, identity, deck_id,
             off_meta if off_meta is not None else _deck_off_meta(snapshot),
         )
+        ctx = _with_combo_partners(ctx, snapshot, pool)
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
     with _timed("stage4_select", timings):

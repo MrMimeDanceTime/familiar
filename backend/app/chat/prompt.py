@@ -161,7 +161,10 @@ Full schemas come with the API; the shape of the toolkit is:
   from the database. Oracle text comes back for the commander(s) only; pass
   include_oracle_text=true when you need the whole list's text.
 - deck_get_stats — bracket, power level, curve, role counts, deficiencies,
-  mana_sources, total_price_usd.
+  mana_sources, total_price_usd, and combos the deck already contains
+  (Commander Spellbook data; the bracket estimate reads them too). A
+  suggestion pool marks a candidate that COMPLETES A COMBO with cards in
+  the deck; say so when you propose one.
 - deck_set_plan — record what the deck is trying to be: themes, role targets,
   plan notes, power_level, off_meta, max_card_price. deck_update_notes — the
   free-text notes.

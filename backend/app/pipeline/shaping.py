@@ -66,6 +66,10 @@ class DeckContext:
     # is marked illegal for this deck; an unpriced one passes, since "unknown"
     # is not "too expensive".
     max_card_price: float | None = None
+    # lower(candidate name) -> the combo partners already in the deck, for
+    # candidates that would complete a combo. Rendered so the selection model
+    # has a concrete reason rather than an impression of synergy.
+    combo_partners: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_snapshot(
@@ -105,6 +109,7 @@ class ShapedCard:
     edhrec: dict[str, Any] | None = None
     brainmap: dict[str, Any] | None = None
     price_usd: float | None = None
+    completes_combo_with: list[str] = field(default_factory=list)
     fine_roles: set[str] = field(default_factory=set)
     coarse_roles: set[str] = field(default_factory=set)
     legal_in_deck: bool = False
@@ -174,6 +179,7 @@ def _precompute(raw: dict[str, Any], ctx: DeckContext, tags: set[str]) -> Shaped
         edhrec=stripped.get("edhrec"),
         brainmap=stripped.get("brainmap"),
         price_usd=stripped.get("price_usd") if isinstance(stripped.get("price_usd"), (int, float)) else None,
+        completes_combo_with=list(ctx.combo_partners.get((stripped.get("name") or "").lower(), [])),
         fine_roles=fine,
         coarse_roles=coarse,
         legal_in_deck=ok,
@@ -309,6 +315,8 @@ def render_pool(cards: list[ShapedCard]) -> str:
         fit = _fmt_brainmap(card)
         if fit:
             parts.append(fit)
+        if card.completes_combo_with:
+            parts.append(f"COMPLETES A COMBO with {' + '.join(card.completes_combo_with)}")
         if not card.legal_in_deck:
             parts.append(f"ILLEGAL ({'; '.join(card.illegal_reasons)})")
         lines.append(" | ".join(parts))

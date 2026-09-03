@@ -61,6 +61,14 @@ export interface DeckStats {
     pip_pct: number
     status: 'LOW' | 'OK'
   }[]
+  // Combos the deck already contains, from the local Commander Spellbook
+  // table; empty until the first import lands.
+  combos?: {
+    cards: string[]
+    produces: string[]
+    description: string
+    card_count: number
+  }[]
 }
 
 export interface Deck {
