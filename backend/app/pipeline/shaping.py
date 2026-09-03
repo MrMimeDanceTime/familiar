@@ -27,7 +27,7 @@ from typing import Any
 from app.pipeline import roles
 
 # Single source of truth for the banned list — do not duplicate it here.
-from app.tools.deck_tools import _BANNED_COMMANDER
+from app.tools.card_lists import _BANNED_COMMANDER
 
 _BANNED_LOWER = {n.lower() for n in _BANNED_COMMANDER}
 
@@ -44,6 +44,8 @@ _STRIP_FIELDS = (
     "edhrec",
     # The brain map's per-layer scores and explanation.
     "brainmap",
+    # USD price from the index, for the budget ceiling and the pool render.
+    "price_usd",
 )
 
 
@@ -60,15 +62,31 @@ class DeckContext:
 
     identity: frozenset[str]
     card_names_lower: frozenset[str]
+    # Per-card USD ceiling, or None for no budget. A priced candidate above it
+    # is marked illegal for this deck; an unpriced one passes, since "unknown"
+    # is not "too expensive".
+    max_card_price: float | None = None
+    # lower(candidate name) -> the combo partners already in the deck, for
+    # candidates that would complete a combo. Rendered so the selection model
+    # has a concrete reason rather than an impression of synergy.
+    combo_partners: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
-    def from_snapshot(cls, snapshot: dict[str, Any], identity: frozenset[str]) -> "DeckContext":
+    def from_snapshot(
+        cls,
+        snapshot: dict[str, Any],
+        identity: frozenset[str],
+        max_card_price: float | None = None,
+    ) -> "DeckContext":
         names = {
             (c.get("name") or "").lower()
             for c in snapshot.get("cards", [])
             if c.get("name")
         }
-        return cls(identity=identity, card_names_lower=frozenset(names))
+        return cls(
+            identity=identity, card_names_lower=frozenset(names),
+            max_card_price=max_card_price,
+        )
 
 
 @dataclass
@@ -90,6 +108,8 @@ class ShapedCard:
     edhrec_rank: int | None
     edhrec: dict[str, Any] | None = None
     brainmap: dict[str, Any] | None = None
+    price_usd: float | None = None
+    completes_combo_with: list[str] = field(default_factory=list)
     fine_roles: set[str] = field(default_factory=set)
     coarse_roles: set[str] = field(default_factory=set)
     legal_in_deck: bool = False
@@ -125,6 +145,14 @@ def legal_in_deck(card: dict[str, Any], ctx: DeckContext) -> tuple[bool, list[st
     if name.lower() in ctx.card_names_lower:
         reasons.append("already in deck")
 
+    price = card.get("price_usd")
+    if (
+        ctx.max_card_price is not None
+        and isinstance(price, (int, float))
+        and price > ctx.max_card_price
+    ):
+        reasons.append(f"over budget (${price:.2f} > ${ctx.max_card_price:.2f})")
+
     return (not reasons, reasons)
 
 
@@ -150,6 +178,8 @@ def _precompute(raw: dict[str, Any], ctx: DeckContext, tags: set[str]) -> Shaped
         edhrec_rank=stripped.get("edhrec_rank"),
         edhrec=stripped.get("edhrec"),
         brainmap=stripped.get("brainmap"),
+        price_usd=stripped.get("price_usd") if isinstance(stripped.get("price_usd"), (int, float)) else None,
+        completes_combo_with=list(ctx.combo_partners.get((stripped.get("name") or "").lower(), [])),
         fine_roles=fine,
         coarse_roles=coarse,
         legal_in_deck=ok,
@@ -276,6 +306,8 @@ def render_pool(cards: list[ShapedCard]) -> str:
         stats = _fmt_pt(card)
         if stats:
             parts.append(stats)
+        if card.price_usd is not None:
+            parts.append(f"${card.price_usd:.2f}")
         parts.append(f"roles: {_fmt_roles(card)}")
         edhrec = _fmt_edhrec(card)
         if edhrec:
@@ -283,6 +315,8 @@ def render_pool(cards: list[ShapedCard]) -> str:
         fit = _fmt_brainmap(card)
         if fit:
             parts.append(fit)
+        if card.completes_combo_with:
+            parts.append(f"COMPLETES A COMBO with {' + '.join(card.completes_combo_with)}")
         if not card.legal_in_deck:
             parts.append(f"ILLEGAL ({'; '.join(card.illegal_reasons)})")
         lines.append(" | ".join(parts))

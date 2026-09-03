@@ -14,6 +14,10 @@ export interface DeckStatsNuance {
   power_level_base: number
   power_nuance_adj: number
   power_nuance_reason: string
+  // True when the deck changed too recently for the LLM nuance to be worth
+  // computing yet; ask again after settle_seconds.
+  power_nuance_pending: boolean
+  settle_seconds: number
   power_factors: string[]
 }
 
@@ -32,6 +36,7 @@ export interface DeckStats {
   power_level_base: number
   power_nuance_adj: number
   power_nuance_reason: string
+  power_nuance_pending?: boolean
   power_factors: string[]
   bracket: number
   bracket_factors: string[]
@@ -42,6 +47,27 @@ export interface DeckStats {
     target_low: number
     target_high: number
     status: 'LOW' | 'OK' | 'HIGH'
+  }[]
+  // Deck price at the card index's representative printing; null when the
+  // index has no prices yet. priced_cards says how many cards the sum covers.
+  total_price_usd?: number | null
+  priced_cards?: number
+  // Per colour: share of mana sources against share of coloured pips.
+  mana_sources?: {
+    color: string
+    sources: number
+    pips: number
+    source_pct: number
+    pip_pct: number
+    status: 'LOW' | 'OK'
+  }[]
+  // Combos the deck already contains, from the local Commander Spellbook
+  // table; empty until the first import lands.
+  combos?: {
+    cards: string[]
+    produces: string[]
+    description: string
+    card_count: number
   }[]
 }
 
@@ -54,7 +80,22 @@ export interface Deck {
   power_level: string | null
   format: string
   conversation_id: number | null
+  max_card_price?: number | null
   cards: DeckCard[]
+}
+
+/** A deck as the list endpoint returns it: enough for a sidebar row and to
+ *  route to its conversation, without the card list. */
+export interface DeckSummary {
+  id: number
+  name: string
+  commander: string | null
+  partner_commander: string | null
+  format: string
+  power_level: string | null
+  conversation_id: number | null
+  total_cards: number
+  updated_at: string
 }
 
 export type ImportMode = 'merge' | 'replace'
@@ -89,7 +130,6 @@ export interface ChatMessage {
   role: string
   text_content: string | null
   tool_calls: { id: string; name: string; arguments: Record<string, unknown> }[] | null
-  tool_results: { call_id: string; content: string }[] | null
   sequence: number
   created_at: string
 }
@@ -121,6 +161,7 @@ export interface DeckProposal {
   reasoning: string
   scores?: ProposalScores | null
   denial_reason?: string | null
+  price_usd?: number | null
   created_at?: string
 }
 
@@ -139,6 +180,19 @@ export interface ConversationDetail {
   messages: ChatMessage[]
   proposals: DeckProposal[]
 }
+
+/** A knowledge-base entry. Seeded entries are read-only; the player's own
+ *  carry source "user" and the model treats them as authoritative. */
+export interface KnowledgeEntry {
+  id: number
+  title: string
+  body: string
+  category: string
+  format: string
+  source: 'seed' | 'user'
+}
+
+export type KnowledgeEntryIn = Pick<KnowledgeEntry, 'title' | 'body' | 'category'> & { format?: string }
 
 export interface UserPreferences {
   preferred_bracket: string | null

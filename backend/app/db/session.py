@@ -23,9 +23,20 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("deck", "themes", "JSON"),
     ("deck", "plan_notes", "TEXT"),
     ("deck", "off_meta", "REAL"),
+    ("deck", "max_card_price", "REAL"),
+    ("deck_proposals", "price_usd", "REAL"),
     # Brain-map verdict and structured denial reason on each proposal.
     ("deck_proposals", "scores", "JSON"),
     ("deck_proposals", "denial_reason", "TEXT"),
+    ("deck_proposals", "reported_status", "TEXT"),
+    # Player-written knowledge entries alongside the seeded ones.
+    ("knowledge_entries", "source", "TEXT"),
+    # Per-turn token accounting.
+    ("turn", "llm_calls", "INTEGER"),
+    ("turn", "prompt_tokens", "INTEGER"),
+    ("turn", "completion_tokens", "INTEGER"),
+    ("turn", "reasoning_tokens", "INTEGER"),
+    ("turn", "cancel_requested", "INTEGER"),
 ]
 
 

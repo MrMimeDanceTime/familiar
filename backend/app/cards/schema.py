@@ -65,11 +65,25 @@ CREATE TABLE IF NOT EXISTS cards (
     legal_commander INTEGER NOT NULL DEFAULT 0,
     playable        INTEGER NOT NULL DEFAULT 1,
     produced_mana   TEXT,
+    price_usd       REAL,
     image_url       TEXT,
     scryfall_uri    TEXT,
     raw             TEXT NOT NULL
 )
 """
+
+# Columns added after the table first shipped. CREATE TABLE IF NOT EXISTS
+# does nothing for an existing index, so these are ALTERed in, guarded by a
+# PRAGMA check, the same way the app schema handles additive columns.
+_CARDS_ADDITIVE: tuple[tuple[str, str], ...] = (
+    ("price_usd", "REAL"),
+)
+
+# Bump when the extracted columns change meaning or a new one needs a
+# re-import to populate. `is_stale` treats a mismatch as stale, so the next
+# startup refresh fills the column instead of waiting for the daily cycle.
+INDEX_VERSION = "3"
+
 
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_cards_name_lower ON cards (lower(name))",
@@ -79,6 +93,7 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_cards_cmc ON cards (cmc)",
     "CREATE INDEX IF NOT EXISTS idx_card_tags_slug ON card_tags (slug)",
     "CREATE INDEX IF NOT EXISTS idx_cooc_slug ON tag_cooccurrence (slug, lift DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_rulings_oracle ON card_rulings (oracle_id)",
 )
 
 _CARD_TAGS_DDL = """
@@ -86,6 +101,17 @@ CREATE TABLE IF NOT EXISTS card_tags (
     oracle_id TEXT NOT NULL,
     slug      TEXT NOT NULL,
     PRIMARY KEY (oracle_id, slug)
+)
+"""
+
+# Scryfall's per-card rulings, keyed by oracle id. The bulk file is small
+# (~50k rulings) and answers "does X work with Y" from the source instead of
+# from the model's memory of it.
+_RULINGS_DDL = """
+CREATE TABLE IF NOT EXISTS card_rulings (
+    oracle_id    TEXT NOT NULL,
+    published_at TEXT,
+    comment      TEXT NOT NULL
 )
 """
 
@@ -150,9 +176,14 @@ def ensure_schema() -> None:
         conn.execute(text(_META_DDL))
         conn.execute(text(_TAG_COOC_DDL))
         conn.execute(text(_TAG_TRAITS_DDL))
+        conn.execute(text(_RULINGS_DDL))
         conn.execute(text(_FTS_DDL))
         for stmt in _INDEXES:
             conn.execute(text(stmt))
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(cards)"))}
+        for column, coltype in _CARDS_ADDITIVE:
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE cards ADD COLUMN {column} {coltype}"))
 
 
 def get_meta(key: str) -> str | None:
@@ -177,6 +208,13 @@ def set_meta(key: str, value: str) -> None:
 def card_count() -> int:
     with get_engine().begin() as conn:
         return conn.execute(text("SELECT count(*) FROM cards")).scalar() or 0
+
+
+def has_tags() -> bool:
+    """Whether the index holds any taggings at all. Cheaper than tag_count()
+    for the callers that only need to know which tag source to read."""
+    with get_engine().begin() as conn:
+        return conn.execute(text("SELECT 1 FROM card_tags LIMIT 1")).first() is not None
 
 
 def tag_count() -> int:

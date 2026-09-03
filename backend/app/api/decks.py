@@ -14,7 +14,9 @@ from app.integrations.base import (
     list_providers,
 )
 from app.integrations.service import fetch_into_deck
-from app.tools.deck_tools import compute_deck_stats, import_decklist, set_deck_commanders
+from app.tools.deck_stats import compute_deck_stats
+from app.tools.deck_tools import import_decklist, set_deck_commanders
+from app.tools.scryfall_client import ScryfallError
 
 router = APIRouter(prefix="/api/decks", tags=["decks"])
 
@@ -83,9 +85,13 @@ def create_deck(body: CreateDeckIn):
 
 @router.get("")
 def list_decks():
+    """Deck summaries for the sidebar: identity and size, no card list.
+
+    A full snapshot per deck carried every card's oracle text to populate a
+    list of names. The selected deck is fetched on its own by id."""
     with Session(get_engine()) as session:
         decks = repo.list_decks(session)
-        return [repo.deck_snapshot(session, d.id) for d in decks]
+        return [repo.deck_summary(session, d) for d in decks]
 
 
 # Must precede "/{deck_id}" — otherwise "providers" is parsed as a deck id.
@@ -139,6 +145,10 @@ def import_deck(deck_id: int, body: ImportDecklistIn):
             return import_decklist(session, deck_id, body.text, mode=body.mode)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except ScryfallError as exc:
+            # Upstream trouble, not a bad request. The import resolves every
+            # name before it touches the deck, so the deck is intact here.
+            raise HTTPException(status_code=502, detail=f"Scryfall lookup failed: {exc}")
 
 
 @router.post("/{deck_id}/fetch")
@@ -155,7 +165,7 @@ def fetch_deck(deck_id: int, body: FetchDeckIn):
             )
         try:
             return fetch_into_deck(session, deck_id, body.provider, body.ref, mode=body.mode)
-        except ProviderError as exc:
+        except (ProviderError, ScryfallError) as exc:
             raise HTTPException(status_code=502, detail=str(exc))
 
 
@@ -259,11 +269,16 @@ def get_deck_stats_nuance(deck_id: int):
         except Exception:
             provider = None
         stats = compute_deck_stats(session, deck_id, provider)
+        from app.config import settings
+
         return {
             "power_level": stats["power_level"],
             "power_level_base": stats["power_level_base"],
             "power_nuance_adj": stats["power_nuance_adj"],
             "power_nuance_reason": stats["power_nuance_reason"],
+            "power_nuance_pending": stats.get("power_nuance_pending", False),
+            # How long the client should wait before asking again when pending.
+            "settle_seconds": settings.power_nuance_settle_seconds,
             "power_factors": stats["power_factors"],
         }
 
@@ -307,6 +322,22 @@ def apply_proposal(proposal_id: int, background_tasks: BackgroundTasks):
         if result.get("name") == "Untitled Deck" and result.get("commander"):
             background_tasks.add_task(_autoname_deck, result["id"])
 
+        return result
+
+
+@router.post("/proposals/{proposal_id}/revert")
+def revert_proposal(proposal_id: int):
+    """Undo an approved add or cut; the proposal goes back to pending."""
+    with Session(get_engine()) as session:
+        try:
+            result = repo.revert_proposal(session, proposal_id)
+        except ScryfallError as exc:
+            raise HTTPException(status_code=502, detail=f"Scryfall lookup failed: {exc}")
+        if result is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Only an approved add or cut can be reverted.",
+            )
         return result
 
 

@@ -5,6 +5,14 @@ interface ProposalCardProps {
   proposal: DeckProposal
   onApply: (id: number) => Promise<void>
   onDeny: (id: number, reason?: string) => Promise<void>
+  // Undo an approved add or cut. Absent for a commander change, which has no
+  // previous value to restore.
+  onRevert?: (id: number) => Promise<void>
+}
+
+function priceLabel(price: number | null | undefined): string | null {
+  if (typeof price !== 'number') return null
+  return price < 1 ? `$${price.toFixed(2)}` : `$${price.toFixed(price < 10 ? 2 : 0)}`
 }
 
 /** How the brain map scored this card, as a readable line rather than a number.
@@ -39,13 +47,28 @@ function ScoreBars({ scores }: { scores: ProposalScores }) {
   )
 }
 
-export function ProposalCard({ proposal, onApply, onDeny }: ProposalCardProps) {
+// Reasons the app writes are not the player's verdict and should not read as
+// one: the model trimmed its own batch, or a newer batch replaced this one.
+function resolvedLabel(proposal: DeckProposal): string {
+  if (proposal.status === 'approved') return 'Applied'
+  if (proposal.denial_reason === 'withdrawn') return 'Withdrawn'
+  if (proposal.denial_reason === 'superseded') return 'Replaced by a newer batch'
+  return proposal.denial_reason ? `Denied — ${proposal.denial_reason}` : 'Denied'
+}
+
+export function ProposalCard({ proposal, onApply, onDeny, onRevert }: ProposalCardProps) {
   const [loading, setLoading] = useState(false)
   const [denying, setDenying] = useState(false)
 
   const handleApply = async () => {
     setLoading(true)
     try { await onApply(proposal.id) } finally { setLoading(false) }
+  }
+
+  const handleRevert = async () => {
+    if (!onRevert) return
+    setLoading(true)
+    try { await onRevert(proposal.id) } finally { setLoading(false) }
   }
 
   const handleDeny = async (reason?: string) => {
@@ -60,18 +83,28 @@ export function ProposalCard({ proposal, onApply, onDeny }: ProposalCardProps) {
 
   const name = proposal.card_name ?? proposal.commander_name
   const isRemove = proposal.action === 'remove'
+  const price = priceLabel(proposal.price_usd)
 
   if (proposal.status !== 'pending') {
     const approved = proposal.status === 'approved'
+    const canRevert = approved && onRevert && proposal.action !== 'set_commander'
     return (
       <div className="proposal-swap proposal-swap--resolved">
         <span className={`proposal-chip ${approved ? 'proposal-chip--add' : 'proposal-chip--deny'}`}>
           {approved ? '✓' : '✗'}
         </span>
         <span className="proposal-swap__name">{name}</span>
-        <span className="proposal-swap__note">
-          {approved ? 'Applied' : proposal.denial_reason ? `Denied — ${proposal.denial_reason}` : 'Denied'}
-        </span>
+        <span className="proposal-swap__note">{resolvedLabel(proposal)}</span>
+        {canRevert && (
+          <button
+            className="btn btn--chip btn--chip-muted proposal-swap__undo"
+            onClick={handleRevert}
+            disabled={loading}
+            title="Put this card back the way it was and reopen the proposal"
+          >
+            {loading ? '…' : 'Undo'}
+          </button>
+        )}
       </div>
     )
   }
@@ -92,6 +125,7 @@ export function ProposalCard({ proposal, onApply, onDeny }: ProposalCardProps) {
         </span>
         <span className="proposal-swap__name">{name}</span>
         {proposal.category && <span className="proposal-swap__note">{proposal.category}</span>}
+        {price && <span className="proposal-swap__price" title="Price at the index's printing">{price}</span>}
       </div>
       {proposal.reasoning && <div className="proposal-card__rationale">{proposal.reasoning}</div>}
       {proposal.scores ? (

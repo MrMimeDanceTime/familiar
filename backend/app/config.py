@@ -12,10 +12,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Only "deepseek" is implemented. Kept as a setting so a second backend can
+    # slot in behind ChatProvider without a config change of shape.
     llm_provider: str = "deepseek"
-
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-6"
 
     deepseek_api_key: str = ""
     # Default to Pro everywhere: V4 pricing makes the Flash/Pro gap negligible, so
@@ -49,6 +48,23 @@ class Settings(BaseSettings):
     # and surfaces as a tool error the model/user can see, instead of hanging.
     llm_timeout_seconds: float = 90.0
 
+    # How long a deck has to sit unchanged before the LLM power-level nuance is
+    # recomputed for it. The panel refreshes stats after every approval, and
+    # each approval changes the content hash, so without a settle window a
+    # 60-card build fired 60 reasoning calls on decks that were about to change
+    # again. 0 recomputes immediately (the tests use that).
+    power_nuance_settle_seconds: float = 90.0
+
+    # The chat loop thinks on the first send of a turn (where it decides what
+    # the turn is for and what to hand the pipeline) and on the send after a
+    # batch (where it decides which picks to stand behind); the tool-dispatch
+    # sends between them stay fast. Off makes the first send fast too.
+    chat_plan_thinking: bool = True
+    # How hard those chat sends may think: low | medium | high | empty for the
+    # provider default. The selection stage measured "low" at half the wait
+    # for the same picks; the chat sends are a smaller decision still.
+    chat_reasoning_effort: str = "low"
+
     # Cap on the chat model's response length. DeepSeek generates at ~40 tok/s,
     # so an unbounded final answer of 2000+ tokens takes ~50s purely to write —
     # measured as the dominant cause of slow turns. Bounding output both caps
@@ -66,6 +82,11 @@ class Settings(BaseSettings):
     # Turned off under test so the suite never reaches the network; a test that
     # needs an index builds one explicitly.
     card_index_refresh_on_startup: bool = True
+
+    # Commander Spellbook's variant export, the source of the local combo
+    # table. Blank disables combo detection entirely. Refreshed weekly in the
+    # same background thread as the card index.
+    combo_source_url: str = "https://json.commanderspellbook.com/variants.json"
 
     edhrec_cache_dir: str = "cache/edhrec"
     edhrec_cache_ttl_hours: int = 24
@@ -94,6 +115,10 @@ class Settings(BaseSettings):
     #   "pcloud" — upload via the pCloud API (needs pcloud_auth_token).
     backup_mode: str = "folder"
     backup_keep: int = 10
+    # Hours between periodic snapshots after the startup one. 0 keeps only the
+    # startup snapshot, which is enough for a laptop that restarts daily and
+    # not for a container that runs for weeks.
+    backup_interval_hours: float = 24.0
 
     # folder mode: destination directory for snapshots (a synced folder).
     # Empty disables folder mode even if selected.

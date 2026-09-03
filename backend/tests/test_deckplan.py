@@ -13,8 +13,6 @@ import pytest
 
 from app.deckplan import (
     DEFAULT_TARGETS,
-    DeckPlan,
-    RoleGap,
     build_plan,
     count_roles,
     render_card_rationale,
@@ -383,9 +381,9 @@ def test_missing_score_does_not_break_the_change():
 # 33-35 at +1.0, and 8 removal scores +0.5 where 10 earns +1.0.
 
 
-import pytest as _pytest
+import pytest as _pytest  # noqa: E402 - section import
 
-from app.deckplan import DEFAULT_POWER, TARGETS_BY_POWER, targets_for_power
+from app.deckplan import DEFAULT_POWER, TARGETS_BY_POWER, targets_for_power  # noqa: E402 - section import
 
 
 @_pytest.mark.parametrize("level", sorted(TARGETS_BY_POWER))
@@ -394,7 +392,7 @@ def test_targets_actually_score_their_power_level(level):
 
     This is the test that would have caught the original mismatch.
     """
-    from app.tools.deck_tools import _estimate_power_level
+    from app.tools.deck_stats import _estimate_power_level
 
     t = TARGETS_BY_POWER[level]
     scored, factors = _estimate_power_level(
@@ -410,7 +408,7 @@ def test_power_seven_targets_reach_bracket_three():
     """Bracket 3 without a Game Changer needs mv <= 2.5, ramp >= 10, and
     interaction >= 10. The old 8-removal target missed that by two cards, so a
     "Bracket 3 / power 7" request could hit neither."""
-    from app.tools.deck_tools import _estimate_bracket
+    from app.tools.deck_stats import _estimate_bracket
 
     t = TARGETS_BY_POWER[7]
     bracket, _ = _estimate_bracket(
@@ -491,7 +489,7 @@ def test_cannot_propose_a_card_already_in_the_deck(tmp_path):
     from sqlmodel import Session
 
     from app.db import repository as repo
-    from app.tools.deck_tools import propose_deck_changes
+    from app.tools.proposals import propose_deck_changes
 
     engine = _proposing_engine(tmp_path, "dupe.db")
     with Session(engine) as session:
@@ -526,7 +524,7 @@ def test_basic_lands_can_still_stack(tmp_path):
     from sqlmodel import Session
 
     from app.db import repository as repo
-    from app.tools.deck_tools import propose_deck_changes
+    from app.tools.proposals import propose_deck_changes
 
     engine = _proposing_engine(tmp_path, "basics.db")
     with Session(engine) as session:
@@ -551,3 +549,77 @@ def test_basic_lands_can_still_stack(tmp_path):
                 conversation_id=convo.id,
             )
     assert again["proposals"]
+
+
+def test_a_bad_change_sinks_the_whole_batch_not_half_of_it(tmp_path):
+    """Proposals used to commit one at a time, so a banned card in position
+    three left two pending rows the engine never learned about."""
+    from unittest.mock import patch
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.tools.proposals import propose_deck_changes
+
+    engine = _proposing_engine(tmp_path, "atomic.db")
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="T", format="commander")
+        convo = repo.create_conversation(session)
+        with patch("app.tools.deck_tools.get_scryfall_client") as client:
+            client.return_value.named.side_effect = lambda n, **k: {"name": n}
+            with pytest.raises(ValueError, match="banned"):
+                propose_deck_changes(
+                    session, deck.id, "b",
+                    [
+                        {"action": "add", "card_name": "Sol Ring", "reasoning": "x"},
+                        {"action": "add", "card_name": "Arcane Signet", "reasoning": "x"},
+                        {"action": "add", "card_name": "Mana Crypt", "reasoning": "x"},
+                    ],
+                    conversation_id=convo.id,
+                )
+        assert repo.list_proposals(session, convo.id) == []
+
+
+def test_setting_a_commander_already_in_the_list_keeps_one_copy(tmp_path):
+    """The upsert adds an explicit quantity to an existing stack, which is
+    right for a merge import and wrong for a commander: a decklist that named
+    its commander plus an approved set_commander produced two copies."""
+    from unittest.mock import patch
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.tools.deck_tools import deck_set_commander
+
+    engine = _proposing_engine(tmp_path, "cmdr.db")
+    with Session(engine) as session:
+        deck = repo.create_deck(session, name="T", format="commander")
+        repo.add_deck_card(session, deck.id, "Korvold, Fae-Cursed King", quantity=1)
+        with patch("app.tools.deck_tools.get_scryfall_client") as client, \
+             patch("app.tools.deck_tools.get_tags_for_card", return_value=[]):
+            client.return_value.named.return_value = {
+                "name": "Korvold, Fae-Cursed King", "cmc": 5.0,
+                "color_identity": ["B", "R", "G"], "oracle_id": "o-korvold",
+                "type_line": "Legendary Creature — Dragon Noble", "oracle_text": "",
+            }
+            snapshot = deck_set_commander(session, deck.id, "Korvold, Fae-Cursed King")
+
+    korvold = next(c for c in snapshot["cards"] if c["name"] == "Korvold, Fae-Cursed King")
+    assert korvold["quantity"] == 1
+    assert snapshot["total_cards"] == 1
+
+
+def test_price_ceiling_prefers_the_deck_then_the_preference():
+    from app.deckplan import price_ceiling
+
+    assert price_ceiling(12.0, "budget") == 12.0
+    assert price_ceiling(None, "budget") == 5.0
+    assert price_ceiling(None, "mid") == 25.0
+    assert price_ceiling(None, "unlimited") is None
+    assert price_ceiling(None, None) is None
+    assert price_ceiling(0, "unlimited") is None
+
+
+def test_plan_renders_the_budget_line():
+    text = render_plan(build_plan(_snapshot([], max_card_price=8)))
+    assert "$8.00" in text

@@ -15,7 +15,7 @@ from sqlmodel import Session
 
 from app.knowledge.store import search_knowledge
 from app.knowledge.tag_lookup import get_tags_for_card
-from app.tools import deck_tools
+from app.tools import deck_tools, proposals
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
 from app.tools.scryfall_client import ScryfallError, get_scryfall_client
 
@@ -65,9 +65,30 @@ def _scryfall_search(query: str, limit: int = 10) -> list[dict]:
     return get_scryfall_client().search(query, limit=limit)
 
 
+def _attach_rulings(cards: list[dict]) -> None:
+    """Add each card's rulings from the local index, in place.
+
+    Rulings are the grounding for "does X work with Y", which the model
+    otherwise answers from memory. Absent when the index has none.
+    """
+    try:
+        from app.cards import store as card_store
+
+        by_id = card_store.rulings_for_many(
+            [c.get("oracle_id") for c in cards if c.get("oracle_id")]
+        )
+    except Exception:  # noqa: BLE001 - the index is optional
+        by_id = {}
+    for c in cards:
+        rulings = by_id.get(c.get("oracle_id"))
+        if rulings:
+            c["rulings"] = rulings
+
+
 def _scryfall_card_by_name(name: str, fuzzy: bool = True) -> dict:
     result = get_scryfall_client().named(name, fuzzy=fuzzy)
     result["tags"] = get_tags_for_card(result.get("oracle_id"))
+    _attach_rulings([result])
     return result
 
 
@@ -75,6 +96,7 @@ def _scryfall_card_collection(names: list[str]) -> dict:
     result = get_scryfall_client().collection(names)
     for c in result.get("found", []):
         c["tags"] = get_tags_for_card(c.get("oracle_id"))
+    _attach_rulings(result.get("found", []))
     return result
 
 
@@ -174,9 +196,53 @@ def _edhrec_card_synergy(card_name: str, commander_name: str) -> dict | None:
     return get_edhrec_client().card_synergy(card_name, commander_name)
 
 
+# Fields the model needs to reason about a search hit. The index row carries
+# more (image, rank, rarity), which is noise in a tool result.
+_SEARCH_FIELDS = (
+    "name", "mana_cost", "cmc", "type_line", "oracle_text", "color_identity",
+    "legal_commander", "keywords", "power", "toughness",
+)
+
+
+def _search_card_index(
+    query: str, limit: int = 10, color_identity: str | None = None
+) -> dict:
+    """Full-text search over the local card index.
+
+    Scryfall's API is the right tool for its query language; this is for the
+    quick "what cards say X" lookups the model makes several times a turn,
+    which the index answers instantly, offline, and without a rate limit.
+    """
+    from app.cards import schema as card_schema
+    from app.cards import store as card_store
+
+    if card_schema.card_count() == 0:
+        return {
+            "cards": [],
+            "note": "The local card index has not been built yet; use scryfall_search.",
+        }
+    limit = max(1, min(int(limit or 10), 50))
+    hits = card_store.search_text(query, limit=limit, identity=color_identity)
+    oracle_ids = [c["oracle_id"] for c in hits if c.get("oracle_id")]
+    tags = card_store.tags_for_many(oracle_ids)
+    cards = []
+    for hit in hits:
+        card = {k: hit.get(k) for k in _SEARCH_FIELDS}
+        card["oracle_id"] = hit.get("oracle_id")
+        card["tags"] = sorted(tags.get(hit.get("oracle_id"), set()))
+        cards.append(card)
+    # Rulings on the top few only: a wide search is browsing, not a ruling
+    # question, and fifty cards' rulings would swamp the result.
+    _attach_rulings(cards[:5])
+    for card in cards:
+        card.pop("oracle_id", None)
+    return {"cards": cards, "count": len(cards)}
+
+
 # Tools that don't need DB access (no `session` arg injected).
 STATELESS_TOOLS: dict[str, Callable[..., Any]] = {
     "scryfall_search": _scryfall_search,
+    "search_card_index": _search_card_index,
     "scryfall_card_by_name": _scryfall_card_by_name,
     "scryfall_card_collection": _scryfall_card_collection,
     "edhrec_commander_recs": _edhrec_commander_recs,
@@ -192,9 +258,14 @@ SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "deck_set_commander": deck_tools.deck_set_commander,
     "deck_update_notes": deck_tools.deck_update_notes,
     "deck_set_plan": deck_tools.deck_set_plan,
-    "propose_deck_changes": deck_tools.propose_deck_changes,
-    "withdraw_pending_proposals": deck_tools.withdraw_pending_proposals,
+    "propose_deck_changes": proposals.propose_deck_changes,
+    "withdraw_pending_proposals": proposals.withdraw_pending_proposals,
 }
+
+
+# The prompt asks for batches of three to six; a default of five leaves the
+# model trimming one rather than four.
+_DEFAULT_SUGGEST_COUNT = 5
 
 
 def _suggest_cards(
@@ -202,8 +273,10 @@ def _suggest_cards(
     provider: Any,
     deck_id: int,
     intent: str,
+    count: int | None = None,
     conversation_id: int | None = None,
     message_id: int | None = None,
+    player_message: str | None = None,
 ) -> dict:
     """Run the retrieval pipeline and return its proposal batch.
 
@@ -213,9 +286,15 @@ def _suggest_cards(
     proposal streaming needs no special case."""
     from app.pipeline.service import build_suggestions
 
+    try:
+        picks = int(count) if count is not None else _DEFAULT_SUGGEST_COUNT
+    except (TypeError, ValueError):
+        picks = _DEFAULT_SUGGEST_COUNT
+    picks = max(1, min(picks, 10))
     result = build_suggestions(
         session, deck_id, intent, provider,
         conversation_id=conversation_id, message_id=message_id,
+        max_picks=picks, player_message=player_message,
     )
     return {"ok": True, "summary": result.summary, "proposals": result.proposals}
 

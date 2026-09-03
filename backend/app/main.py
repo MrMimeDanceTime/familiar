@@ -9,8 +9,8 @@ from starlette.responses import Response
 
 from sqlmodel import Session
 
-from app.api import chat, conversations, decks, preferences
-from app.backup import run_startup_backup
+from app.api import chat, conversations, decks, knowledge, preferences
+from app.backup import run_startup_backup, start_periodic_backup
 from app.cards import importer as card_importer
 from app.cards import schema as card_schema
 from app.config import settings
@@ -75,6 +75,12 @@ def _refresh_card_index() -> None:
             card_importer.refresh_if_stale()
         except Exception:  # noqa: BLE001
             logger.exception("Card index refresh failed; continuing with existing index")
+        try:
+            from app.cards import combos
+
+            combos.refresh_if_stale()
+        except Exception:  # noqa: BLE001
+            logger.exception("Combo refresh failed; continuing without combos")
 
     threading.Thread(target=_run, name="card-index-refresh", daemon=True).start()
 
@@ -89,8 +95,11 @@ async def lifespan(app: FastAPI):
     # so it captures the prior session even after a hard crash; fully guarded
     # so a backup failure never blocks the app from serving.
     run_startup_backup()
+    periodic = start_periodic_backup()
     _reconcile_turns()
     yield
+    if periodic is not None:
+        periodic[1].set()
 
 
 app = FastAPI(title="Familiar", lifespan=lifespan)
@@ -106,6 +115,7 @@ app.include_router(chat.router)
 app.include_router(decks.router)
 app.include_router(conversations.router)
 app.include_router(preferences.router)
+app.include_router(knowledge.router)
 
 FRONTEND_DIST = settings.frontend_dist
 if FRONTEND_DIST.is_dir():

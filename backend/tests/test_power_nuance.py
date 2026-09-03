@@ -4,7 +4,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.db import repository as repo
-from app.tools import deck_tools
+from app.tools import deck_stats
 from app.tools.power_nuance import _quantize, compute_nuance, deck_content_hash
 
 
@@ -102,8 +102,8 @@ def test_nuance_computed_once_then_cached(session):
     deck = _seed_deck(session)
     provider = FakeProvider({"adjustment": 1.0, "reason": "tight combo"})
 
-    s1 = deck_tools.compute_deck_stats(session, deck.id, provider)
-    s2 = deck_tools.compute_deck_stats(session, deck.id, provider)
+    s1 = deck_stats.compute_deck_stats(session, deck.id, provider)
+    s2 = deck_stats.compute_deck_stats(session, deck.id, provider)
 
     assert provider.calls == 1  # second read hit the cache
     assert s1["power_nuance_adj"] == 1.0
@@ -116,13 +116,13 @@ def test_half_point_adjustment_is_preserved_not_rounded(session):
     # The whole point of ±0.5 granularity: a half-point nuance must show as a
     # .5 final score, not get rounded away (and not hit banker's rounding).
     deck = _seed_deck(session)
-    base = deck_tools.compute_deck_stats(session, deck.id, None)["power_level_base"]
+    deck_stats.compute_deck_stats(session, deck.id, None)
 
     for adj in (0.5, -0.5):
         # fresh deck each time so the cache doesn't reuse a prior adj
         d = _seed_deck(session)
         provider = FakeProvider({"adjustment": adj, "reason": "mild"})
-        stats = deck_tools.compute_deck_stats(session, d.id, provider)
+        stats = deck_stats.compute_deck_stats(session, d.id, provider)
         expected = min(10.0, max(1.0, stats["power_level_base"] + adj))
         assert stats["power_level"] == expected
         assert stats["power_level"] % 1 == 0.5  # genuinely a half-point
@@ -133,29 +133,29 @@ def test_nuanced_score_clamped_to_1_10(session):
     # a +1.0 on an already-high base must not exceed 10; force a high base is hard
     # here, so just assert the clamp math directly via a low base + negative adj
     provider = FakeProvider({"adjustment": -1.0, "reason": "weak"})
-    stats = deck_tools.compute_deck_stats(session, deck.id, provider)
+    stats = deck_stats.compute_deck_stats(session, deck.id, provider)
     assert 1.0 <= stats["power_level"] <= 10.0
 
 
 def test_nuance_recomputes_after_card_change(session):
     deck = _seed_deck(session)
     provider = FakeProvider({"adjustment": 0.5, "reason": "x"})
-    deck_tools.compute_deck_stats(session, deck.id, provider)
+    deck_stats.compute_deck_stats(session, deck.id, provider)
     assert provider.calls == 1
 
     repo.add_deck_card(session, deck.id, "Lightning Bolt", quantity=1,
                        color_identity="R", type_line="Instant", mana_value=1)
-    deck_tools.compute_deck_stats(session, deck.id, provider)
+    deck_stats.compute_deck_stats(session, deck.id, provider)
     assert provider.calls == 2  # content hash changed -> recompute
 
 
 def test_no_provider_uses_base_but_reuses_fresh_cache(session):
     deck = _seed_deck(session)
     provider = FakeProvider({"adjustment": 1.0, "reason": "cached one"})
-    deck_tools.compute_deck_stats(session, deck.id, provider)  # populate cache
+    deck_stats.compute_deck_stats(session, deck.id, provider)  # populate cache
 
     # a providerless read must not call an LLM, but should reuse the fresh cache
-    stats = deck_tools.compute_deck_stats(session, deck.id, None)
+    stats = deck_stats.compute_deck_stats(session, deck.id, None)
     assert provider.calls == 1
     assert stats["power_nuance_adj"] == 1.0
     assert stats["power_nuance_reason"] == "cached one"
@@ -163,7 +163,7 @@ def test_no_provider_uses_base_but_reuses_fresh_cache(session):
 
 def test_no_provider_no_cache_returns_base_only(session):
     deck = _seed_deck(session)
-    stats = deck_tools.compute_deck_stats(session, deck.id, None)
+    stats = deck_stats.compute_deck_stats(session, deck.id, None)
     assert stats["power_nuance_adj"] == 0.0
     assert stats["power_level"] == stats["power_level_base"]
 
@@ -174,7 +174,7 @@ def test_empty_deck_stats_include_nuance_keys(session):
     deck = repo.create_deck(session, format="commander")
     provider = FakeProvider({"adjustment": 1.0, "reason": "should not be called"})
 
-    stats = deck_tools.compute_deck_stats(session, deck.id, provider)
+    stats = deck_stats.compute_deck_stats(session, deck.id, provider)
 
     assert stats["total_cards"] == 0
     assert stats["power_level"] == 1
@@ -189,6 +189,33 @@ def test_stats_always_expose_the_nuance_key_contract(session):
     # consumer never has to guard for their absence.
     required = {"power_level", "power_level_base", "power_nuance_adj", "power_nuance_reason"}
     empty = repo.create_deck(session, format="commander")
-    assert required <= set(deck_tools.compute_deck_stats(session, empty.id, None))
+    assert required <= set(deck_stats.compute_deck_stats(session, empty.id, None))
     full = _seed_deck(session)
-    assert required <= set(deck_tools.compute_deck_stats(session, full.id, None))
+    assert required <= set(deck_stats.compute_deck_stats(session, full.id, None))
+
+
+def test_nuance_waits_for_the_deck_to_settle(session, monkeypatch):
+    """Every approval used to fire a reasoning call on a deck about to change
+    again. With a settle window, a freshly-changed deck returns the base score
+    marked pending and makes no LLM call."""
+    from unittest.mock import MagicMock
+
+    from app.config import settings
+
+    deck = _seed_deck(session)
+    monkeypatch.setattr(settings, "power_nuance_settle_seconds", 300.0)
+    provider = MagicMock()
+    provider.complete_json.return_value = '{"adjustment": 1.0, "reason": "x"}'
+
+    stats = deck_stats.compute_deck_stats(session, deck.id, provider)
+
+    assert stats["power_nuance_pending"] is True
+    assert stats["power_level"] == stats["power_level_base"]
+    provider.complete_json.assert_not_called()
+
+    # Once the window has passed, it computes on the fast model and caches.
+    monkeypatch.setattr(settings, "power_nuance_settle_seconds", 0.0)
+    stats = deck_stats.compute_deck_stats(session, deck.id, provider)
+    assert stats["power_nuance_pending"] is False
+    assert stats["power_nuance_adj"] == 1.0
+    assert provider.complete_json.call_args.kwargs["model"] == settings.deepseek_model_fast

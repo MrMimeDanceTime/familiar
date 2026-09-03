@@ -66,7 +66,7 @@ Pick at most {max_picks} cards. "cuts" may be empty. Nothing outside the JSON ob
 
 def build_prompt(
     pool: list[ShapedCard], user_intent: str, *, max_picks: int = 10,
-    deck_context: str = "",
+    deck_context: str = "", player_message: str | None = None,
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the stage-4 call. The pool is
     rendered by the shaping layer so this stage and the golden tests see the same
@@ -76,7 +76,12 @@ def build_prompt(
     system = _SYSTEM_PROMPT.format(max_picks=max_picks)
     block = render_pool(pool)
     ctx = f"{deck_context.strip()}\n\n" if deck_context.strip() else ""
-    user = f"{ctx}Player intent: {user_intent}\n\nCandidate pool:\n{block}"
+    # The intent is the chat model's distillation; the player's own message
+    # keeps the constraints that distillation drops ("cheap", "no green",
+    # "something weird"). Capped so a pasted decklist cannot swamp the pool.
+    words = " ".join((player_message or "").split())
+    said = f"Player's own words: {words[:600]}\n" if words else ""
+    user = f"{ctx}Player intent: {user_intent}\n{said}\nCandidate pool:\n{block}"
     return system, user
 
 
@@ -159,6 +164,7 @@ def select(
     thinking: bool = True,
     deck_context: str = "",
     reasoning_effort: str | None = None,
+    player_message: str | None = None,
 ) -> Selection:
     """Run stage 4: prompt the provider with the curated pool, parse+repair its
     JSON into a validated Selection.
@@ -174,7 +180,8 @@ def select(
     measured no faster. "low" roughly halves the wait for picks that graded the
     same."""
     system, user = build_prompt(
-        pool, user_intent, max_picks=max_picks, deck_context=deck_context
+        pool, user_intent, max_picks=max_picks, deck_context=deck_context,
+        player_message=player_message,
     )
     raw = provider.complete_json(
         system, user, model=model, thinking=thinking,

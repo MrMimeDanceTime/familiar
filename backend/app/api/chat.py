@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from app.chat.streaming import error_event, format_sse
+from app.chat.streaming import format_sse
 from app.chat.turn_bus import HEARTBEAT, get_event_bus
 from app.chat.turn_runner import new_turn_id, submit_turn
 from app.db import repository as repo
@@ -67,6 +67,16 @@ def post_chat(body: ChatIn, request: Request):
             if not conversation:
                 raise HTTPException(status_code=404, detail="Conversation not found")
             deck_id = conversation.deck_id
+            # One turn at a time per conversation. Two concurrent turns would
+            # interleave message sequence numbers and replay a corrupted history
+            # on the next call; the UI disables the composer while streaming,
+            # but a refresh or a second tab does not know that.
+            running = repo.running_turn_for_conversation(session, conversation_id)
+            if running is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A turn is already running for this conversation (turn {running.id}).",
+                )
 
         turn_id = new_turn_id()
         repo.create_turn(
@@ -93,7 +103,6 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
         turn = repo.get_turn(session, turn_id, owner_id=owner_id)
         if turn is None:
             raise HTTPException(status_code=404, detail="Turn not found")
-        status, error = turn.status, turn.error
 
     bus = get_event_bus()
 
@@ -123,7 +132,7 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
         with Session(get_engine()) as session:
             final = repo.get_turn(session, turn_id, owner_id=owner_id)
         if final is not None and final.status != TURN_RUNNING and final.error:
-            yield error_event(final.error)
+            yield format_sse("error", {"message": final.error})
 
     # no-transform stops a proxy from buffering the stream and defeating SSE.
     return StreamingResponse(
@@ -131,6 +140,23 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/turns/{turn_id}/cancel")
+def cancel_turn(turn_id: str, request: Request):
+    """Stop a running turn at its next checkpoint.
+
+    The engine finishes the turn with whatever it has written so far, so the
+    transcript stays consistent and the player can redirect immediately.
+    """
+    with Session(get_engine()) as session:
+        turn = repo.get_turn(session, turn_id, owner_id=current_owner_id(request))
+        if turn is None:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        if turn.status != TURN_RUNNING:
+            return {"turn_id": turn.id, "status": turn.status, "cancel_requested": False}
+        repo.request_turn_cancel(session, turn_id, owner_id=current_owner_id(request))
+        return {"turn_id": turn.id, "status": turn.status, "cancel_requested": True}
 
 
 @router.get("/turns/{turn_id}")
@@ -145,4 +171,10 @@ def get_turn_status(turn_id: str, request: Request):
             "conversation_id": turn.conversation_id,
             "status": turn.status,
             "error": turn.error,
+            "usage": {
+                "llm_calls": turn.llm_calls,
+                "prompt_tokens": turn.prompt_tokens,
+                "completion_tokens": turn.completion_tokens,
+                "reasoning_tokens": turn.reasoning_tokens,
+            },
         }

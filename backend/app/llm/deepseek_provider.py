@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Iterator
 
 from openai import OpenAI
 
 from app.llm.base import AssistantTurn, ToolCallRequest, ToolResult, ToolSpec
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+
+def _usage_dict(usage: Any) -> dict[str, int]:
+    """Flatten the SDK's usage object. DeepSeek reports reasoning tokens under
+    completion_tokens_details; absent fields count as zero."""
+    if usage is None:
+        return {}
+    details = getattr(usage, "completion_tokens_details", None)
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        "reasoning_tokens": int(getattr(details, "reasoning_tokens", 0) or 0),
+    }
+
+
+def _parse_arguments(raw: str) -> dict[str, Any]:
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {"_parse_error": True, "_raw": raw}
 
 
 def _require_reasoning_content(
@@ -44,7 +64,7 @@ def _require_reasoning_content(
 class DeepSeekProvider:
     def __init__(
         self, api_key: str, model: str, timeout: float | None = None,
-        max_tokens: int | None = None,
+        max_tokens: int | None = None, reasoning_effort: str | None = None,
     ) -> None:
         # Cap the per-request timeout: the SDK default (600s) reads as a total
         # UI freeze when a call stalls. With a timeout the SDK raises instead,
@@ -61,15 +81,30 @@ class DeepSeekProvider:
         # None means no cap. Only send() applies it; complete_json (pipeline)
         # sets its own limits.
         self._max_tokens = max_tokens
+        # Applied to send()/send_stream() calls that think. complete_json takes
+        # its own per-call value because the pipeline stages differ.
+        self._reasoning_effort = reasoning_effort or None
+        # Tokens spent through this instance. The turn runner builds one
+        # provider per turn, so these totals are the turn's cost, including the
+        # pipeline and nuance calls made from inside tools.
+        self.usage: dict[str, int] = {
+            "llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+            "reasoning_tokens": 0,
+        }
 
-    def send(
+    def _record_usage(self, usage: Any) -> None:
+        self.usage["llm_calls"] += 1
+        for key, value in _usage_dict(usage).items():
+            self.usage[key] += value
+
+    def _request_kwargs(
         self,
         system_prompt: str,
         history: list[dict[str, Any]],
         tools: list[ToolSpec],
-        *,
-        thinking: bool = True,
-    ) -> AssistantTurn:
+        thinking: bool,
+        model: str | None = None,
+    ) -> dict[str, Any]:
         openai_tools = [
             {
                 "type": "function",
@@ -97,17 +132,40 @@ class DeepSeekProvider:
         if thinking:
             messages = _require_reasoning_content(messages)
 
+        extra_body: dict[str, Any] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+        if thinking and self._reasoning_effort:
+            extra_body["reasoning_effort"] = self._reasoning_effort
+
+        return {
+            "model": model or self._model,
+            "messages": messages,
+            **max_kwargs,
+            **tool_kwargs,
+            # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
+            # default to non-thinking, so the flag is always sent explicitly.
+            "extra_body": extra_body,
+        }
+
+    def send_stream(
+        self,
+        system_prompt: str,
+        history: list[dict[str, Any]],
+        tools: list[ToolSpec],
+        *,
+        thinking: bool = False,
+        model: str | None = None,
+    ) -> Iterator[str | AssistantTurn]:
+        """Like send(), but yields text as it arrives and the AssistantTurn last.
+
+        The final assistant reply used to land as one block after the whole
+        generation finished — around 25 seconds of silence on a 1000-token
+        answer. Tool-call deltas are accumulated by index and assembled into
+        the same raw message shape send() persists, so replay is unchanged.
+        """
+        kwargs = self._request_kwargs(system_prompt, history, tools, thinking, model)
         try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                **max_kwargs,
-                **tool_kwargs,
-                # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
-                # default to non-thinking. Thinking is slow, so the engine turns it
-                # OFF for intermediate tool-dispatch iterations (mechanical "which
-                # tool next" decisions) and back ON for the final synthesis turn.
-                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+            stream = self._client.chat.completions.create(
+                **kwargs, stream=True, stream_options={"include_usage": True},
             )
         except Exception as exc:
             raise RuntimeError(
@@ -116,13 +174,104 @@ class DeepSeekProvider:
                 f"the next user message. Detail: {exc}"
             ) from exc
 
+        text_parts: list[str] = []
+        # Thinking-mode streams carry the reasoning as its own delta field.
+        # It is never shown, but it is kept on the raw message: DeepSeek
+        # wants the reasoning of a tool-calling assistant message passed back
+        # with the tool results, and the streaming path used to drop it and
+        # rely on the empty-string backfill.
+        reasoning_parts: list[str] = []
+        calls: dict[int, dict[str, str]] = {}
+        finish_reason: str | None = None
+        usage: Any = None
+        try:
+            for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    usage = chunk.usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
+                if delta is None:
+                    continue
+                if getattr(delta, "reasoning_content", None):
+                    reasoning_parts.append(delta.reasoning_content)
+                if getattr(delta, "content", None):
+                    text_parts.append(delta.content)
+                    yield delta.content
+                for tc in getattr(delta, "tool_calls", None) or []:
+                    index = getattr(tc, "index", 0) or 0
+                    entry = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                    if getattr(tc, "id", None):
+                        entry["id"] = tc.id
+                    function = getattr(tc, "function", None)
+                    if function is not None:
+                        if getattr(function, "name", None):
+                            entry["name"] += function.name
+                        if getattr(function, "arguments", None):
+                            entry["arguments"] += function.arguments
+        except Exception as exc:
+            raise RuntimeError(
+                f"DeepSeek stream failed mid-reply. Detail: {exc}"
+            ) from exc
+        self._record_usage(usage)
+
+        text = "".join(text_parts)
+        ordered = [calls[i] for i in sorted(calls)]
+        tool_calls = [
+            ToolCallRequest(
+                id=c["id"], name=c["name"], arguments=_parse_arguments(c["arguments"]),
+            )
+            for c in ordered
+        ]
+        raw: dict[str, Any] = {"role": "assistant"}
+        if reasoning_parts:
+            raw["reasoning_content"] = "".join(reasoning_parts)
+        if text:
+            raw["content"] = text
+        if ordered:
+            raw["tool_calls"] = [
+                {
+                    "id": c["id"],
+                    "type": "function",
+                    "function": {"name": c["name"], "arguments": c["arguments"]},
+                }
+                for c in ordered
+            ]
+        yield AssistantTurn(
+            text=text or None,
+            tool_calls=tool_calls,
+            stop_reason=finish_reason or ("tool_calls" if tool_calls else "stop"),
+            raw_assistant_message=raw,
+        )
+
+    def send(
+        self,
+        system_prompt: str,
+        history: list[dict[str, Any]],
+        tools: list[ToolSpec],
+        *,
+        thinking: bool = True,
+        model: str | None = None,
+    ) -> AssistantTurn:
+        kwargs = self._request_kwargs(system_prompt, history, tools, thinking, model)
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            raise RuntimeError(
+                f"DeepSeek API call failed (provider may have returned "
+                f"malformed JSON or timed out). The engine will retry on "
+                f"the next user message. Detail: {exc}"
+            ) from exc
+
+        self._record_usage(getattr(response, "usage", None))
         message = response.choices[0].message
         tool_calls: list[ToolCallRequest] = []
         for tc in message.tool_calls or []:
-            try:
-                args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
-                args = {"_parse_error": True, "_raw": tc.function.arguments}
+            args = _parse_arguments(tc.function.arguments)
             tool_calls.append(
                 ToolCallRequest(
                     id=tc.id,
@@ -195,6 +344,7 @@ class DeepSeekProvider:
                 f"malformed JSON or timed out). Detail: {exc}"
             ) from exc
 
+        self._record_usage(getattr(response, "usage", None))
         return response.choices[0].message.content or ""
 
     def append_tool_results(

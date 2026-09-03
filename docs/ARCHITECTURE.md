@@ -14,10 +14,9 @@ engine.
 - Backend: FastAPI + SQLModel (SQLite) + a hand-rolled agentic tool-calling
   loop (no LangChain/LangGraph). Python ≥3.10.
 - Frontend: React + TypeScript + Vite, plain CSS (no component library).
-- LLM: provider-neutral abstraction supporting Anthropic (Claude) and
-  DeepSeek. **deepseek-v4-pro (thinking mode) is the default/primary provider** in this
-  deployment, with deepseek-v4-flash available as a per-call fast seam — see
-  [PROVIDERS.md](PROVIDERS.md).
+- LLM: DeepSeek behind a provider-neutral `ChatProvider` protocol.
+  **deepseek-v4-pro runs the chat loop**, with deepseek-v4-flash as a per-call
+  fast seam for the retrieval pipeline — see [PROVIDERS.md](PROVIDERS.md).
 - Data sources: Scryfall REST API (self-throttled httpx client), EDHREC's
   unofficial JSON endpoint (disk-cached, defensively parsed since it's
   undocumented), and Scryfall's Oracle Tags bulk export (disk-cached ~24h)
@@ -26,7 +25,7 @@ engine.
   via SQLite FTS5 (BM25 ranked), seeded on startup and queried as a tool.
 - Deck-platform integrations (Archidekt/Moxfield) behind a provider interface
   for importing external decklists.
-- Best-effort DB backup on startup (synced-folder or pCloud), fully guarded.
+- Best-effort DB backup on startup and on a timer (synced-folder or pCloud), fully guarded.
 
 ## Running locally
 
@@ -54,6 +53,22 @@ Always run the full suite after engine or provider changes — `app/chat/engine.
 and the provider shape contract (see [PROVIDER_SHAPES.md](PROVIDER_SHAPES.md))
 are the highest-risk area in this codebase.
 
+The suite never reaches the network. `tests/conftest.py` turns off the startup
+card-index refresh and pins the oracle-tag lookup to an empty in-memory map;
+tests that need Scryfall or EDHREC patch the client. A test that only passes
+with a cached bulk file sitting in `backend/` is a bug in the test.
+
+Behaviour of the chat loop is measured, not guessed: `tools/behaviour_eval.py`
+replays stored user turns through the live loop against a scratch copy of the
+database and scores rule adherence (see `CLAUDE.md`). Run it before and after
+a prompt change.
+
+The system prompt (`app/chat/prompt.py`) describes the interface the model
+works through and the rules code cannot enforce; rules the engine enforces
+are described as automatic rather than commanded. Two blocks follow the
+deck's phase: the full plan block while no plan is set, the completion
+notecard from 95 cards.
+
 Frontend tests run with vitest from `frontend/`:
 
 ```
@@ -79,14 +94,31 @@ type-checking or by clicking around, and it is where the bugs were.
 backend/app/
   main.py            FastAPI app; startup lifespan (init_db, FTS setup, seed KB, backup); mounts built frontend/dist/ as static files if present
   config.py          pydantic-settings, reads .env from repo root
-  backup.py          best-effort startup DB snapshot -> synced folder or pCloud (guarded, never blocks startup)
+  backup.py          best-effort DB snapshot at startup and on a timer -> synced folder or pCloud (guarded, never blocks startup)
+  deckplan.py        the deck plan: role targets derived from the stated power level, themes, gaps (what the deck still needs)
+  autoincludes.py    format staples the deck is missing (high play rate, no commander-specific synergy), surfaced on every deck read
+  cards/
+    schema.py / importer.py   local Scryfall card index (oracle cards + oracle tags + FTS5), refreshed in a background thread at startup
+    store.py                  read side: name/oracle_id lookups, tag lookups, text search, tag co-occurrence queries
+    cooccurrence.py           derives which oracle tags relate (lift) and which describe colour rather than function
+  brainmap/
+    map.py             score_pool(): runs every layer over a candidate pool and blends the result
+    layers.py          the three-layer model, weights, the off_meta blend, and per-card confidence
+    consensus.py       layer 1: EDHREC play rate + synergy
+    mechanical.py      layer 2: commander tags expanded through co-occurrence, with colour-artifact and generic-tag guards
+    personal.py        layer 3: the player's own approve/deny history, weighted by denial reason
   llm/
     base.py           ChatProvider Protocol + neutral types (AssistantTurn, ToolCallRequest, ToolResult, ToolSpec)
-    anthropic_provider.py / deepseek_provider.py
+    deepseek_provider.py   the only backend (OpenAI-compatible wire shape)
     factory.py        get_provider(name)
   tools/
     scryfall_client.py / edhrec_client.py   external data clients
-    deck_tools.py      deck_* tool implementations (import, stats/bracket/power, proposals)
+    deck_tools.py      deck read, card edits, commander, plan, decklist import (Scryfall-validated)
+    deck_stats.py      compute_deck_stats: curve, roles, bracket, power (+ LLM nuance), price, mana sources, combos; memoised per deck content
+    proposals.py       propose_deck_changes / withdraw_pending_proposals — the only way the model changes a deck
+    card_roles.py      functional roles and display category from Scryfall tags
+    card_lists.py      Game Changers (index-backed, hand list as fallback), banned list, tutors, MLD, fast mana
+    render.py          tool results as compact text for the model's context (JSON fallback)
     schemas.py         JSON-Schema ToolSpec definitions (provider-neutral; tune wording here to fix model misuse)
     dispatch.py         name -> callable registry, catches exceptions into error ToolResults
   knowledge/
@@ -109,20 +141,26 @@ backend/app/
   db/
     models.py / session.py / repository.py   (Conversation, Message, Deck, DeckCard, DeckProposal, UserPreferences)
   chat/
-    engine.py           THE agentic loop — see PROVIDER_SHAPES.md
+    engine.py           THE agentic loop — see PROVIDER_SHAPES.md; a _TurnState holds the turn's rules
+    context.py           what the model sees each turn: deck_state, since_last_turn, player_history
     prompt.py            system prompt (behavior contract, see PRODUCT.md)
-    streaming.py          SSE event formatting
+    streaming.py          the ChatEvent vocabulary the engine yields, and SSE formatting for the API
+    turn_runner.py        runs a turn to completion on a worker thread, writing every event to the durable turn log
+    turn_bus.py           how a reader learns new turn events exist (polling today; the log is the source of truth)
   api/
-    chat.py / conversations.py / decks.py / preferences.py
+    chat.py / conversations.py / decks.py / preferences.py / knowledge.py
 
 frontend/src/
   App.tsx, api/client.ts, api/sse.ts, api/cardImage.ts
   components/  ChatView, MessageBubble, ProposalCard, ToolActivityIndicator,
-               DeckPanel, DeckDetail, DeckCardRow, deckViz, ImportPanel,
-               PreferencesPanel, ConversationSidebar, CardPreview,
-               CardPinContext, PinnedTray, MobileHeader, MobileNav,
-               ErrorBoundary, icons
-  hooks/       useChatStream (SSE lifecycle), useDeck, useTheme
+               DeckPanel, DeckDetail, DeckBreakdown (the "why?" panels),
+               OpeningHand, ExportMenu, DeckCardRow, deckViz, ImportPanel,
+               PreferencesPanel, KnowledgeEditor, ConversationSidebar,
+               MobileViews, CardPreview, CardPinContext, PinnedTray,
+               MobileHeader, MobileNav, ErrorBoundary, icons
+  hooks/       useChatStream (SSE lifecycle), useProposals (batches, approve/deny/undo),
+               useDeckStats (stats + the nuance retry), useDeck, useTheme
+  lib/         exportDecklist (plain / Arena / categories), deckPrompts (quick-start prompts)
   styles/      global.css, fonts.css (self-hosted woff2 under public/fonts/)
   types/api.ts
 ```
@@ -131,11 +169,13 @@ frontend/src/
 
 - **Conversation**: `id, title, deck_id (FK, nullable), created_at, updated_at`
 - **Message**: `id, conversation_id (FK), role, text_content, provider_native (JSON), tool_calls (JSON), tool_results (JSON), sequence, created_at`
-- **Deck**: `id, name, commander, partner_commander, notes, power_level, format, created_at, updated_at`
+- **Deck**: `id, name, commander, partner_commander, notes, power_level, format, created_at, updated_at` plus the cached power nuance (`power_nuance_adj, power_nuance_reason, power_nuance_key`) and the plan (`role_targets` (JSON), `themes` (JSON), `plan_notes, off_meta, max_card_price`) — see `app/deckplan.py`. `updated_at` moves on card edits too; the nuance settle window and the sidebar ordering read it.
 - **DeckCard**: `id, deck_id (FK), card_name, quantity, category, mana_value, color_identity, type_line, oracle_text, oracle_id, tags (JSON), notes, added_at` — `oracle_id`/`tags` feed the functional-role stats (see `tag_lookup.py`)
-- **DeckProposal**: `id, conversation_id (FK), deck_id (FK), message_id, status (pending|approved|denied), action (add|remove|set_commander), card_name, quantity, category, commander_name, reasoning, created_at` — the model never edits a deck directly; it proposes changes the player approves/denies (see `propose_deck_changes` tool and `apply_proposal`/`deny_proposal`)
+- **DeckProposal**: `id, conversation_id (FK), deck_id (FK), message_id, status (pending|approved|denied), action (add|remove|set_commander), card_name, quantity, category, commander_name, reasoning, scores (JSON), denial_reason, price_usd, created_at` — the model never edits a deck directly; it proposes changes the player approves/denies (see `propose_deck_changes` tool and `apply_proposal`/`deny_proposal`). `scores` is the brain map's verdict at proposal time; `denial_reason` feeds the personal scoring layer. A batch is written atomically: a change that fails validation writes nothing.
+- **Turn**: `id (uuid hex), conversation_id (FK), owner_id, status (running|done|error), error, llm_calls, prompt_tokens, completion_tokens, reasoning_tokens, created_at, updated_at` — one execution of the chat loop, independent of any HTTP connection, with what it cost. Only one turn may be running per conversation (`POST /api/chat` returns 409 otherwise).
+- **TurnEvent**: `id, turn_id (FK), seq (per-turn, unique with turn_id), event, data (JSON), created_at` — the replay buffer clients tail from a cursor; purged for terminal turns older than a day.
 - **UserPreferences**: single row (`id=1`): `preferred_bracket, preferred_power, budget, rule0_notes, build_preferences` — surfaced in the system prompt so advice respects the player's standing preferences
-- **KnowledgeEntry** (+ `knowledge_fts` FTS5 mirror): `id, title, body, category, format` — seeded on startup, searched by the `search_deckbuilding_knowledge` tool
+- **KnowledgeEntry** (+ `knowledge_fts` FTS5 mirror): `id, title, body, category, format, source (seed|user)` — seeded on startup, searched by the `search_deckbuilding_knowledge` tool. The seeder replaces only `seed` rows; `user` rows are the player's own, edited through `/api/knowledge` and the preferences panel, and the prompt tells the model they win over seeded advice.
 
 `Message.provider_native` stores the exact provider-native message dict(s)
 for a turn so a conversation can be replayed byte-identical back into
@@ -153,11 +193,66 @@ Wipe the DB (delete `backend/familiar.db`, let `init_db` recreate it) only
 when the change can't be done in place — a column type change, a table
 restructure, or intentionally dropping data.
 
+## Streaming and cost
+
+The DeepSeek provider streams (`send_stream`); the engine forwards text as it
+arrives and assembles tool-call deltas into the same persisted shape the
+non-streaming path produced. Each provider instance tallies its token usage,
+and since the turn runner builds one provider per turn, the totals land on the
+Turn row and in the log as the turn's cost.
+
+## What the model sees each turn
+
+The engine builds three blocks from the database before the first send
+(`app/chat/context.py`), so the model is not blind between tool calls:
+
+- `<deck_state>` on the system prompt: deck size, commander and identity,
+  the plan and what it still needs, role counts, bracket and power, off-target
+  roles with the knowledge-base entry for each, combos, missing staples, and
+  what is awaiting the player's decision. It replaces the deck read most
+  turns used to open with, and the prompt lines that told the model to read
+  `total_cards` every turn.
+- `<since_last_turn>` prepended to the player's message: what they approved,
+  denied (with their reason), or undid since the last reply. Each proposal
+  remembers the last status it was reported at (`reported_status`), so a
+  decision is reported once. "Done reviewing" sends a plain continue.
+- `<player_history>` once the record has enough decisions: approvals against
+  denials, the denial reasons they reach for, cards passed on repeatedly,
+  and their curve lean.
+
+Tool results reach the model as compact text (`app/tools/render.py`), not
+JSON: a deck read is one line per card, a card lookup carries its text and
+rulings under the name, proposals carry their ids and scores.
+
+Thinking policy in the chat loop: the first send of a turn (what is this
+turn for, what to hand the pipeline) and the send after a batch (which
+picks to stand behind) think, capped at `CHAT_REASONING_EFFORT`; the
+tool-dispatch sends between them do not. `CHAT_PLAN_THINKING=false` makes
+the first send fast too. The selection stage sees the player's own message
+beside the intent the chat model distilled from it.
+
+## Durable turns
+
+`POST /api/chat` starts a turn and returns its id immediately; the turn then
+runs on a worker thread (`app/chat/turn_runner.py`) and appends every event to
+`turn_event`. `GET /api/chat/turns/{id}/events?after=N` replays from a cursor
+and follows live, so reconnect, refresh, and cold load are one code path. A
+single stream is capped at 15 minutes; the client treats a clean close with
+no `done`/`error` event as a cap, checks the turn's status, and resumes.
+
+`POST /api/chat/turns/{id}/cancel` asks a running turn to stop. The engine
+checks the flag before each provider call and every few streamed chunks,
+persists what it has (a partial reply is kept with a note so the transcript
+still alternates and the model sees it was cut off), reveals any proposals
+already created, and ends the turn with `done` and status `cancelled`. The
+composer shows Stop while a turn runs.
+
 ## SSE event vocabulary
 
 `token`, `tool_call`, `deck_proposal`, `deck_updated`, `done`, `error` —
-formatted in `app/chat/streaming.py`, consumed by
-`frontend/src/hooks/useChatStream.ts`. A proposal tool
+yielded by the engine as `ChatEvent` tuples (`app/chat/streaming.py`),
+written to the turn log by the runner, formatted as SSE by the API, and
+consumed by `frontend/src/hooks/useChatStream.ts`. A proposal tool
 (`propose_deck_changes` or `suggest_cards`) creates the pending proposals
 mid-turn, but the engine does NOT stream them immediately. Once any batch is
 created, the model is restricted to `withdraw_pending_proposals` (it can trim
@@ -168,17 +263,31 @@ cards from flashing into the UI and back out, and stops the
 propose→withdraw→propose churn. The player approves/denies through the
 `/api/decks/proposals/{id}/apply|deny` REST endpoints.
 
+One live card batch per deck: when a turn creates its first batch, any card
+proposals still pending from earlier turns are denied with reason
+`superseded` (a pending `set_commander` is left alone). Proposals the model
+trims itself get `withdrawn`. Both reasons are written by the app, not the
+player, and the personal scoring layer weights them at zero.
+
+Context is bounded at send time, not in the record. `bound_history` in
+`engine.py` replays the last four tool results in full and cuts older, large
+ones to a stub before each provider call; `Message.provider_native` keeps
+everything. `deck_get_current` returns oracle text for the commander(s) only
+unless asked for the whole list.
+
 ## Subsystems
 
 ### Tools
 The model can't touch the deck directly. Beyond the Scryfall/EDHREC lookups it
-gets: `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
+gets: `search_card_index` (instant full-text search over the local card
+index), `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
 `deck_get_stats` (computed bracket 1-5, power 1-10, and the factor breakdown),
 `propose_deck_changes` / `withdraw_pending_proposals` (the approval workflow),
 `suggest_cards` (runs the `pipeline/` retrieval flow for open-ended "what should
 I add" requests — see below), and `deck_update_notes`. Specs live in
 `app/tools/schemas.py` — tune the description wording there to correct model
-misuse rather than adding code.
+misuse rather than adding code. Results are rendered as text by
+`app/tools/render.py`; a tool without a renderer falls back to JSON.
 
 ### Retrieval pipeline (`app/pipeline/`)
 See [PIPELINE.md](PIPELINE.md) for the full walkthrough (stages, model/thinking
@@ -193,7 +302,8 @@ returns the same proposal shape as `propose_deck_changes`, so it plugs into the
 existing approval workflow with no new plumbing. It's currently triggered by the
 model electing to call the `suggest_cards` tool (entry-gated, but everything
 after entry is deterministic); a future proactive trigger could grow out of the
-`_deck_grounding` hook in `engine.py`.
+`deck_state` block in `app/chat/context.py`, which already knows what the deck
+is short on.
 
 ### Knowledge base (`app/knowledge/`)
 Deckbuilding best-practice entries in a `knowledge_entries` table mirrored into
@@ -202,6 +312,45 @@ an FTS5 index. `_ensure_fts()` creates the virtual table + sync triggers once;
 runs a BM25-ranked `MATCH` with optional format/category narrowing. Separately,
 `tag_lookup.py` caches Scryfall's Oracle Tags bulk file (~24h) and maps a card's
 `oracle_id` to functional roles (ramp/draw/removal/land) that drive deck stats.
+
+### Budget, prices, and mana sources
+The card index stores each card's USD price (`price_usd`, from the
+oracle-cards bulk file) and what it produces (`produced_mana`). A deck plan
+carries `max_card_price`; without one, the player's standing budget
+preference implies a ceiling (`deckplan.price_ceiling`). The pipeline marks a
+priced candidate over the ceiling illegal for the deck, the pool render shows
+prices, proposals carry theirs, and `compute_deck_stats` reports the deck's
+total price and a per-colour `mana_sources` check (share of sources against
+share of pips, LOW where a colour falls well short).
+
+### Combos (`app/cards/combos.py`)
+Commander Spellbook's variant export is imported into `combos` and
+`combo_cards` tables in the same SQLite file, refreshed weekly in the card
+index's background thread (`COMBO_SOURCE_URL`; blank disables it). Two
+queries use it: `combos_in_deck` feeds the stats panel and raises the
+bracket estimate to at least 3 when a two-card combo is present, and
+`combos_one_short` tells the pipeline which candidates would complete a
+combo with cards already in the deck, rendered in the pool as
+`COMPLETES A COMBO with …`. Variants of more than four cards are dropped at
+import. The parser is defensive and the refresh is guarded: a bad or
+unreachable file keeps the previous rows and logs a warning.
+
+### Power nuance
+The LLM ±1 nuance on the power level runs on the fast model and only once a
+deck has sat unchanged for `POWER_NUANCE_SETTLE_SECONDS`; until then the
+stats-nuance endpoint returns the base score marked pending and the panel
+schedules one retry. Approving ten cards costs one call, not ten.
+
+### Brain map (`app/brainmap/`) and card index (`app/cards/`)
+The retrieval pipeline ranks its candidate pool through three independent
+scoring layers (consensus, mechanical, personal) before capping it; the
+per-layer scores ride on each proposal so the review UI can say why a card was
+suggested. The mechanical layer reads the local card index, a SQLite copy of
+Scryfall's oracle cards, oracle tags, and rulings with derived tag
+co-occurrence, so it works from what a card *does* rather than a hand-written
+theme list. Card lookups attach the rulings so interaction questions are
+answered from the source rather than from memory. Any change
+here must be measured with `tools/coverage_report.py` (see `CLAUDE.md`).
 
 ### Integrations (`app/integrations/`)
 `DeckProvider` ABC with a registry and explicit `supports_fetch`/`supports_push`
@@ -212,8 +361,9 @@ decklist text `import_decklist` already accepts, imports it, then designates
 commanders. Push is scaffolded (returns 501) — no write-capable provider yet.
 
 ### Backup (`app/backup.py`)
-Best-effort DB snapshot on startup via SQLite's online backup API (consistent
-even mid-write). `BACKUP_MODE`: `folder` (default — write into a synced folder
+Best-effort DB snapshot on startup and then every `BACKUP_INTERVAL_HOURS`
+(default 24, 0 disables the timer) from a daemon thread, via SQLite's online
+backup API (consistent even mid-write). `BACKUP_MODE`: `folder` (default — write into a synced folder
 like Drive/OneDrive/Dropbox; no API token), `pcloud` (upload via the pCloud
 API), or `off`. Keeps the newest `BACKUP_KEEP` timestamped snapshots. Every
 step is guarded so a backup failure can never block startup. Configured in

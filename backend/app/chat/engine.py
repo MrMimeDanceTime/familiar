@@ -1,23 +1,26 @@
 """The agentic chat loop: load history, call the provider, dispatch any
-tool calls, persist everything, and yield SSE-ready events as it goes.
+tool calls, persist everything, and yield chat events as it goes.
 
-Per the v1 streaming decision, only the final text-bearing turn streams
-token-by-token (simulated here by yielding the whole text as one token
-event, since neither provider SDK is wired for token-level streaming
-yet — intermediate tool-calling turns are non-streamed request/response
-with a tool_call event for the UI's loading indicator).
+Text streams token-by-token whenever the provider can stream (DeepSeek
+does); a tool-calling iteration still emits a tool_call event for the UI's
+loading indicator, and any text the model wrote alongside the call streams
+too.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Iterator
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterator
 
 from sqlmodel import Session
 
+from app.chat import context
+from app.config import settings
 from app.chat.prompt import build_system_prompt
 from app.chat.streaming import (
+    ChatEvent,
     deck_proposal_event,
     deck_updated_event,
     done_event,
@@ -26,8 +29,9 @@ from app.chat.streaming import (
     tool_call_event,
 )
 from app.db import repository as repo
-from app.llm.base import ChatProvider, ToolResult
+from app.llm.base import AssistantTurn, ChatProvider, ToolResult
 from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
+from app.tools.render import render_result
 from app.tools.schemas import TOOL_SPECS
 
 logger = logging.getLogger("app.chat.engine")
@@ -129,33 +133,199 @@ def _load_history(session: Session, conversation_id: int) -> list[dict[str, Any]
     return history
 
 
-def run_chat_turn(
+# How many of the most recent tool results are replayed in full. Everything
+# older is cut down to a stub before each provider call.
+#
+# Nothing bounded the context before this. Every call replayed the whole
+# conversation, and a deck read carries up to a hundred cards, so a build done
+# in 3-6 card batches (twenty-odd turns, several tool calls each) grew without
+# limit and the oldest, least relevant results cost the most. Four keeps the
+# current reasoning intact — a turn rarely needs more than the last couple of
+# reads — while the transcript in the database stays complete for replay.
+KEEP_RECENT_TOOL_RESULTS = 4
+# A result shorter than this is kept whatever its age: small results are the
+# ones the model actually refers back to (a proposal batch, a stats summary)
+# and eliding them saves nothing worth the confusion.
+KEEP_SHORT_RESULT_CHARS = 600
+# How much of an elided result survives, so the model can still see what the
+# call was and what it returned in outline.
+ELIDED_RESULT_HEAD_CHARS = 200
+
+
+def bound_history(
+    history: list[dict[str, Any]],
+    *,
+    keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+    keep_short: int = KEEP_SHORT_RESULT_CHARS,
+) -> list[dict[str, Any]]:
+    """A copy of the history with old, large tool results cut to a stub.
+
+    Applied at send time only. The persisted ``provider_native`` record is
+    untouched, so a conversation can still be replayed in full, and the stub
+    tells the model the result was elided rather than leaving a hole it might
+    read as an empty result.
+    """
+    tool_positions = [i for i, m in enumerate(history) if m.get("role") == "tool"]
+    to_elide = set(tool_positions[:-keep_recent]) if keep_recent > 0 else set(tool_positions)
+
+    bounded: list[dict[str, Any]] = []
+    for i, message in enumerate(history):
+        content = message.get("content")
+        if i in to_elide and isinstance(content, str) and len(content) > keep_short:
+            head = content[:ELIDED_RESULT_HEAD_CHARS]
+            message = {
+                **message,
+                "content": (
+                    f"{head}… [{len(content) - ELIDED_RESULT_HEAD_CHARS} more characters "
+                    "elided: this is an earlier result. Call the tool again if you need "
+                    "the current data.]"
+                ),
+            }
+        bounded.append(message)
+    return bounded
+
+
+# While a reply streams, the cancel flag is checked once per this many
+# chunks: often enough that Stop feels immediate, rare enough that the check
+# (a small query) never shows in the token rate.
+STOP_CHECK_EVERY_CHUNKS = 8
+
+STOPPED_NOTE = "(stopped here by the player)"
+
+
+@dataclass
+class _TurnState:
+    """Everything one turn carries between iterations.
+
+    The loop used to keep this in six local flags whose interactions were
+    documented in comments beside each one; holding them together makes the
+    rules readable as methods.
+    """
+
+    session: Session
+    provider: ChatProvider
+    conversation_id: int
+    deck_id: int | None
+    user_text: str
+    system_prompt: str
+    history: list[dict[str, Any]]
+    sequence: int
+    should_stop: Callable[[], bool]
+    # Proposals created this turn, anchored to the final message at the end.
+    proposal_ids: list[int] = field(default_factory=list)
+    # The summary of the batch to reveal at turn end. Proposals are revealed
+    # once, settled, so the player never watches a trimmed card flash in and
+    # out.
+    pending_summary: str = ""
+    # Once a batch exists the model is offered only withdraw_pending_proposals,
+    # so it can trim but cannot propose again or research further. That is
+    # what stopped the propose -> withdraw -> propose churn.
+    proposals_emitted: bool = False
+    # A redirect that still applied part of a call (commander, cuts) tells the
+    # model to re-issue the adds through suggest_cards, which must be possible
+    # in the same turn: the restriction is held off for exactly one iteration.
+    pipeline_followup_allowed: bool = False
+    # Text streamed so far, so a stopped turn can persist what it had and a
+    # later send starts a new paragraph rather than running into the last.
+    streamed_parts: list[str] = field(default_factory=list)
+
+    @property
+    def streamed_text(self) -> str:
+        return "".join(self.streamed_parts)
+
+    def tools_for_send(self) -> tuple[list[Any], bool]:
+        """The tool list for the next send and whether it should think.
+
+        Two sends carry judgment: the first, where the model decides what the
+        turn is for and what to hand the pipeline, and the one after a batch
+        lands, where it decides which picks to stand behind and writes the
+        reply. Those think; the tool-dispatch sends between them stay fast.
+        """
+        restrict = self.proposals_emitted and not self.pipeline_followup_allowed
+        self.pipeline_followup_allowed = False
+        first_send = not self.history_has_tool_round
+        thinking = restrict or (first_send and settings.chat_plan_thinking)
+        return (WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS), thinking
+
+    @property
+    def history_has_tool_round(self) -> bool:
+        return self._rounds > 0
+
+    _rounds: int = 0
+
+    def record_batch(self, content: dict[str, Any], *, followup_allowed: bool = False) -> None:
+        """Note a proposal batch a tool created. Only a batch that actually
+        created proposals restricts the turn; an empty one (the pipeline found
+        nothing) must not strand the model."""
+        batch = content.get("proposals") or []
+        for p in batch:
+            if p.get("id") is not None:
+                self.proposal_ids.append(p["id"])
+        if not batch:
+            return
+        self.proposals_emitted = True
+        self.pipeline_followup_allowed = followup_allowed
+        self.pending_summary = content.get("summary") or self.pending_summary
+        _supersede_stale_batches(self.session, self.deck_id, self.proposal_ids)
+
+    def persist_exchange(
+        self, turn: AssistantTurn, results: list[ToolResult],
+        calls_log: list[dict[str, Any]], results_log: list[dict[str, Any]],
+    ) -> None:
+        """Append the tool round to the history and the transcript.
+
+        provider.append_tool_results appends the assistant's tool-call message
+        followed by one or more result-bearing messages (one per call on
+        OpenAI-style providers). Both are persisted in that native shape so
+        replay feeds the same provider exactly. Never assume a count here;
+        see PROVIDER_SHAPES.md.
+        """
+        new_history = self.provider.append_tool_results(self.history, turn, results)
+        appended = new_history[len(self.history):]
+        assistant_native, tool_result_natives = appended[0], appended[1:]
+        # Text written alongside a tool call streamed to the player; keep it
+        # so a reload shows the same transcript the live turn did.
+        repo.add_message(
+            self.session, self.conversation_id, role="assistant", sequence=self.sequence,
+            text_content=turn.text or None, tool_calls=calls_log,
+            provider_native=[assistant_native],
+        )
+        self.sequence += 1
+        repo.add_message(
+            self.session, self.conversation_id, role="tool", sequence=self.sequence,
+            tool_results=results_log, provider_native=tool_result_natives,
+        )
+        self.sequence += 1
+        self.history = new_history
+        self._rounds += 1
+
+
+def _prepare_turn(
     session: Session,
     provider: ChatProvider,
     conversation_id: int,
     user_text: str,
     deck_id: int | None,
-) -> Iterator[str]:
-    """Run one user turn through the agentic loop, yielding formatted SSE strings."""
+    should_stop: Callable[[], bool],
+) -> _TurnState:
+    """Load the history, persist the user's message, and build the prompt."""
     history = _load_history(session, conversation_id)
-    history = provider.append_user_message(history, user_text)
+    # What the player decided since the last reply rides with their message
+    # so the model reads it as part of the turn; the stored transcript keeps
+    # the raw text for the UI and the annotated one for replay.
+    since = context.since_last_turn(session, deck_id)
+    model_text = f"{since}\n\n{user_text}" if since else user_text
+    history = provider.append_user_message(history, model_text)
 
     sequence = repo.next_sequence(session, conversation_id)
     if sequence == 0:
         repo.set_conversation_title(session, conversation_id, _derive_title(user_text))
     repo.add_message(
-        session,
-        conversation_id,
-        role="user",
-        sequence=sequence,
-        text_content=user_text,
-        provider_native=[{"role": "user", "content": user_text}],
+        session, conversation_id, role="user", sequence=sequence,
+        text_content=user_text, provider_native=[{"role": "user", "content": model_text}],
     )
     sequence += 1
 
-    # Determine format for the system prompt. Default to commander if the
-    # deck isn't found or no deck_id is set (shouldn't happen in practice
-    # since every conversation gets a deck at creation time).
     format_key = "commander"
     if deck_id is not None:
         deck = repo.get_deck(session, deck_id)
@@ -163,6 +333,7 @@ def run_chat_turn(
             format_key = deck.format
 
     prefs = repo.get_or_create_preferences(session)
+    state = context.deck_state(session, deck_id)
     system_prompt = build_system_prompt(
         format_key,
         preferred_bracket=prefs.preferred_bracket,
@@ -170,51 +341,147 @@ def run_chat_turn(
         budget=prefs.budget,
         rule0_notes=prefs.rule0_notes,
         build_preferences=prefs.build_preferences,
+        plan_is_set=state.plan_is_set,
+        total_cards=state.total_cards,
     )
-    grounding = _deck_grounding(session, deck_id)
-    if grounding:
-        system_prompt = f"{system_prompt}\n\n{grounding}"
+    # The variable blocks go last so the stable part of the prompt stays a
+    # cacheable prefix across turns.
+    for block in (context.player_history(session), state.block):
+        if block:
+            system_prompt = f"{system_prompt}\n\n{block}"
 
-    # Proposals are created mid-turn (during a tool-call iteration) but the
-    # message the player actually sees for that turn is the *final* assistant
-    # text response ("here's the ramp package"), not the internal, text-less
-    # tool-call message. Accumulate proposal ids across the whole turn and
-    # anchor them to that final message so the UI renders the batch inline
-    # under the bubble that introduced it, rather than pooling at the bottom.
-    proposal_ids_this_turn: list[int] = []
-    # Once a batch of proposals has been emitted this turn, the turn is done
-    # ADDING to the deck — the player reviews via UI buttons. The prompt asks
-    # the model to stop, but it sometimes churns (propose -> withdraw -> propose
-    # ...), burning the iteration budget and dropping the turn. So we ENFORCE a
-    # softer version of "stop": after a batch exists, the model is offered ONLY
-    # withdraw_pending_proposals, so it can trim a card or two it reconsiders but
-    # cannot add another batch or run more research. A pre-proposal withdraw
-    # (clearing a prior turn's stale batch) is untouched.
-    proposals_emitted = False
-    # Deferred reveal: proposals are NOT streamed to the UI the moment they're
-    # created, because the model may still trim some this turn — the player
-    # would otherwise watch cards appear then vanish. Instead we hold the batch
-    # summary and emit ONE deck_proposal event at turn end, carrying only the
-    # proposals still pending after any trims.
-    pending_summary = ""
+    return _TurnState(
+        session=session, provider=provider, conversation_id=conversation_id,
+        deck_id=deck_id, user_text=user_text, system_prompt=system_prompt,
+        history=history, sequence=sequence, should_stop=should_stop,
+    )
+
+
+def _stream_send(
+    state: _TurnState, tools: list[Any], *, thinking: bool
+) -> Iterator[ChatEvent | AssistantTurn]:
+    """One provider call: token events as text arrives, then the turn.
+
+    Yields no turn when the player stops the reply mid-stream; the caller
+    treats that as the signal to finish with what was streamed.
+    """
+    started = time.perf_counter()
+    first_chunk = True
+    chunks = 0
+    for item in _send(
+        state.provider, state.system_prompt, bound_history(state.history), tools,
+        thinking=thinking,
+    ):
+        if isinstance(item, AssistantTurn):
+            names = [c.name for c in item.tool_calls] if item.tool_calls else []
+            logger.info(
+                "chat: send done in %.2fs (%s)", time.perf_counter() - started,
+                f"calls: {', '.join(names)}" if names else "final text",
+            )
+            yield item
+            return
+        if first_chunk and state.streamed_parts:
+            # A paragraph break keeps this send's text from running into the
+            # text streamed alongside an earlier tool call.
+            state.streamed_parts.append("\n\n")
+            yield token_event("\n\n")
+        first_chunk = False
+        state.streamed_parts.append(item)
+        yield token_event(item)
+        chunks += 1
+        if chunks % STOP_CHECK_EVERY_CHUNKS == 0 and state.should_stop():
+            logger.info("chat: turn stopped by the player mid-reply")
+            return
+
+
+def _run_tool(state: _TurnState, call: Any) -> tuple[ToolResult, ChatEvent | None]:
+    """Dispatch one tool call and return its result plus any event to emit."""
+    args = dict(call.arguments)
+    # The conversation's deck is authoritative: deck_id is a required tool
+    # param, so the model always guesses one, and its guess must not decide
+    # which deck a tool touches.
+    if call.name in DECK_SCOPED_TOOLS and state.deck_id is not None:
+        args["deck_id"] = state.deck_id
+    if call.name in PROPOSAL_TOOLS:
+        args["conversation_id"] = state.conversation_id
+    if call.name == "suggest_cards":
+        # The selection stage sees the player's own words, not only the intent
+        # the model distilled from them.
+        args["player_message"] = state.user_text
+
+    # A hand-picked ADD batch is stripped out and redirected to the scoring
+    # pipeline; anything else in the same call (the commander, cuts) still
+    # runs, because refusing the whole call used to discard the commander and
+    # leave the deck unable to proceed.
+    split = _split_handpicked_adds(call.name, args)
+    if split is not None:
+        kept_args, stripped = split
+        redirect = _redirect_to_pipeline(call.name, args) or ""
+        logger.info(
+            "chat: redirected %d hand-picked add(s) to suggest_cards%s", len(stripped),
+            "; running the rest of the call" if kept_args["changes"] else "",
+        )
+        if kept_args["changes"]:
+            kept = dispatch(call.name, kept_args, state.session, provider=state.provider)
+            if kept.ok:
+                state.record_batch(kept.content, followup_allowed=True)
+                if kept.content.get("proposals"):
+                    redirect += (
+                        "\n\nThe non-add changes in this call (commander, cuts) WERE "
+                        "applied — do not re-send them; only re-issue the adds via "
+                        "suggest_cards, which you may call now."
+                    )
+        return ToolResult(call_id=call.id, content=redirect), None
+
+    result = dispatch(call.name, args, state.session, provider=state.provider)
+    content = str(result.content) if not result.ok else render_result(call.name, result.content)
+    event: ChatEvent | None = None
+    if result.ok and call.name in PROPOSAL_TOOLS:
+        # No deck_proposal event here: the batch is revealed once, settled, at
+        # turn end, so a card the model trims never flashes into the UI.
+        state.record_batch(result.content)
+    elif result.ok and call.name in DECK_MUTATION_TOOLS and state.deck_id is not None:
+        event = deck_updated_event(result.content)
+    return ToolResult(call_id=call.id, content=content), event
+
+
+def run_chat_turn(
+    session: Session,
+    provider: ChatProvider,
+    conversation_id: int,
+    user_text: str,
+    deck_id: int | None,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> Iterator[ChatEvent]:
+    """Run one user turn through the agentic loop, yielding chat events.
+
+    ``should_stop`` is polled between provider calls and while a reply
+    streams; when it returns True the turn is finished with whatever it has,
+    persisted so the transcript stays consistent, and the ``done`` event is
+    emitted as usual.
+    """
+    state = _prepare_turn(
+        session, provider, conversation_id, user_text, deck_id, should_stop or (lambda: False),
+    )
     try:
         turn_started = time.perf_counter()
         for iteration in range(MAX_TOOL_ITERATIONS):
-            # Thinking mode roughly doubles per-call latency and the chat loop is
-            # mostly mechanical tool-dispatch plus narration of decisions already
-            # made through the tool sequence — the deep reasoning lives in the
-            # tool choices and in the pipeline/nuance calls (which keep thinking
-            # on). Turning it off here is the biggest lever on perceived turn lag.
-            tools_for_turn = WITHDRAW_ONLY_TOOLS if proposals_emitted else TOOL_SPECS
-            send_started = time.perf_counter()
-            turn = provider.send(system_prompt, history, tools_for_turn, thinking=False)
-            send_dt = time.perf_counter() - send_started
-            tool_names = [c.name for c in turn.tool_calls] if turn.tool_calls else []
-            logger.info(
-                "chat: turn iter %d send done in %.2fs (%s)",
-                iteration, send_dt,
-                f"calls: {', '.join(tool_names)}" if tool_names else "final text",
-            )
+            if state.should_stop():
+                logger.info("chat: turn stopped by the player before iteration %d", iteration)
+                yield from _stop_turn(state)
+                return
+
+            tools, thinking = state.tools_for_send()
+            turn: AssistantTurn | None = None
+            for item in _stream_send(state, tools, thinking=thinking):
+                if isinstance(item, AssistantTurn):
+                    turn = item
+                else:
+                    yield item
+            if turn is None:
+                yield from _stop_turn(state)
+                return
 
             if not turn.tool_calls:
                 logger.info(
@@ -222,156 +489,52 @@ def run_chat_turn(
                     time.perf_counter() - turn_started, iteration + 1,
                 )
                 yield from _finalize_turn(
-                    session, conversation_id, sequence,
-                    turn.text, turn.raw_assistant_message,
-                    proposal_ids_this_turn, pending_summary,
+                    state, turn.text, turn.raw_assistant_message,
+                    already_streamed=bool(state.streamed_parts),
                 )
                 return
 
             results: list[ToolResult] = []
-            tool_calls_log = []
-            tool_results_log = []
+            calls_log: list[dict[str, Any]] = []
+            results_log: list[dict[str, Any]] = []
             for call in turn.tool_calls:
                 yield tool_call_event(call.name, call.arguments)
+                result, event = _run_tool(state, call)
+                results.append(result)
+                calls_log.append({"id": call.id, "name": call.name, "arguments": call.arguments})
+                results_log.append({"call_id": call.id, "content": result.content})
+                if event is not None:
+                    yield event
+            state.persist_exchange(turn, results, calls_log, results_log)
 
-                args = dict(call.arguments)
-                # The conversation's deck is authoritative — override whatever
-                # deck_id the model supplied. deck_id is a required tool param,
-                # so the model always guesses one; deferring to its guess made
-                # deck-scoped tools read the wrong deck (or none).
-                if call.name in DECK_SCOPED_TOOLS and deck_id is not None:
-                    args["deck_id"] = deck_id
-
-                if call.name in PROPOSAL_TOOLS:
-                    args["conversation_id"] = conversation_id
-
-                # A hand-picked ADD batch is stripped out and redirected to the
-                # scoring pipeline; anything else in the same call still runs.
-                # The prompt tells the model to batch set_commander WITH its
-                # opening cards, so refusing the whole call discarded the
-                # commander too and left the deck unable to proceed.
-                split = _split_handpicked_adds(call.name, args)
-                if split is not None:
-                    kept_args, stripped = split
-                    redirect = _redirect_to_pipeline(call.name, args) or ""
-                    logger.info(
-                        "chat: redirected %d hand-picked add(s) to suggest_cards"
-                        "%s", len(stripped),
-                        "; running the rest of the call" if kept_args["changes"] else "",
-                    )
-                    if kept_args["changes"]:
-                        kept_result = dispatch(
-                            call.name, kept_args, session, provider=provider
-                        )
-                        if kept_result.ok:
-                            kept_batch = kept_result.content.get("proposals", [])
-                            for p in kept_batch:
-                                if p.get("id") is not None:
-                                    proposal_ids_this_turn.append(p["id"])
-                            if kept_batch:
-                                proposals_emitted = True
-                                redirect = (
-                                    f"{redirect}\n\nThe non-add changes in this "
-                                    "call (commander, cuts) WERE applied — do not "
-                                    "re-send them; only re-issue the adds via "
-                                    "suggest_cards."
-                                )
-                    results.append(ToolResult(call_id=call.id, content=redirect))
-                    tool_calls_log.append(
-                        {"id": call.id, "name": call.name, "arguments": call.arguments}
-                    )
-                    tool_results_log.append({"call_id": call.id, "content": redirect})
-                    continue
-
-                result = dispatch(call.name, args, session, provider=provider)
-                content = str(result.content) if not result.ok else _serialize(result.content)
-                results.append(ToolResult(call_id=call.id, content=content))
-
-                tool_calls_log.append({"id": call.id, "name": call.name, "arguments": call.arguments})
-                tool_results_log.append({"call_id": call.id, "content": content})
-
-                if result.ok and call.name in PROPOSAL_TOOLS:
-                    batch = result.content.get("proposals", [])
-                    for p in batch:
-                        if p.get("id") is not None:
-                            proposal_ids_this_turn.append(p["id"])
-                    # Only a batch that actually created proposals restricts the
-                    # turn to withdraw-only. An empty batch (e.g. the pipeline
-                    # found nothing) shouldn't strand the model.
-                    if batch:
-                        proposals_emitted = True
-                        pending_summary = result.content.get("summary") or pending_summary
-                    # NB: no deck_proposal event here — the batch is revealed once,
-                    # settled, at turn end (see _settled_proposal_batch). This
-                    # keeps trimmed cards from flashing into the UI and back out.
-                elif result.ok and call.name in DECK_MUTATION_TOOLS and deck_id is not None:
-                    yield deck_updated_event(result.content)
-
-            new_history = provider.append_tool_results(history, turn, results)
-            # provider.append_tool_results appends the assistant's tool-call
-            # message followed by one or more tool-result-bearing messages
-            # (Anthropic bundles all results into a single user message;
-            # OpenAI-style providers emit one tool message per call). Persist
-            # the assistant entry and all result entries in that same native
-            # shape so replay can feed this conversation back into the same
-            # provider exactly.
-            appended = new_history[len(history) :]
-            assistant_native, tool_result_natives = appended[0], appended[1:]
-
-            repo.add_message(
-                session,
-                conversation_id,
-                role="assistant",
-                sequence=sequence,
-                tool_calls=tool_calls_log,
-                provider_native=[assistant_native],
-            )
-            sequence += 1
-            repo.add_message(
-                session,
-                conversation_id,
-                role="tool",
-                sequence=sequence,
-                tool_results=tool_results_log,
-                provider_native=tool_result_natives,
-            )
-            sequence += 1
-
-            history = new_history
-
-        # The loop exhausted its tool-call budget without the model ending on a
-        # text-only turn. Rather than dropping the turn with a bare error, force
-        # one final toolless send: the model must now produce a text response
-        # (it can't call another tool), so it summarizes what it found. This is
-        # what the player expects when the model has effectively finished its
-        # reasoning but kept a trailing tool call attached.
-        #
-        # Thinking stays OFF, matching the rest of the loop. Turning it on here
-        # broke the turn outright: DeepSeek requires every assistant message in
-        # the history to carry `reasoning_content` when a call runs in thinking
-        # mode, and the loop's own messages were produced with thinking off, so
-        # they have none. The wrap-up then 400s with "The `reasoning_content` in
-        # the thinking mode must be passed back to the API" — losing exactly the
-        # turn this fallback exists to rescue.
+        # The loop exhausted its tool-call budget without the model ending on
+        # text. Rather than dropping the turn, force one toolless send: the
+        # model must now write, so it summarises what it found. Thinking stays
+        # off; this send exists to get a reply out.
         logger.warning(
             "chat: hit MAX_TOOL_ITERATIONS (%d) after %.2fs — forcing toolless wrap-up",
             MAX_TOOL_ITERATIONS, time.perf_counter() - turn_started,
         )
-        wrap = provider.send(system_prompt, history, [], thinking=False)
+        wrap: AssistantTurn | None = None
+        streamed_before = len(state.streamed_parts)
+        for item in _stream_send(state, [], thinking=False):
+            if isinstance(item, AssistantTurn):
+                wrap = item
+            else:
+                yield item
+        if wrap is None:
+            yield from _stop_turn(state)
+            return
         yield from _finalize_turn(
-            session, conversation_id, sequence,
-            wrap.text or _MAX_ITER_FALLBACK_TEXT, wrap.raw_assistant_message,
-            proposal_ids_this_turn, pending_summary,
+            state, wrap.text or _MAX_ITER_FALLBACK_TEXT, wrap.raw_assistant_message,
+            already_streamed=len(state.streamed_parts) > streamed_before and bool(wrap.text),
         )
     except Exception as exc:  # noqa: BLE001 - surface to client instead of crashing the stream
         # Reveal any proposals this turn already created before reporting the
-        # error. They are real pending rows in the database, so without this the
-        # player is told something failed while approvable cards sit invisible —
-        # the work is done and unreachable, which reads as data loss.
+        # error. They are real pending rows, so without this the player is
+        # told something failed while approvable cards sit invisible.
         try:
-            settled = _settled_proposal_batch(
-                session, proposal_ids_this_turn, pending_summary
-            )
+            settled = _settled_proposal_batch(session, state.proposal_ids, state.pending_summary)
             if settled["proposals"]:
                 logger.info(
                     "chat: turn failed but revealing %d pending proposal(s)",
@@ -383,113 +546,106 @@ def run_chat_turn(
         yield error_event(str(exc))
 
 
+def _stop_turn(state: _TurnState) -> Iterator[ChatEvent]:
+    """Finish a turn the player stopped.
+
+    Persists an assistant message so the transcript still alternates and the
+    model sees, next turn, that its reply was cut short rather than that it
+    said nothing. Proposals already created are revealed as usual: they are
+    real rows, and hiding them would read as data loss.
+    """
+    partial = state.streamed_text.strip()
+    if partial:
+        ui_text = f"{partial}\n\n{STOPPED_NOTE}"
+        yield token_event(f"\n\n{STOPPED_NOTE}")
+    else:
+        ui_text = STOPPED_NOTE
+        yield token_event(STOPPED_NOTE)
+    model_text = (
+        f"{partial}\n\n[The player stopped this reply here.]" if partial
+        else "[The player stopped this reply before it was written.]"
+    )
+    yield from _finalize_turn(
+        state, ui_text, {"role": "assistant", "content": model_text}, already_streamed=True,
+    )
+
+
+def _supersede_stale_batches(
+    session: Session, deck_id: int | None, keep_ids: list[int]
+) -> None:
+    """Withdraw card proposals left pending by earlier turns once this turn
+    has produced its own batch.
+
+    The prompt asked the model to withdraw a stale batch before proposing a new
+    one, and the UI used to pretend it had. Doing it here makes the rule hold
+    whether or not the model remembers: one live card batch per deck, and a
+    pending commander proposal untouched. Best-effort, never fatal to the turn.
+    """
+    if deck_id is None or not keep_ids:
+        return
+    try:
+        count = repo.supersede_pending_card_proposals(session, deck_id, keep_ids)
+    except Exception:  # noqa: BLE001 - housekeeping must not sink the turn
+        logger.exception("chat: could not supersede stale proposals")
+        return
+    if count:
+        logger.info("chat: superseded %d stale pending proposal(s)", count)
+
+
 _MAX_ITER_FALLBACK_TEXT = (
     "I ran out of research steps before wrapping up. Here's where I got to — "
     "ask me to continue and I'll pick up from here."
 )
 
 
+def _send(
+    provider: ChatProvider,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    tools: list[Any],
+    *,
+    thinking: bool = False,
+) -> Iterator[str | AssistantTurn]:
+    """One provider call, streaming when the provider supports it.
+
+    Yields text chunks as they arrive and the AssistantTurn last. A provider
+    without ``send_stream`` (the test fakes, a future backend) is called
+    through ``send`` and yields only the turn, so the engine treats both the
+    same way.
+    """
+    stream = getattr(provider, "send_stream", None)
+    if stream is None:
+        yield provider.send(system_prompt, history, tools, thinking=thinking)
+        return
+    yield from stream(system_prompt, history, tools, thinking=thinking)
+
+
 def _finalize_turn(
-    session: Session,
-    conversation_id: int,
-    sequence: int,
+    state: _TurnState,
     text: str | None,
     raw_assistant_message: dict[str, Any],
-    proposal_ids_this_turn: list[int],
-    pending_summary: str,
-) -> Iterator[str]:
-    """Emit the final assistant message for a turn: stream its text, persist it,
-    anchor this turn's proposals to it, reveal the settled batch, and close the
-    turn. Shared by the normal (model ended on text) path and the max-iteration
-    wrap-up path so both deliver a real response instead of one erroring out."""
-    if text:
+    *,
+    already_streamed: bool = False,
+) -> Iterator[ChatEvent]:
+    """Emit the final assistant message for a turn: stream its text, persist
+    it, anchor this turn's proposals to it, reveal the settled batch, and close
+    the turn. ``already_streamed`` means the text reached the client as it was
+    generated and must not be sent a second time."""
+    if text and not already_streamed:
         yield token_event(text)
     message = repo.add_message(
-        session,
-        conversation_id,
-        role="assistant",
-        sequence=sequence,
-        text_content=text,
-        provider_native=[raw_assistant_message],
+        state.session, state.conversation_id, role="assistant", sequence=state.sequence,
+        text_content=text, provider_native=[raw_assistant_message],
     )
-    repo.anchor_proposals_to_message(session, proposal_ids_this_turn, message.id)
-    # Now that trims are final, reveal the settled batch: only the proposals from
-    # this turn that survived as pending, anchored to the message just written.
-    # Emitted before `done` so the UI has the batch when the turn closes.
-    settled = _settled_proposal_batch(
-        session, proposal_ids_this_turn, pending_summary
-    )
+    repo.anchor_proposals_to_message(state.session, state.proposal_ids, message.id)
+    # Now that trims are final, reveal the settled batch: only this turn's
+    # proposals still pending, anchored to the message just written. Emitted
+    # before `done` so the UI has the batch when the turn closes.
+    settled = _settled_proposal_batch(state.session, state.proposal_ids, state.pending_summary)
     if settled["proposals"]:
         yield deck_proposal_event(settled)
-    repo.touch_conversation(session, conversation_id)
-    yield done_event(message.id, conversation_id)
-
-
-# Maps a deficiency category from deck stats to (knowledge category, query)
-# used to proactively pull the relevant grounding entry into the turn.
-_DEFICIENCY_KNOWLEDGE = {
-    "lands": ("land-base", "land count formula commander"),
-    "ramp": ("ramp", "ramp package sizing commander"),
-    "draw": ("card-draw", "card draw density commander"),
-    "removal": ("removal", "removal suite composition commander"),
-}
-
-
-def _deck_grounding(session: Session, deck_id: int | None) -> str:
-    """Proactively retrieve knowledge for the attached deck's weak spots.
-
-    Retrieval is otherwise model-elective (it must choose to call the search
-    tool), so a deck with off-target ramp/draw/removal often gets advice from
-    training data instead of the curated knowledge base. When a deck has cards
-    and any deficiency is off-target, pull the matching knowledge entry and the
-    deck's own stat summary into the system prompt so the model reasons from
-    grounded numbers on its first turn. Best-effort: never break the turn.
-    """
-    if deck_id is None:
-        return ""
-    try:
-        from app.knowledge.store import search_knowledge
-        from app.tools.deck_tools import compute_deck_stats
-
-        stats = compute_deck_stats(session, deck_id)
-        if stats.get("total_cards", 0) == 0:
-            return ""
-
-        off_target = [d for d in stats.get("deficiencies", []) if d["status"] != "OK"]
-        if not off_target:
-            return ""
-
-        blocks: list[str] = []
-        seen: set[str] = set()
-        for d in off_target:
-            mapping = _DEFICIENCY_KNOWLEDGE.get(d["category"])
-            if not mapping:
-                continue
-            kb_category, query = mapping
-            if kb_category in seen:
-                continue
-            seen.add(kb_category)
-            hits = search_knowledge(query, top_k=1, format="commander", category=kb_category)
-            if hits:
-                blocks.append(f"- {hits[0]['title']}: {hits[0]['body']}")
-
-        summary = ", ".join(
-            f"{d['category']} {d['count']} ({d['status']} vs {d['target_low']}-{d['target_high']})"
-            for d in off_target
-        )
-        if not blocks:
-            return ""
-        return (
-            "<deck_grounding>\n"
-            "The attached deck has counts outside typical targets: "
-            f"{summary}. Relevant deckbuilding guidance retrieved for you "
-            "(prefer this over training-data assumptions; call deck_get_stats "
-            "for the full breakdown before quoting numbers):\n"
-            + "\n".join(blocks)
-            + "\n</deck_grounding>"
-        )
-    except Exception:  # noqa: BLE001 - grounding is best-effort, never fatal
-        return ""
+    repo.touch_conversation(state.session, state.conversation_id)
+    yield done_event(message.id, state.conversation_id)
 
 
 def _settled_proposal_batch(
@@ -519,14 +675,9 @@ def _settled_proposal_batch(
             # "no scoring data" even when the row carried full scores — the
             # database was right and the wire format was lying.
             "scores": p.scores,
+            "price_usd": p.price_usd,
         })
     return {"ok": True, "summary": summary, "proposals": proposals}
-
-
-def _serialize(value: Any) -> str:
-    import json
-
-    return json.dumps(value)
 
 
 _NAME_SYSTEM_PROMPT = (
@@ -620,10 +771,15 @@ def _generate_deck_name(
     user_prompt = "\n".join(lines)
 
     try:
+        # A six-word name does not need the Pro model reasoning about it.
+        from app.llm.factory import get_fast_model
+
         turn = provider.send(
             system_prompt=_NAME_SYSTEM_PROMPT,
             history=[{"role": "user", "content": user_prompt}],
             tools=[],
+            thinking=False,
+            model=get_fast_model(),
         )
         name = (turn.text or "").strip().strip('"').strip("'")
         for prefix in ("Name: ", "Deck Name: ", "name: "):

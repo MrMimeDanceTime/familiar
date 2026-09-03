@@ -27,6 +27,7 @@ _COLUMN_NAMES = (
     "oracle_id", "name", "mana_cost", "cmc", "type_line", "oracle_text",
     "color_identity", "keywords", "power", "toughness", "loyalty", "rarity",
     "edhrec_rank", "game_changer", "legal_commander", "image_url", "scryfall_uri",
+    "produced_mana", "price_usd",
 )
 
 
@@ -48,13 +49,17 @@ def _row_to_card(row: Any) -> dict[str, Any]:
     (
         oracle_id, name, mana_cost, cmc, type_line, oracle_text, color_identity,
         keywords, power, toughness, loyalty, rarity, edhrec_rank, game_changer,
-        legal_commander, image_url, scryfall_uri,
+        legal_commander, image_url, scryfall_uri, produced_mana, price_usd,
     ) = row
 
     try:
         parsed_keywords = json.loads(keywords) if keywords else []
     except (json.JSONDecodeError, TypeError):
         parsed_keywords = []
+    try:
+        parsed_produced = json.loads(produced_mana) if produced_mana else []
+    except (json.JSONDecodeError, TypeError):
+        parsed_produced = []
 
     return {
         "name": name,
@@ -74,6 +79,8 @@ def _row_to_card(row: Any) -> dict[str, Any]:
         "rarity": rarity,
         "edhrec_rank": edhrec_rank,
         "game_changer": bool(game_changer),
+        "produced_mana": parsed_produced,
+        "price_usd": price_usd,
     }
 
 
@@ -154,6 +161,46 @@ def raw_card(oracle_id: str) -> dict[str, Any] | None:
         return None
 
 
+def rulings_for_many(
+    oracle_ids: list[str], *, per_card: int = 8
+) -> dict[str, list[dict[str, Any]]]:
+    """Rulings per oracle id, newest first, capped per card.
+
+    Empty for a card without rulings or when the table is absent, so a
+    lookup never fails because the rulings import has not run yet.
+    """
+    if not oracle_ids:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    try:
+        for i in range(0, len(oracle_ids), 400):
+            chunk = oracle_ids[i : i + 400]
+            placeholders = ", ".join(f":o{j}" for j in range(len(chunk)))
+            params = {f"o{j}": v for j, v in enumerate(chunk)}
+            sql = f"""
+                SELECT oracle_id, published_at, comment FROM card_rulings
+                WHERE oracle_id IN ({placeholders})
+                ORDER BY published_at DESC
+            """
+            with get_engine().begin() as conn:
+                for oid, published_at, comment in conn.execute(text(sql), params):
+                    bucket = out.setdefault(oid, [])
+                    if len(bucket) < per_card:
+                        bucket.append({"published_at": published_at, "comment": comment})
+    except Exception:  # noqa: BLE001 - rulings are optional
+        return {}
+    return out
+
+
+def game_changer_names() -> list[str]:
+    """Every card Scryfall flags as a Commander Game Changer."""
+    with get_engine().begin() as conn:
+        rows = conn.execute(text(
+            "SELECT name FROM cards WHERE game_changer = 1 AND playable = 1"
+        )).fetchall()
+    return [r[0] for r in rows]
+
+
 def tags_for(oracle_id: str) -> set[str]:
     """Oracle tag slugs for one card."""
     with get_engine().begin() as conn:
@@ -202,6 +249,47 @@ def cards_with_tag(slug: str, *, limit: int = 200, legal_only: bool = True) -> l
     """
     with get_engine().begin() as conn:
         rows = conn.execute(text(sql), {"slug": slug, "limit": limit}).fetchall()
+    return [_row_to_card(r) for r in rows]
+
+
+def cards_matching_slug_rules(
+    exact: frozenset[str] | set[str],
+    prefixes: tuple[str, ...],
+    suffixes: tuple[str, ...],
+    *,
+    limit: int = 200,
+    legal_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Cards carrying any tag that a fine-role rule matches, EDHREC-ordered.
+
+    The role taxonomy matches slugs by exact value, prefix, or suffix; this
+    turns those rules into one query so a retriever can ask for "the cards
+    shaping would label ramp" without enumerating the vocabulary.
+    """
+    clauses: list[str] = []
+    params: dict[str, Any] = {"limit": limit}
+    for i, slug in enumerate(sorted(exact)):
+        clauses.append(f"t.slug = :e{i}")
+        params[f"e{i}"] = slug
+    for i, prefix in enumerate(prefixes):
+        clauses.append(f"t.slug LIKE :p{i}")
+        params[f"p{i}"] = prefix.replace("%", "") + "%"
+    for i, suffix in enumerate(suffixes):
+        clauses.append(f"t.slug LIKE :s{i}")
+        params[f"s{i}"] = "%" + suffix.replace("%", "")
+    if not clauses:
+        return []
+    legal_clause = "AND c.legal_commander = 1" if legal_only else ""
+    sql = f"""
+        SELECT DISTINCT {_columns('c')}
+        FROM cards c
+        JOIN card_tags t ON t.oracle_id = c.oracle_id
+        WHERE ({' OR '.join(clauses)}) AND c.playable = 1 {legal_clause}
+        ORDER BY CASE WHEN c.edhrec_rank IS NULL THEN 1 ELSE 0 END, c.edhrec_rank
+        LIMIT :limit
+    """
+    with get_engine().begin() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
     return [_row_to_card(r) for r in rows]
 
 

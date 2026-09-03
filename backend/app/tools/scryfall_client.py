@@ -16,6 +16,8 @@ import httpx
 SCRYFALL_BASE_URL = "https://api.scryfall.com"
 MIN_REQUEST_INTERVAL = 0.11  # ~9 req/s, safely under the 10 req/s ceiling
 MAX_RETRIES = 3
+# Base of the exponential backoff between connection-error retries.
+RETRY_BACKOFF_SECONDS = 0.5
 
 
 class ScryfallError(Exception):
@@ -54,6 +56,11 @@ def _project_pipeline_card(raw: dict[str, Any]) -> dict[str, Any]:
     existing tool-loop card shape stays byte-for-byte unchanged.
     """
     card = _normalize_card(raw)
+    price = (raw.get("prices") or {}).get("usd")
+    try:
+        price_usd = float(price) if price not in (None, "") else None
+    except (TypeError, ValueError):
+        price_usd = None
     card.update(
         keywords=raw.get("keywords") or [],
         power=raw.get("power"),
@@ -61,6 +68,7 @@ def _project_pipeline_card(raw: dict[str, Any]) -> dict[str, Any]:
         loyalty=raw.get("loyalty"),
         rarity=raw.get("rarity"),
         edhrec_rank=raw.get("edhrec_rank"),
+        price_usd=price_usd,
     )
     return card
 
@@ -101,6 +109,10 @@ class ScryfallClient:
                 response = self._client.request(method, path, **kwargs)
             except httpx.HTTPError as exc:
                 last_error = exc
+                # A connection error is usually momentary; an immediate retry
+                # hits the same condition. Short exponential backoff.
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_BACKOFF_SECONDS * (2 ** attempt))
                 continue
 
             if response.status_code == 404:

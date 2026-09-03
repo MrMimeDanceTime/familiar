@@ -66,7 +66,7 @@ exact shape `propose_deck_changes` returns.
 | 1 spec | `pipeline/spec.py` | Turns intent + colour identity into a few Scryfall queries. The harness **enforces** `id<=<identity>` and `f:commander` on every query (`enforce_query`) regardless of what the model wrote, so legality can't leak. Parse is tolerant (`parse_spec`): coerces/repairs, drops blanks/dupes, caps count. |
 | 2 candidates | `pipeline/candidates.py` | Runs each query via `scryfall.search_pipeline` (EDHREC-ordered, deduped printings), **broadening any query that underfills** (see below), merges keeping the best-ranked first, annotates each card with EDHREC synergy/inclusion where the commander's page has it, sorts by EDHREC rank, caps the pool. EDHREC failure degrades to an empty synergy map — never sinks retrieval. |
 | 3 shape | `pipeline/shaping.py` | Strips the Scryfall object to what stage 4 needs, precomputes `legal_in_deck` (commander-legal, colour identity within the commander's, not banned, not already in the deck) and functional roles, dedupes by `oracle_id`, caps legal-cards-first, and renders the deterministic text block stage 4 reads (`render_pool`), including each card's EDHREC play rate and synergy. |
-| 4 select | `pipeline/selection.py` | The LLM picks from the pool and justifies each pick **against this deck**. Given the commander (with oracle text), current cards by category, and strategy notes. Picks not in the pool, or marked ILLEGAL, are dropped in `parse_selection` (hallucination guard). |
+| 4 select | `pipeline/selection.py` | The LLM picks from the pool and justifies each pick **against this deck**. Given the commander (with oracle text), current cards by category, strategy notes, the plan's still-needs, and the player's own message beside the distilled intent (so "cheap, nothing green" survives the chat model's summary). Picks not in the pool, or marked ILLEGAL, are dropped in `parse_selection` (hallucination guard). |
 | 5 validate | `pipeline/validate.py` | Turns the picks into pending `DeckProposal` rows by reusing `propose_deck_changes` — the same approval gate the conversational path uses. A pick that fails validation never becomes a proposal. |
 
 `build_suggestions` (`pipeline/service.py`) wires them and returns a
@@ -253,3 +253,15 @@ churn that used to burn the 12-iteration budget and drop the turn.
 Fakes pin `model`/`thinking` so no network is hit. The golden test asserts the
 exact stage-4 text block; changing `render_pool` will (intentionally) require
 updating the fixture.
+
+## Local first (September 2026)
+
+Before stage 1 runs, `pipeline/local_retrieval.py` builds a pool from the
+local card index: the intent's words are matched to the fine roles in
+`roles.py` and each role's slug rules become one tag query, and the intent's
+remaining content words are searched in name, rules text, and type line.
+Colour identity is applied there. When that pool reaches `local_pool_min`
+(25) the model's query-planning call and the Scryfall API queries are skipped
+entirely; EDHREC's recommendations still lead the pool. A thin local pool
+falls back to stage 1 as before. `debug.local_pool` and `debug.stage1_skipped`
+say which path a suggestion took.

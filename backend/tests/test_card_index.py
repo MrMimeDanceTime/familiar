@@ -52,6 +52,7 @@ CARD_RECORDS = [
         "object": "card",
         "oracle_id": "oid-sol-ring",
         "name": "Sol Ring",
+        "prices": {"usd": "1.75", "usd_foil": "12.00"},
         "mana_cost": "{1}",
         "cmc": 1.0,
         "type_line": "Artifact",
@@ -156,6 +157,16 @@ TAG_RECORDS = [
 ]
 
 
+RULING_RECORDS = [
+    {"object": "ruling", "oracle_id": "oid-sol-ring", "source": "wotc",
+     "published_at": "2004-10-04", "comment": "Sol Ring's ability adds two colorless mana."},
+    {"object": "ruling", "oracle_id": "oid-sol-ring", "source": "scryfall",
+     "published_at": "2021-01-01", "comment": "A newer ruling."},
+    # Malformed: no comment. Skipped, not fatal.
+    {"object": "ruling", "oracle_id": "oid-sol-ring", "published_at": "2022-01-01"},
+]
+
+
 def _gzipped_jsonl(records) -> bytes:
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
@@ -201,9 +212,19 @@ def imported(card_db):
         respx.get("https://data.scryfall.io/tags.jsonl.gz").mock(
             return_value=httpx.Response(200, content=_gzipped_jsonl(TAG_RECORDS))
         )
+        respx.get("https://api.scryfall.com/bulk-data/rulings").mock(
+            return_value=httpx.Response(200, json={
+                "jsonl_download_uri": "https://data.scryfall.io/rulings.jsonl.gz",
+                "updated_at": "2026-08-15T09:00:00.000+00:00",
+            })
+        )
+        respx.get("https://data.scryfall.io/rulings.jsonl.gz").mock(
+            return_value=httpx.Response(200, content=_gzipped_jsonl(RULING_RECORDS))
+        )
         client = httpx.Client()
         importer.import_cards(client)
         importer.import_tags(client)
+        importer.import_rulings(client)
         client.close()
     yield
 
@@ -449,3 +470,82 @@ def test_pipeline_tag_lookup_falls_back_when_index_empty(card_db, monkeypatch):
     )
     tags = service._tags_for_pool([{"oracle_id": "oid-x"}])
     assert tags["oid-x"] == {"ramp"}
+
+
+def test_get_tags_for_card_reads_the_index_when_it_has_taggings(card_db, monkeypatch):
+    """The index and the gzip cache hold the same taggings; the index is the
+    one that never downloads inside a request, so it answers first."""
+    from sqlalchemy import text
+
+    from app.db.session import get_engine
+    from app.knowledge import tag_lookup
+
+    schema.ensure_schema()
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO card_tags (oracle_id, slug) VALUES ('oid-1', 'ramp'), ('oid-1', 'mana-rock')"
+        ))
+    monkeypatch.setattr(tag_lookup, "_index_has_tags", False)
+    # A cache that disagrees, to prove which source answered.
+    monkeypatch.setattr(tag_lookup, "_lookup", {"oid-1": {"stale-cache-tag"}})
+
+    assert tag_lookup.get_tags_for_card("oid-1") == ["mana-rock", "ramp"]
+    assert tag_lookup.get_tags_for_card("oid-unknown") == []
+
+
+def test_search_card_index_tool_reads_the_local_index(imported):
+    from app.tools.dispatch import dispatch
+
+    result = dispatch("search_card_index", {"query": "sol ring", "limit": 5}, session=None)
+
+    assert result.ok
+    names = {c["name"] for c in result.content["cards"]}
+    assert "Sol Ring" in names
+    sol = next(c for c in result.content["cards"] if c["name"] == "Sol Ring")
+    assert "mana-rock" in sol["tags"]
+    assert "image_url" not in sol
+
+
+def test_import_extracts_the_usd_price(imported):
+    sol = store.by_name("Sol Ring")
+    assert sol["price_usd"] == 1.75
+    # No prices object: no price, not a crash.
+    assert store.by_name("Gigantosaurus")["price_usd"] is None
+
+
+def test_index_version_mismatch_counts_as_stale(imported):
+    assert importer.is_stale() is False
+    schema.set_meta("index_version", "0")
+    assert importer.is_stale() is True
+
+
+def test_cards_matching_slug_rules_uses_exact_and_prefix(imported):
+    hits = store.cards_matching_slug_rules(frozenset({"mana-rock"}), (), ())
+    assert [c["name"] for c in hits] == ["Sol Ring"]
+    hits = store.cards_matching_slug_rules(frozenset(), ("sacrifice-outlet",), (), legal_only=False)
+    assert [c["name"] for c in hits] == ["Black Lotus"]
+    assert store.cards_matching_slug_rules(frozenset(), (), ()) == []
+
+
+def test_rulings_import_and_lookup(imported):
+    rulings = store.rulings_for_many(["oid-sol-ring", "oid-gigantosaurus"])
+    assert [r["comment"] for r in rulings["oid-sol-ring"]] == [
+        "A newer ruling.", "Sol Ring's ability adds two colorless mana.",
+    ]
+    assert "oid-gigantosaurus" not in rulings
+
+
+def test_card_lookup_tools_carry_rulings(imported):
+    from unittest.mock import patch
+
+    from app.tools import dispatch as dispatch_mod
+
+    with patch("app.tools.dispatch.get_scryfall_client") as client:
+        client.return_value.named.return_value = {"name": "Sol Ring", "oracle_id": "oid-sol-ring"}
+        card = dispatch_mod._scryfall_card_by_name("Sol Ring")
+    assert card["rulings"][0]["comment"] == "A newer ruling."
+
+    result = dispatch_mod._search_card_index("sol ring")
+    sol = next(c for c in result["cards"] if c["name"] == "Sol Ring")
+    assert len(sol["rulings"]) == 2
+    assert "oracle_id" not in sol

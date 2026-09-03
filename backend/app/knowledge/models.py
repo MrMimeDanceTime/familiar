@@ -11,6 +11,12 @@ from sqlmodel import Field, Session, SQLModel, text
 from app.db.session import get_engine
 
 
+# Who wrote an entry. Seeded entries are replaced wholesale whenever the seed
+# changes; the player's own are never touched by the seeder.
+SOURCE_SEED = "seed"
+SOURCE_USER = "user"
+
+
 class KnowledgeEntry(SQLModel, table=True):
     __tablename__ = "knowledge_entries"
 
@@ -19,6 +25,7 @@ class KnowledgeEntry(SQLModel, table=True):
     body: str
     category: str
     format: str = "any"
+    source: str = Field(default=SOURCE_SEED, index=True)
 
 
 def _ensure_fts() -> None:

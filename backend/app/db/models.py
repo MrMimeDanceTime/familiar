@@ -67,6 +67,9 @@ class Deck(SQLModel, table=True):
     # deck gets what everyone plays, at 1 it gets what is specific to this
     # commander even when few decks run it. Defaults to 0.25 when unset.
     off_meta: float | None = None
+    # Budget ceiling per card in USD. Null means "use the player's standing
+    # budget preference", which maps to a ceiling in deckplan.
+    max_card_price: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -114,6 +117,12 @@ class DeckProposal(SQLModel, table=True):
     # this one, wrong slot" mean different things to the learning loop, and
     # only the second is worth generalising from.
     denial_reason: str | None = None
+    # The last status the chat model was told about, so the next turn can
+    # report only what the player decided since. See app.chat.context.
+    reported_status: str | None = None
+    # Price at proposal time, from the card index, so the review card can show
+    # what a pick costs without a lookup per render.
+    price_usd: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -127,10 +136,19 @@ class UserPreferences(SQLModel, table=True):
     build_preferences: str | None = None
 
 
+# Denial reasons the APP writes, as opposed to the ones the player picks in the
+# review UI. Both mean "this proposal went away without the player passing on
+# the card", and the personal scoring layer must weight them at zero — a card
+# withdrawn by the model or displaced by a newer batch says nothing about the
+# player's taste.
+DENIAL_WITHDRAWN = "withdrawn"
+DENIAL_SUPERSEDED = "superseded"
+
 # Turn statuses. A turn is terminal when it is not RUNNING.
 TURN_RUNNING = "running"
 TURN_DONE = "done"
 TURN_ERROR = "error"
+TURN_CANCELLED = "cancelled"
 
 
 class Turn(SQLModel, table=True):
@@ -151,6 +169,16 @@ class Turn(SQLModel, table=True):
     owner_id: int = Field(default=SINGLE_USER_ID, index=True)
     status: str = Field(default=TURN_RUNNING, index=True)
     error: str | None = None
+    # Set by the cancel endpoint; the engine checks it between provider calls
+    # and while streaming, and finishes the turn early with what it has.
+    cancel_requested: bool = False
+    # What the turn cost, summed over every provider call it made (the chat
+    # loop plus any pipeline or nuance call from inside a tool). Null on turns
+    # that predate the columns.
+    llm_calls: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

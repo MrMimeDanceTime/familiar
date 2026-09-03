@@ -22,7 +22,7 @@ combo profiles).
 
 import pytest
 
-from app.tools.deck_tools import _estimate_bracket
+from app.tools.deck_stats import _estimate_bracket
 
 # Real cards, so the name matching in _estimate_bracket does real work.
 GAME_CHANGERS = [
@@ -135,3 +135,21 @@ def test_mass_land_denial_still_forces_bracket_four():
 def test_cedh_profile_still_reaches_bracket_five():
     bracket, _ = _bracket(GAME_CHANGERS, avg_mv=1.6, ramp_count=14, interaction_count=12)
     assert bracket == 5
+
+
+def test_game_changers_come_from_the_card_index_when_it_has_them(monkeypatch):
+    """Scryfall flags Game Changers per card and the index stores the flag; the
+    hand-typed list is only the cold-start fallback."""
+    from unittest.mock import patch
+
+    from app.tools import card_lists
+
+    monkeypatch.setattr(card_lists, "_gc_cache", None)
+    with patch("app.cards.store.game_changer_names", return_value=["Brand New Bomb"]):
+        names = card_lists.game_changer_names()
+    assert names == frozenset({"Brand New Bomb"})
+
+    monkeypatch.setattr(card_lists, "_gc_cache", None)
+    with patch("app.cards.store.game_changer_names", return_value=[]):
+        fallback = card_lists.game_changer_names()
+    assert "Rhystic Study" in fallback

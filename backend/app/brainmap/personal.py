@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.brainmap.layers import PERSONAL, LayerScore, ScoringContext
+from app.db.models import DENIAL_SUPERSEDED, DENIAL_WITHDRAWN
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,10 @@ _OTHER_DECK_WEIGHT = 0.4
 # stick. Treating every denial identically throws that distinction away and
 # slowly poisons the pool against cards that were only ever mistimed.
 _REASON_WEIGHT: dict[str, float] = {
+    # Written by the app, not the player: the model trimmed its own batch, or a
+    # newer batch displaced this one. Neither is a verdict on the card.
+    DENIAL_WITHDRAWN: 0.0,
+    DENIAL_SUPERSEDED: 0.0,
     "don't need this role": 0.2,
     "don’t need this role": 0.2,   # curly apostrophe, as the UI sends it
     "off-theme": 0.5,
@@ -60,6 +65,12 @@ _REASON_WEIGHT: dict[str, float] = {
 # but the player declined to say why, so it should not carry the full weight of
 # an explicit "I dislike this card".
 _UNLABELLED_DENIAL_WEIGHT = 0.6
+
+# The curve preference is two aggregate joins over the whole proposal history
+# and changes only when the player decides something, so it is memoised per
+# database for a short while rather than recomputed on every suggestion.
+_CURVE_CACHE_SECONDS = 120.0
+_curve_cache: dict[str, tuple[float, tuple[float, float] | None]] = {}
 
 
 def _reason_weight(reason: str | None) -> float:
@@ -136,6 +147,17 @@ class PersonalLayer:
 
         Deliberately cross-deck: this is taste, not a property of one build.
         """
+        import time
+
+        cache_key = str(getattr(self._engine, "url", id(self._engine)))
+        cached = _curve_cache.get(cache_key)
+        if cached is not None and time.monotonic() - cached[0] < _CURVE_CACHE_SECONDS:
+            return cached[1]
+        result = self._curve_preference_uncached()
+        _curve_cache[cache_key] = (time.monotonic(), result)
+        return result
+
+    def _curve_preference_uncached(self) -> tuple[float, float] | None:
         sql = """
             SELECT p.status, AVG(c.cmc) AS mv, COUNT(*) AS n
             FROM deck_proposals p

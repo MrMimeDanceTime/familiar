@@ -787,3 +787,14 @@ def test_off_meta_never_zeroes_the_consensus_layer():
     they collapsed and the pool fell back to raw edhrec_rank order."""
     scores = {CONSENSUS: {"popular": LayerScore(CONSENSUS, 0.45)}}
     assert blend(scores, off_meta=1.0)[0].total > 0
+
+
+def test_app_written_denials_carry_no_weight():
+    """A withdrawn or superseded proposal never reached the player, so it must
+    not read as the player passing on the card."""
+    from app.brainmap.personal import _reason_weight
+    from app.db.models import DENIAL_SUPERSEDED, DENIAL_WITHDRAWN
+
+    assert _reason_weight(DENIAL_WITHDRAWN) == 0.0
+    assert _reason_weight(DENIAL_SUPERSEDED) == 0.0
+    assert _reason_weight(None) > 0.0

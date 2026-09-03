@@ -9,7 +9,7 @@ written as tool-agnostic docs in [`docs/`](docs/) so any coding assistant
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — stack, run/test commands, code layout, data model
 - [docs/PRODUCT.md](docs/PRODUCT.md) — product philosophy behind the chat behavior
-- [docs/PROVIDERS.md](docs/PROVIDERS.md) — DeepSeek vs Anthropic, which is primary and why
+- [docs/PROVIDERS.md](docs/PROVIDERS.md) — the DeepSeek backend, its model/thinking policy, and why it is the only one
 - [docs/PROVIDER_SHAPES.md](docs/PROVIDER_SHAPES.md) — the most important implementation detail in this codebase; read before touching `app/chat/engine.py`
 - [docs/PIPELINE.md](docs/PIPELINE.md) — the card-suggestion retrieval pipeline as built (stages, model/thinking policy, deck-aware selection, timing/timeout diagnostics)
 
@@ -38,6 +38,18 @@ Claude Code on this repo.
   theme list and scored **4%** of pooled cards, with five of eleven decks at
   exactly zero. Nothing caught that for two stages, because nobody was
   measuring.
+
+- **Touching the prompt, the per-turn context blocks (`app/chat/context.py`),
+  the tool result rendering (`app/tools/render.py`), the tool descriptions,
+  or the engine's turn logic? Run the behaviour eval.** `backend/tools/behaviour_eval.py replay` re-runs
+  stored user turns through the live loop against a scratch copy of the DB and
+  scores each reply on the rules the prompt asks for and the code cannot
+  enforce (role batches through the pipeline, plan set before the first batch,
+  refusals, reply length, unbracketed card names, tokens). It calls the LLM
+  and costs money; `score <trace.jsonl>` re-scores a saved trace for free.
+  Compare against `tools/behaviour_baseline.json` and `--save` only when the
+  change is understood. The prompt used to be edited on the strength of one
+  live deck misbehaving; that is how it grew to 540 lines of scar tissue.
 
 - No comments explaining *what* code does; only for non-obvious *why* (see
   the `provider_native` slicing comment in `engine.py` as the model).

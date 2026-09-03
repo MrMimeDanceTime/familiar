@@ -488,6 +488,12 @@ body.has-pinned-tray .chat-view__messages {
   max-height: 160px;
 }
 
+.chat-view__input .chat-view__stop {
+  background: var(--bg-soft);
+  color: var(--text-h);
+  border-color: var(--border);
+}
+
 .chat-view__input textarea::placeholder {
   color: var(--label);
 }
@@ -2645,4 +2651,153 @@ body.has-pinned-tray .deck-detail {
   .proposal-score__label {
     font-size: 10px;
   }
+}
+
+
+/* ── Proposal price and undo ─────────────────────────────────────────── */
+.proposal-swap__price {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--text-muted, #888);
+}
+.proposal-swap__undo {
+  margin-left: auto;
+}
+
+/* ── Mana sources ────────────────────────────────────────────────────── */
+.mana-source__low {
+  color: var(--danger, #c0392b);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ── Combos ──────────────────────────────────────────────────────────── */
+.combo-row {
+  align-items: flex-start;
+}
+.combo-row .stat-card__row-val {
+  text-align: right;
+  max-width: 45%;
+}
+
+/* ── Opening hand ────────────────────────────────────────────────────── */
+.opening-hand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.4rem;
+}
+
+
+/* ── Export menu ─────────────────────────────────────────────────────── */
+.export-menu {
+  position: relative;
+  display: inline-flex;
+}
+.export-menu__caret {
+  padding-left: 0.4rem;
+  padding-right: 0.4rem;
+  margin-left: -1px;
+}
+.export-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 18rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated, var(--bg-soft, #fff));
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 0.25rem;
+}
+.export-menu__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.export-menu__item:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+.export-menu__label {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.export-menu__hint {
+  font-size: 0.75rem;
+  color: var(--text-muted, #888);
+  line-height: 1.3;
+}
+
+/* ── Knowledge editor ────────────────────────────────────────────────── */
+.knowledge-editor {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border, #ccc);
+}
+.knowledge-editor__list {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.knowledge-editor__item {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+}
+.knowledge-editor__item--editing {
+  border-color: var(--accent, #7c5cff);
+}
+.knowledge-editor__item-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.knowledge-editor__title {
+  font-weight: 600;
+  flex: 1;
+}
+.knowledge-editor__category {
+  font-size: 0.72rem;
+  color: var(--text-muted, #888);
+}
+.knowledge-editor__body {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+.knowledge-editor__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.knowledge-editor__input {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 4px;
+  background: var(--bg-soft, transparent);
+  color: inherit;
+}
+.knowledge-editor__error {
+  color: var(--danger, #c0392b);
+  font-size: 0.8rem;
+}
+.knowledge-editor__actions {
+  display: flex;
+  gap: 0.5rem;
 }

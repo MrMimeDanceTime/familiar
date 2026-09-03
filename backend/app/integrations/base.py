@@ -9,7 +9,7 @@ with a write API (Moxfield) could support push too.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, field
 
 

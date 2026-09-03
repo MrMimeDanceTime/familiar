@@ -243,3 +243,92 @@ def test_off_identity_pick_cannot_be_selected(session):
         session, deck.id, "removal", provider, scryfall=sf, edhrec=FakeEdhrec(),
     )
     assert result.selection.picks == []
+
+
+def test_pending_commander_proposal_supplies_the_identity(session):
+    """With the commander still a pending proposal, the deck field is empty
+    and the identity used to resolve to colourless — every coloured candidate
+    was illegal and the opening batch came back as artifacts."""
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Opening", format="commander")
+    convo = repo.create_conversation(session)
+    session.add(DeckProposal(
+        conversation_id=convo.id, deck_id=deck.id, status="pending",
+        action="set_commander", card_name="Judith, the Scourge Diva",
+        commander_name="Judith, the Scourge Diva",
+    ))
+    session.commit()
+
+    provider = TwoStageProvider(
+        stage1={"queries": ["otag:removal"], "intent_summary": "removal"},
+        stage4={"picks": [{"name": "Terminate", "reason": "clean"}], "summary": "ok"},
+    )
+    scry = FakeScryfall([_pool_card("Terminate", "o-term")])
+    scry.named_calls = []
+    scry.named = lambda name, **k: (
+        scry.named_calls.append(name) or {"name": name, "color_identity": ["B", "R"]}
+    )
+
+    # Preview mode: stage 5 goes through the real Scryfall client, and the
+    # identity question is settled by stage 3.
+    result = build_suggestions(
+        session, deck.id, "removal", provider,
+        scryfall=scry, edhrec=FakeEdhrec(),
+        model="fake", spec_thinking=False, select_thinking=False,
+    )
+
+    assert scry.named_calls == ["Judith, the Scourge Diva"]
+    assert result.debug["legal_shaped"] == 1
+    assert "Judith" in provider.calls[-1]["user"]
+
+
+class _LocalStore:
+    """A local index with enough on-colour hits to make query planning unnecessary."""
+
+    def cards_matching_slug_rules(self, exact, prefixes, suffixes, *, limit=200):
+        return [_pool_card(f"Local Removal {i}", f"o-local-{i}") for i in range(30)]
+
+    def search_text(self, query, *, limit=50, identity=None):
+        return []
+
+
+def test_local_hits_skip_the_query_planning_call(session):
+    deck = _rakdos_deck(session)
+    provider = TwoStageProvider(
+        stage1={"queries": ["should not run"], "intent_summary": "x"},
+        stage4={"picks": [{"name": "Local Removal 3", "reason": "fits"}], "summary": "ok"},
+    )
+    scry = FakeScryfall([])
+    result = build_suggestions(
+        session, deck.id, "some removal", provider,
+        scryfall=scry, edhrec=FakeEdhrec(), local_store=_LocalStore(),
+        model="fake", spec_thinking=False, select_thinking=False,
+    )
+    assert result.debug["stage1_skipped"] is True
+    assert result.debug["local_pool"] == 30
+    assert all("query-planning stage" not in c["system"] for c in provider.calls)
+    assert scry.queries == []
+    assert result.selection.picks[0].name == "Local Removal 3"
+
+
+def test_thin_local_pool_falls_back_to_query_planning(session):
+    deck = _rakdos_deck(session)
+    provider = TwoStageProvider(
+        stage1={"queries": ["otag:removal"], "intent_summary": "removal"},
+        stage4={"picks": [], "summary": "ok"},
+    )
+
+    class Thin(_LocalStore):
+        def cards_matching_slug_rules(self, *a, **k):
+            return [_pool_card("Only One", "o-only")]
+
+    scry = FakeScryfall([_pool_card("Terminate", "o-term")])
+    result = build_suggestions(
+        session, deck.id, "some removal", provider,
+        scryfall=scry, edhrec=FakeEdhrec(), local_store=Thin(),
+        model="fake", spec_thinking=False, select_thinking=False,
+    )
+    assert result.debug["stage1_skipped"] is False
+    assert any("query-planning stage" in c["system"] for c in provider.calls)
+    assert result.debug["local_pool"] == 1

@@ -128,9 +128,8 @@ def test_fallthrough_is_total_over_real_cached_tags():
 # These tests pin representative REAL slugs so a rule that stops matching is a
 # test failure rather than a silently emptier pool.
 
-import pytest
 
-from app.pipeline.roles import fine_roles_for_tags
+from app.pipeline.roles import fine_roles_for_tags  # noqa: E402 - section import
 
 # (slug, expected fine role). Every slug here was verified present in the bulk
 # export with a meaningful card count.

@@ -13,8 +13,9 @@ Flow:
   4. selection  select(provider, shaped, intent)                     -> Selection
   5. validate   validate_to_proposals(session, deck, selection)      -> proposals
 
-Stages 1 and 4 run on the provider default (Pro, per the "Pro everywhere"
-decision); the Flash seam exists but nothing routes to it here.
+Both LLM stages route to the provider's fast model by default (see
+``build_suggestions`` and PIPELINE.md): stage 1 with thinking off, stage 4 with
+thinking on at a capped reasoning effort.
 """
 
 from __future__ import annotations
@@ -26,6 +27,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlmodel import Session
+
+from app import deckplan
+from app.brainmap import layers as brain_layers
+from app.brainmap import map as brain_map
+from app.cards import schema as card_schema
+from app.cards import store as card_store
+from app.db import repository as repo
+from app.knowledge.tag_lookup import get_tag_lookup
+from app.pipeline import candidates as candidates_stage
+from app.pipeline import local_retrieval
+from app.pipeline import selection as selection_stage
+from app.pipeline import spec as spec_stage
+from app.pipeline.shaping import DeckContext, shape
+from app.pipeline.validate import validate_to_proposals
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +59,6 @@ def _timed(stage: str, timings: dict[str, float]):
         timings[stage] = round(dt, 2)
         level = logging.WARNING if dt > 20 else logging.INFO
         logger.log(level, "pipeline: %s done in %.2fs", stage, dt)
-
-from app import deckplan
-from app.brainmap import layers as brain_layers
-from app.brainmap import map as brain_map
-from app.cards import schema as card_schema
-from app.cards import store as card_store
-from app.db import repository as repo
-from app.knowledge.tag_lookup import get_tag_lookup
-from app.pipeline import candidates as candidates_stage
-from app.pipeline import selection as selection_stage
-from app.pipeline import spec as spec_stage
-from app.pipeline.shaping import DeckContext, shape
-from app.pipeline.validate import validate_to_proposals
 
 
 @dataclass
@@ -231,6 +233,37 @@ def _apply_brain_map(
         return pool
 
 
+def _with_combo_partners(
+    ctx: DeckContext, snapshot: dict[str, Any], pool: list[dict[str, Any]]
+) -> DeckContext:
+    """Annotate the context with the combos each candidate would complete.
+
+    A candidate that finishes a combo with cards already in the deck is the
+    strongest fit signal the pipeline has, and the one the model most often
+    guessed at. Guarded: no combo table, no annotation.
+    """
+    try:
+        from dataclasses import replace
+
+        from app.cards import combos as combo_db
+
+        deck_names = [c.get("name") or "" for c in snapshot.get("cards", [])]
+        one_short = combo_db.combos_one_short(deck_names, [c.get("name") or "" for c in pool])
+        if not one_short:
+            return ctx
+        partners = {
+            name: sorted({
+                partner for combo in combos for partner in combo["cards"]
+                if partner.lower() != name
+            })[:3]
+            for name, combos in one_short.items()
+        }
+        return replace(ctx, combo_partners=partners)
+    except Exception as exc:  # noqa: BLE001 - combos are a bonus
+        logger.warning("combo annotation skipped: %s", exc)
+        return ctx
+
+
 def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     """Build the oracle_id -> tag slugs map shaping needs, for just this pool's
     cards.
@@ -272,6 +305,9 @@ def build_suggestions(
     scryfall: Any | None = None,
     edhrec: Any | None = None,
     off_meta: float | None = None,
+    local_store: Any | None = None,
+    local_pool_min: int = 25,
+    player_message: str | None = None,
 ) -> SuggestionResult:
     """Run the full retrieval pipeline for a deck and intent.
 
@@ -307,14 +343,50 @@ def build_suggestions(
     )
 
     snapshot = repo.deck_snapshot(session, deck_id)
+    # The prompt has the model batch set_commander with the opening cards, and
+    # the hand-pick guard sends those cards here. At that moment the commander
+    # is a PENDING proposal, not a deck field, so the identity resolved to
+    # colourless and every coloured candidate was marked illegal — the opening
+    # batch came back as Sol Ring and friends. A proposed commander is the best
+    # available statement of what the deck is, so use it until it is decided.
+    if not snapshot.get("commander"):
+        proposed = repo.pending_commander_for_deck(session, deck_id)
+        if proposed:
+            snapshot["commander"] = proposed
     identity = _commander_identity(snapshot, scryfall)
-    ctx = DeckContext.from_snapshot(snapshot, identity)
+    # The budget in effect: the deck's own ceiling, else the one the player's
+    # standing preference implies. Read here so the plan render and the
+    # legality check agree on the number.
+    snapshot["budget_preference"] = repo.get_or_create_preferences(session).budget
+    ceiling = deckplan.price_ceiling(
+        snapshot.get("max_card_price"), snapshot.get("budget_preference")
+    )
+    ctx = DeckContext.from_snapshot(snapshot, identity, max_card_price=ceiling)
 
-    with _timed("stage1_spec", timings):
-        spec = spec_stage.generate_query_spec(
-            provider, user_intent, identity,
-            model=model, max_queries=max_queries, thinking=spec_thinking,
-        )
+    # Local first. The index answers the common intents (a role, a phrase in
+    # rules text) in milliseconds with no model call and no network; the
+    # model's query planning and Scryfall's API are the fallback for an intent
+    # the index cannot fill. A pool that never leaves the machine is also a
+    # pool that cannot be rate-limited or time out.
+    with _timed("stage1_local", timings):
+        local_pool: list[dict[str, Any]] = []
+        try:
+            local_pool = local_retrieval.retrieve(
+                user_intent, identity, store=local_store or card_store,
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back to the model
+            logger.warning("local retrieval failed, falling back to query planning: %s", exc)
+        logger.info("pipeline: local retrieval found %d candidate(s)", len(local_pool))
+
+    stage1_skipped = len(local_pool) >= local_pool_min
+    if stage1_skipped:
+        spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
+    else:
+        with _timed("stage1_spec", timings):
+            spec = spec_stage.generate_query_spec(
+                provider, user_intent, identity,
+                model=model, max_queries=max_queries, thinking=spec_thinking,
+            )
 
     with _timed("stage2_candidates", timings):
         gathered = candidates_stage.gather_candidates_detailed(
@@ -323,13 +395,23 @@ def build_suggestions(
             identity=identity,
             off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
         )
-        pool = gathered.cards
+        # EDHREC's commander-specific picks lead, then the local hits, then
+        # whatever the fallback queries added; dedupe keeps the first seen.
+        seen = {c.get("oracle_id") for c in gathered.cards if c.get("oracle_id")}
+        pool = list(gathered.cards)
+        for card in local_pool:
+            oid = card.get("oracle_id")
+            if oid in seen:
+                continue
+            seen.add(oid)
+            pool.append(card)
 
     with _timed("stage3_shape", timings):
         pool = _apply_brain_map(
             session, pool, snapshot, identity, deck_id,
             off_meta if off_meta is not None else _deck_off_meta(snapshot),
         )
+        ctx = _with_combo_partners(ctx, snapshot, pool)
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
     with _timed("stage4_select", timings):
@@ -340,12 +422,15 @@ def build_suggestions(
             model=model, max_picks=max_picks, thinking=select_thinking,
             deck_context=_render_deck_context(snapshot),
             reasoning_effort=settings.select_reasoning_effort or None,
+            player_message=player_message,
         )
 
     debug = {
         "queries": spec.queries,
         "intent_summary": spec.intent_summary,
         "broadened": gathered.broadened,
+        "local_pool": len(local_pool),
+        "stage1_skipped": stage1_skipped,
         "pool_size": len(pool),
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),

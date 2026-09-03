@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 from app.db.models import (
+    DENIAL_SUPERSEDED,
     SINGLE_USER_ID,
     TURN_DONE,
     TURN_ERROR,
@@ -188,6 +189,7 @@ def update_deck(
     themes: list | None = None,
     plan_notes: str | None = None,
     off_meta: float | None = None,
+    max_card_price: float | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -212,6 +214,9 @@ def update_deck(
         deck.plan_notes = plan_notes
     if off_meta is not None:
         deck.off_meta = off_meta
+    if max_card_price is not None:
+        # 0 clears the ceiling: "no budget" has to be expressible too.
+        deck.max_card_price = max_card_price if max_card_price > 0 else None
     deck.updated_at = _utcnow()
     session.add(deck)
     session.commit()
@@ -250,11 +255,27 @@ def delete_deck(session: Session, deck_id: int) -> None:
         session.delete(card)
     for proposal in list_proposals_by_deck_id(session, deck_id):
         session.delete(proposal)
+    # Conversations keep their history but stop pointing at a deck that no
+    # longer exists. SQLite is not enforcing the FK, so without this the
+    # dangling id survived and every later read of the conversation tried to
+    # load the deleted deck.
+    for conversation in list_conversations_by_deck_id(session, deck_id):
+        conversation.deck_id = None
+        session.add(conversation)
     session.delete(deck)
     session.commit()
 
 
 # --- Deck cards ---------------------------------------------------------------
+
+
+def _touch_deck(session: Session, deck_id: int) -> None:
+    """Stamp the deck as changed. Card edits count: the sidebar orders decks
+    by updated_at, and the power-nuance settle window reads it."""
+    deck = session.get(Deck, deck_id)
+    if deck is not None:
+        deck.updated_at = _utcnow()
+        session.add(deck)
 
 
 def list_deck_cards(session: Session, deck_id: int) -> list[DeckCard]:
@@ -301,6 +322,7 @@ def add_deck_card(
         existing.tags = tags if tags is not None else existing.tags
         existing.notes = notes if notes is not None else existing.notes
         session.add(existing)
+        _touch_deck(session, deck_id)
         session.commit()
         session.refresh(existing)
         return existing
@@ -319,6 +341,7 @@ def add_deck_card(
         notes=notes,
     )
     session.add(card)
+    _touch_deck(session, deck_id)
     session.commit()
     session.refresh(card)
     return card
@@ -335,6 +358,8 @@ def clear_deck_cards(session: Session, deck_id: int) -> int:
     cards = list_deck_cards(session, deck_id)
     for card in cards:
         session.delete(card)
+    if cards:
+        _touch_deck(session, deck_id)
     session.commit()
     return len(cards)
 
@@ -352,9 +377,11 @@ def remove_deck_card(
     if quantity is not None and quantity < card.quantity:
         card.quantity -= quantity
         session.add(card)
+        _touch_deck(session, deck_id)
         session.commit()
         return True
     session.delete(card)
+    _touch_deck(session, deck_id)
     session.commit()
     return True
 
@@ -388,7 +415,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
     # hand-set — the same tags that drive scoring, so display and scoring can
     # never disagree. Commander(s) are a deck designation, not a functional
     # tag, so they override to "Commander".
-    from app.tools.deck_tools import category_for_card
+    from app.tools.card_roles import category_for_card
     commander_names = {
         n.lower() for n in (deck.commander, deck.partner_commander) if n
     }
@@ -414,6 +441,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "themes": deck.themes or [],
         "plan_notes": deck.plan_notes,
         "off_meta": deck.off_meta,
+        "max_card_price": deck.max_card_price,
         "conversation_id": linked.id if linked else None,
         "total_cards": total_cards,
         "cards": [
@@ -510,6 +538,87 @@ def anchor_proposals_to_message(
     session.commit()
 
 
+def pending_commander_for_deck(session: Session, deck_id: int) -> str | None:
+    """The commander a still-pending set_commander proposal names, if any.
+
+    Newest first, so a re-proposed commander wins over an earlier one the
+    player has not yet acted on.
+    """
+    statement = (
+        select(DeckProposal)
+        .where(
+            DeckProposal.deck_id == deck_id,
+            DeckProposal.status == "pending",
+            DeckProposal.action == "set_commander",
+        )
+        .order_by(DeckProposal.created_at.desc())
+    )
+    proposal = session.exec(statement).first()
+    return proposal.commander_name if proposal else None
+
+
+def supersede_pending_card_proposals(
+    session: Session, deck_id: int, keep_ids: list[int]
+) -> int:
+    """Deny every pending card proposal for a deck except the ones in keep_ids.
+
+    Called when a turn creates a new batch, so an older batch the player never
+    finished reviewing does not sit beside the new one. A pending set_commander
+    is the deck's identity and is never touched here. Marked ``superseded``
+    rather than a bare denial so the personal layer ignores it. Returns how
+    many were superseded.
+    """
+    keep = set(keep_ids)
+    statement = select(DeckProposal).where(
+        DeckProposal.deck_id == deck_id,
+        DeckProposal.status == "pending",
+        DeckProposal.action != "set_commander",
+    )
+    count = 0
+    for proposal in session.exec(statement):
+        if proposal.id in keep:
+            continue
+        proposal.status = "denied"
+        proposal.denial_reason = DENIAL_SUPERSEDED
+        session.add(proposal)
+        count += 1
+    if count:
+        session.commit()
+    return count
+
+
+def deck_summary(session: Session, deck: Deck) -> dict:
+    """The deck as a list row: identity and size, no cards.
+
+    ``deck_snapshot`` carries every card with its oracle text, which is right
+    for the panel and wrong for a sidebar that only needs the name; the list
+    endpoint was building a full snapshot per deck.
+    """
+    linked = get_conversation_by_deck_id(session, deck.id)
+    total = session.exec(
+        select(DeckCard.quantity).where(DeckCard.deck_id == deck.id)
+    ).all()
+    return {
+        "id": deck.id,
+        "name": deck.name,
+        "commander": deck.commander,
+        "partner_commander": deck.partner_commander,
+        "format": deck.format,
+        "power_level": deck.power_level,
+        "conversation_id": linked.id if linked else None,
+        "total_cards": sum(total),
+        "updated_at": deck.updated_at.isoformat(),
+    }
+
+
+def running_turn_for_conversation(session: Session, conversation_id: int) -> Turn | None:
+    """The turn currently executing for a conversation, if one is."""
+    statement = select(Turn).where(
+        Turn.conversation_id == conversation_id, Turn.status == TURN_RUNNING
+    )
+    return session.exec(statement).first()
+
+
 def list_proposals_by_deck_id(session: Session, deck_id: int) -> list[DeckProposal]:
     statement = (
         select(DeckProposal)
@@ -552,6 +661,46 @@ def apply_proposal(session: Session, proposal_id: int) -> dict | None:
         )
 
     proposal.status = "approved"
+    session.add(proposal)
+    session.commit()
+    return deck_snapshot(session, proposal.deck_id)
+
+
+def revert_proposal(session: Session, proposal_id: int) -> dict | None:
+    """Undo an approved add or cut and put the proposal back to pending.
+
+    Approve is one click with no way back except a chat turn. A reverted add
+    is removed from the deck (its proposed quantity only), a reverted cut is
+    added back. A commander change is not reverted: the previous commander is
+    not recorded, so "undo" would have no honest meaning. Returns the deck
+    snapshot, or None when the proposal is missing, not approved, or a
+    commander change.
+    """
+    from app.tools import deck_tools
+
+    proposal = get_proposal(session, proposal_id)
+    if not proposal or proposal.status != "approved":
+        return None
+    if proposal.action == "set_commander":
+        return None
+
+    if proposal.action == "add":
+        deck_tools.deck_remove_card(
+            session,
+            deck_id=proposal.deck_id,
+            card_name=proposal.card_name,
+            quantity=proposal.quantity or 1,
+        )
+    elif proposal.action == "remove":
+        deck_tools.deck_add_card(
+            session,
+            deck_id=proposal.deck_id,
+            card_name=proposal.card_name,
+            qty=proposal.quantity or 1,
+            notes=proposal.reasoning or None,
+        )
+
+    proposal.status = "pending"
     session.add(proposal)
     session.commit()
     return deck_snapshot(session, proposal.deck_id)
@@ -645,14 +794,45 @@ def get_turn(session: Session, turn_id: str, owner_id: int = SINGLE_USER_ID) -> 
     return turn
 
 
+def request_turn_cancel(
+    session: Session, turn_id: str, owner_id: int = SINGLE_USER_ID
+) -> Turn | None:
+    """Ask a running turn to stop. Returns the turn, or None when it is not
+    the owner's or is already over; the engine honours the flag at its next
+    check."""
+    turn = get_turn(session, turn_id, owner_id=owner_id)
+    if turn is None or turn.status != TURN_RUNNING:
+        return None
+    turn.cancel_requested = True
+    turn.updated_at = _utcnow()
+    session.add(turn)
+    session.commit()
+    return turn
+
+
+def turn_cancel_requested(session: Session, turn_id: str) -> bool:
+    session.expire_all()
+    turn = session.get(Turn, turn_id)
+    return bool(turn and turn.cancel_requested)
+
+
 def finish_turn(
-    session: Session, turn_id: str, status: str, error: str | None = None
+    session: Session,
+    turn_id: str,
+    status: str,
+    error: str | None = None,
+    usage: dict[str, int] | None = None,
 ) -> None:
     turn = session.get(Turn, turn_id)
     if turn is None:
         return
     turn.status = status
     turn.error = error
+    if usage:
+        turn.llm_calls = usage.get("llm_calls")
+        turn.prompt_tokens = usage.get("prompt_tokens")
+        turn.completion_tokens = usage.get("completion_tokens")
+        turn.reasoning_tokens = usage.get("reasoning_tokens")
     turn.updated_at = _utcnow()
     session.add(turn)
     session.commit()

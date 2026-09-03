@@ -36,7 +36,7 @@ from app.pipeline import roles as role_taxonomy
 PLANNED_ROLES: tuple[str, ...] = ("land", "ramp", "draw", "removal")
 
 # Targets per power level, derived from the scoring formula in
-# ``deck_tools._estimate_power_level`` rather than invented.
+# ``deck_stats._estimate_power_level`` rather than invented.
 #
 # The two were previously unrelated, and the mismatch was not subtle: a deck
 # hitting the old defaults (36/10/10/8) EXACTLY scored power 6 and could not
@@ -61,6 +61,26 @@ TARGETS_BY_POWER: dict[int, dict[str, int]] = {
 # cannot drift away from what the scorer rewards.
 DEFAULT_POWER = 6
 DEFAULT_TARGETS: dict[str, int] = TARGETS_BY_POWER[DEFAULT_POWER]
+
+# What the preferences panel's budget choices mean as a per-card ceiling in
+# USD. A deck's own max_card_price overrides these; "unlimited" and an unset
+# preference mean no ceiling.
+PRICE_CEILING_BY_BUDGET: dict[str, float] = {
+    "budget": 5.0,
+    "mid": 25.0,
+}
+
+
+def price_ceiling(
+    max_card_price: float | None, budget_preference: str | None
+) -> float | None:
+    """The per-card price ceiling in effect: the deck's own, else the one the
+    player's standing budget preference implies, else none."""
+    if isinstance(max_card_price, (int, float)) and max_card_price > 0:
+        return float(max_card_price)
+    if budget_preference:
+        return PRICE_CEILING_BY_BUDGET.get(budget_preference.strip().lower())
+    return None
 
 
 def targets_for_power(power_level: str | int | None) -> dict[str, int]:
@@ -111,6 +131,8 @@ class DeckPlan:
     # The power level these targets were derived for, so the numbers can be
     # explained rather than presented as arbitrary.
     power_level: int = DEFAULT_POWER
+    # Per-card price ceiling in USD, or None for no budget.
+    max_card_price: float | None = None
 
     @property
     def unmet(self) -> list[RoleGap]:
@@ -197,6 +219,9 @@ def build_plan(snapshot: dict[str, Any]) -> DeckPlan:
         gaps=gaps,
         total_cards=sum((c.get("quantity") or 1) for c in body),
         power_level=resolved_power,
+        max_card_price=price_ceiling(
+            snapshot.get("max_card_price"), snapshot.get("budget_preference")
+        ),
     )
 
 
@@ -213,6 +238,11 @@ def render_plan(plan: DeckPlan) -> str:
         lines.append(f"Deck direction: {', '.join(plan.themes)}")
     if plan.notes:
         lines.append(f"Plan notes: {plan.notes}")
+    if plan.max_card_price is not None:
+        lines.append(
+            f"Budget: no single card over ${plan.max_card_price:.2f} "
+            "(candidates above it are marked ILLEGAL in the pool)"
+        )
 
     lines.append(f"Deck size: {plan.total_cards} cards (excluding commander)")
 

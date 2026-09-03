@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DisplayMessage, ProposalBatch } from '../hooks/useChatStream'
+import { REVIEW_DONE_MESSAGE } from '../lib/deckPrompts'
 import { FamiliarMark } from './icons'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
@@ -12,11 +13,12 @@ interface ProposalBatchBlockProps {
   isDismissed: boolean
   onApply: (id: number) => Promise<void>
   onDeny: (id: number, reason?: string) => Promise<void>
+  onRevert: (id: number) => Promise<void>
   onContinue: () => void
 }
 
 function ProposalBatchBlock({
-  batch, isLastBatch, isStreaming, isDismissed, onApply, onDeny, onContinue,
+  batch, isLastBatch, isStreaming, isDismissed, onApply, onDeny, onRevert, onContinue,
 }: ProposalBatchBlockProps) {
   const pending = batch.proposals.filter((p) => p.status === 'pending')
   const resolved = batch.proposals.filter((p) => p.status !== 'pending')
@@ -55,7 +57,7 @@ function ProposalBatchBlock({
       )}
 
       {(!collapsible || expanded) && resolved.map((p) => (
-        <ProposalCard key={p.id} proposal={p} onApply={onApply} onDeny={onDeny} />
+        <ProposalCard key={p.id} proposal={p} onApply={onApply} onDeny={onDeny} onRevert={onRevert} />
       ))}
 
       {pending.map((p) => (
@@ -77,13 +79,15 @@ interface ChatViewProps {
   isStreaming: boolean
   error: string | null
   onSend: (text: string) => void
+  onStop?: () => void
   proposalBatches: ProposalBatch[]
   onApplyProposal: (id: number) => Promise<void>
   onDenyProposal: (id: number, reason?: string) => Promise<void>
+  onRevertProposal: (id: number) => Promise<void>
   cardNames: string[]
 }
 
-export function ChatView({ messages, activeTool, isStreaming, error, onSend, proposalBatches, onApplyProposal, onDenyProposal, cardNames }: ChatViewProps) {
+export function ChatView({ messages, activeTool, isStreaming, error, onSend, onStop, proposalBatches, onApplyProposal, onDenyProposal, onRevertProposal, cardNames }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [dismissedBatches, setDismissedBatches] = useState<Set<number>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -133,8 +137,8 @@ export function ChatView({ messages, activeTool, isStreaming, error, onSend, pro
 
   const handleContinue = useCallback((batchIndex: number) => {
     setDismissedBatches((prev) => new Set(prev).add(batchIndex))
-    onSend("I've reviewed the proposals. Let's continue.")
-  }, [onSend])
+    onSend(REVIEW_DONE_MESSAGE)
+  }, [onSend, proposalBatches])
 
   // Anchor each batch under the assistant message that produced it. Batches
   // with no anchor (live batches this turn, or legacy proposals from before
@@ -166,6 +170,7 @@ export function ChatView({ messages, activeTool, isStreaming, error, onSend, pro
       isDismissed={dismissedBatches.has(index)}
       onApply={onApplyProposal}
       onDeny={onDenyProposal}
+      onRevert={onRevertProposal}
       onContinue={() => handleContinue(index)}
     />
   )
@@ -207,9 +212,15 @@ export function ChatView({ messages, activeTool, isStreaming, error, onSend, pro
           placeholder="Brainstorm a deck idea…"
           disabled={isStreaming}
         />
-        <button type="submit" disabled={isStreaming || !draft.trim()}>
-          Send
-        </button>
+        {isStreaming && onStop ? (
+          <button type="button" className="chat-view__stop" onClick={onStop} title="Stop this reply">
+            Stop
+          </button>
+        ) : (
+          <button type="submit" disabled={isStreaming || !draft.trim()}>
+            Send
+          </button>
+        )}
       </form>
     </div>
   )

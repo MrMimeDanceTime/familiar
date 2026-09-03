@@ -14,6 +14,8 @@ the model had no way to check.
 These tests pin that a deck read reports the CURRENT pending set.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
@@ -21,6 +23,7 @@ from sqlmodel import Session
 from app.db import repository as repo
 from app.db.session import get_engine
 from app.tools import deck_tools
+from app.tools import proposals
 
 
 @pytest.fixture
@@ -29,6 +32,14 @@ def client(tmp_path, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "familiar_db_path", str(tmp_path / "pending.db"))
+    # Proposals resolve names through Scryfall; these tests are about pending
+    # state, not name resolution, and must not need the network.
+    fake_scryfall = MagicMock()
+    fake_scryfall.named.side_effect = lambda name, **k: {
+        "name": name, "cmc": 1.0, "color_identity": [], "oracle_id": f"o-{name}",
+        "type_line": "Artifact", "oracle_text": "",
+    }
+    monkeypatch.setattr(deck_tools, "get_scryfall_client", lambda: fake_scryfall)
     get_engine.cache_clear()
     from app.main import app
 
@@ -45,7 +56,7 @@ def _deck_and_conversation(client):
 
 def _propose(deck_id, conversation_id, *cards):
     with Session(get_engine()) as s:
-        result = deck_tools.propose_deck_changes(
+        result = proposals.propose_deck_changes(
             s,
             deck_id=deck_id,
             conversation_id=conversation_id,

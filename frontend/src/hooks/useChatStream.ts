@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { StreamInterrupted, getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
+import { StreamInterrupted, cancelTurn, getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
 import type { Deck, DeckProposal } from '../types/api'
 
 export interface DisplayMessage {
@@ -86,6 +86,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
   const activeTurn = useRef<ActiveTurn | null>(null)
   const assistantText = useRef('')
   const abortRef = useRef<AbortController | null>(null)
+  // Whether the current turn has delivered its `done` or `error` event. A
+  // stream can close cleanly without one (the server caps how long a single
+  // stream stays open), and that close must not be mistaken for the end.
+  const terminalSeen = useRef(false)
 
   const optionsRef = useRef(options)
   optionsRef.current = options
@@ -152,6 +156,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     } else if (evt.event === 'deck_updated') {
       optionsRef.current.onDeckUpdated?.(evt.data)
     } else if (evt.event === 'done') {
+      terminalSeen.current = true
       const finalMessageId = evt.data.message_id
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantId ? { ...m, serverId: finalMessageId } : m)),
@@ -159,6 +164,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
       optionsRef.current.onTurnComplete?.(finalMessageId)
       optionsRef.current.onConversationCreated?.(evt.data.conversation_id)
     } else if (evt.event === 'error') {
+      terminalSeen.current = true
       setError(evt.data.message)
     }
 
@@ -193,7 +199,16 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         while (!controller.signal.aborted) {
           try {
             await streamTurnEvents(turnId, cursor, handleEvent, controller.signal)
-            break // ran to the end of the turn
+            if (terminalSeen.current) break // ran to the end of the turn
+            // A clean close with no terminal event: the server caps how long
+            // one stream stays open and closes it exactly like a finished
+            // turn. Ask, and pick a still-running turn back up from the cursor.
+            const status = await getTurnStatus(turnId).catch(() => null)
+            if (status?.status === 'running' && !controller.signal.aborted) {
+              cursor = activeTurn.current?.lastSeq ?? cursor
+              continue
+            }
+            break
           } catch (err) {
             if (controller.signal.aborted) return
             if (!(err instanceof StreamInterrupted)) throw err
@@ -248,6 +263,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
       try {
         const started = await startTurn(conversationId, text)
+        terminalSeen.current = false
         activeTurn.current = { turnId: started.turn_id, assistantId, lastSeq: 0, text: '' }
         persistTurn(true)
         await consumeTurn(started.turn_id, 0)
@@ -257,8 +273,23 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         setActiveTool(null)
       }
     },
-    [consumeTurn],
+    [consumeTurn, persistTurn],
   )
+
+  /**
+   * Stop the running turn. The server finishes it at its next checkpoint and
+   * the stream ends with `done` as usual, so the reader is left running; a
+   * failed request just leaves the turn running, which the user can retry.
+   */
+  const stopTurn = useCallback(async () => {
+    const turn = activeTurn.current
+    if (!turn) return
+    try {
+      await cancelTurn(turn.turnId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
 
   // Resume on tab-return. Mobile browsers suspend a backgrounded tab's fetch
   // body, so the reader dies even though the turn keeps running server-side;
@@ -299,6 +330,7 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
           saveActiveTurn(null)
           return
         }
+        terminalSeen.current = false
         activeTurn.current = stored
         // Restore the bubble instead of re-streaming from seq 0. The text and
         // the cursor were written together, so picking up at stored.lastSeq
@@ -323,5 +355,5 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  return { messages, sendMessage, reset, activeTool, isStreaming, error }
+  return { messages, sendMessage, stopTurn, reset, activeTool, isStreaming, error }
 }

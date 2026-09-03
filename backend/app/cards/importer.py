@@ -5,7 +5,8 @@ Streams the gzipped JSONL bulk files straight into SQLite. Three files:
 - ``oracle_cards`` — one object per Oracle ID (no duplicate printings), the
   working table.
 - ``oracle_tags``  — the community functional tags, joined into ``card_tags``.
-- ``rulings``      — stored but deliberately unwired; nothing queries it yet.
+- ``rulings``      — per-card rulings, attached to card lookups so the model
+  answers "does X work with Y" from Scryfall's text rather than its memory.
 
 ``default_cards`` is NOT imported. It is one row per *printing* (set codes,
 rarity, prices, finishes, artist), and we play online and with proxies, so the
@@ -47,8 +48,8 @@ _CARD_COLUMNS = (
     "oracle_id", "name", "mana_cost", "cmc", "type_line", "oracle_text",
     "color_identity", "colors", "keywords", "power", "toughness", "loyalty",
     "rarity", "edhrec_rank", "penny_rank", "layout", "reserved", "game_changer",
-    "legal_commander", "playable", "produced_mana", "image_url", "scryfall_uri",
-    "raw",
+    "legal_commander", "playable", "produced_mana", "price_usd", "image_url",
+    "scryfall_uri", "raw",
 )
 
 _INSERT_CARD = (
@@ -186,6 +187,25 @@ def _mana_cost(raw: dict[str, Any]) -> str | None:
     return " // ".join(parts) if parts else None
 
 
+def _price_usd(raw: dict[str, Any]) -> float | None:
+    """The cheapest USD price Scryfall lists for the representative printing.
+
+    oracle_cards carries one printing per card with its prices object; a
+    non-foil price is preferred, foil or etched only when that is all there is.
+    Good enough for a budget ceiling, not for a shopping list.
+    """
+    prices = raw.get("prices") or {}
+    for key in ("usd", "usd_foil", "usd_etched"):
+        value = prices.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _card_row(raw: dict[str, Any]) -> dict[str, Any] | None:
     oracle_id = raw.get("oracle_id")
     name = raw.get("name")
@@ -214,6 +234,7 @@ def _card_row(raw: dict[str, Any]) -> dict[str, Any] | None:
         "legal_commander": 1 if legalities.get("commander") == "legal" else 0,
         "playable": 0 if raw.get("layout") in _NON_PLAYABLE_LAYOUTS else 1,
         "produced_mana": _as_json_list(raw.get("produced_mana")),
+        "price_usd": _price_usd(raw),
         "image_url": _image_url(raw),
         "scryfall_uri": raw.get("scryfall_uri"),
         "raw": json.dumps(raw, separators=(",", ":")),
@@ -255,6 +276,7 @@ def import_cards(client: httpx.Client, *, batch_size: int = 2000) -> int:
 
     schema.set_meta("cards_updated_at", updated_at)
     schema.set_meta("cards_imported_at", datetime.now(timezone.utc).isoformat())
+    schema.set_meta("index_version", schema.INDEX_VERSION)
     logger.info("card index: wrote %d cards", written)
     return written
 
@@ -305,9 +327,47 @@ def import_tags(client: httpx.Client, *, batch_size: int = 5000) -> int:
     return written
 
 
+def import_rulings(client: httpx.Client, *, batch_size: int = 5000) -> int:
+    """Import ``rulings`` into ``card_rulings``. Returns rows written.
+
+    Each object carries oracle_id, published_at, and comment; the source
+    field (wotc / scryfall) is dropped. Parsed before writing, like the other
+    imports, so the write lock is never held across the network.
+    """
+    url, updated_at = _resolve_bulk(client, "rulings")
+    logger.info("card index: importing rulings (%s)", updated_at or "unknown")
+    rows = [
+        {
+            "oracle_id": r["oracle_id"],
+            "published_at": r.get("published_at"),
+            "comment": r["comment"],
+        }
+        for r in _stream_jsonl(client, url)
+        if r.get("oracle_id") and r.get("comment")
+    ]
+    insert = text(
+        "INSERT INTO card_rulings (oracle_id, published_at, comment) "
+        "VALUES (:oracle_id, :published_at, :comment)"
+    )
+    written = 0
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM card_rulings"))
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        with engine.begin() as conn:
+            conn.execute(insert, batch)
+        written += len(batch)
+    schema.set_meta("rulings_updated_at", updated_at)
+    logger.info("card index: wrote %d rulings", written)
+    return written
+
+
 def is_stale(max_age_seconds: int = MAX_AGE_SECONDS) -> bool:
     """True when the index is missing, empty, or older than the max age."""
     if schema.card_count() == 0:
+        return True
+    if schema.get_meta("index_version") != schema.INDEX_VERSION:
         return True
     stamp = schema.get_meta("cards_imported_at")
     if not stamp:
@@ -343,6 +403,12 @@ def refresh_if_stale(*, force: bool = False, client: httpx.Client | None = None)
         from app.cards import cooccurrence
 
         cooccurrence.rebuild()
+        # Rulings are a grounding bonus, not a precondition: a failure here
+        # leaves cards and tags in place and the app serving.
+        try:
+            import_rulings(client)
+        except (httpx.HTTPError, CardImportError, OSError, gzip.BadGzipFile) as exc:
+            logger.warning("card index: rulings import failed, continuing without: %s", exc)
     except (httpx.HTTPError, CardImportError, OSError, gzip.BadGzipFile) as exc:
         logger.warning("card index refresh failed, keeping existing index: %s", exc)
         return False

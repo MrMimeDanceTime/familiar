@@ -9,10 +9,10 @@ Entries are seeded once at startup (idempotent — skips if the table is
 already populated).
 """
 
-from sqlmodel import Session, select
+from sqlmodel import Session, select, text
 
 from app.knowledge.models import KnowledgeEntry
-from app.tools.deck_tools import _BANNED_COMMANDER, _GAME_CHANGERS, _FAST_MANA, _MLD_CARDS, _TUTORS
+from app.tools.card_lists import _BANNED_COMMANDER, _FAST_MANA, _GAME_CHANGERS
 
 ENTRIES: list[dict[str, str]] = [
     # ── Mana Curve ───────────────────────────────────────────────────────
@@ -362,7 +362,7 @@ ENTRIES: list[dict[str, str]] = [
             "almost no counterspells), and graveyard hate. Green is the "
             "most self-sufficient color but is predictable. Pairs well "
             "with Blue for value (Simic), Black for graveyard (Golgari), "
-            "or White for tokens/\+1/+1 counters (Selesnya)."
+            r"or White for tokens/\+1/+1 counters (Selesnya)."
         ),
         "category": "color-pie",
         "format": "commander",
@@ -828,23 +828,33 @@ def seed_knowledge_base() -> None:
     card sets (Game Changers, fast mana), so they can change without the
     count changing, and a stale copy would misrepresent what the tool scores.
     """
-    from sqlmodel import Session, select
 
     from app.db.session import get_engine
+    from app.knowledge.models import SOURCE_SEED, SOURCE_USER
 
     desired = sorted((e["title"], e["body"]) for e in ENTRIES)
 
     with Session(get_engine()) as session:
-        stored = sorted(
-            (e.title, e.body) for e in session.exec(select(KnowledgeEntry)).all()
-        )
+        # Rows from before the source column existed carry NULL; they are all
+        # seed rows, since nothing else wrote to the table then.
+        session.exec(text(
+            f"UPDATE knowledge_entries SET source = '{SOURCE_SEED}' WHERE source IS NULL"
+        ))
+        session.commit()
+
+        seeded = session.exec(
+            select(KnowledgeEntry).where(KnowledgeEntry.source != SOURCE_USER)
+        ).all()
+        stored = sorted((e.title, e.body) for e in seeded)
         if stored == desired:
             return  # Already up to date
 
-        for entry in session.exec(select(KnowledgeEntry)).all():
+        # Only the seeded rows are replaced. The player's own entries are
+        # theirs, whatever the seed does.
+        for entry in seeded:
             session.delete(entry)
         session.commit()
 
         for entry in ENTRIES:
-            session.add(KnowledgeEntry(**entry))
+            session.add(KnowledgeEntry(**entry, source=SOURCE_SEED))
         session.commit()

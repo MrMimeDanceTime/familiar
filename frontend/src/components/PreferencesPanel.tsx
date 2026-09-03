@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { UserPreferences } from '../types/api'
+import { KnowledgeEditor } from './KnowledgeEditor'
 
 interface PreferencesPanelProps {
   open: boolean
@@ -106,6 +107,8 @@ export function PreferencesPanel({ open, onClose }: PreferencesPanelProps) {
         <button className="preferences-panel__save" onClick={save}>
           {saved ? 'Saved ✓' : 'Save'}
         </button>
+
+        <KnowledgeEditor />
       </div>
     </div>
   )

@@ -1,4 +1,3 @@
-import json
 from unittest.mock import patch
 
 import pytest
@@ -24,11 +23,13 @@ class FakeProvider:
     def __init__(self, turns):
         self._turns = list(turns)
         self.sent_history_snapshots = []
+        self.sent_system_prompts = []
         self.thinking_flags = []
         self.tools_per_send = []
 
     def send(self, system_prompt, history, tools, *, thinking=True):
         self.sent_history_snapshots.append(list(history))
+        self.sent_system_prompts.append(system_prompt)
         self.thinking_flags.append(thinking)
         self.tools_per_send.append(tools)
         return self._turns.pop(0)
@@ -60,17 +61,39 @@ def test_immediate_final_response_no_tools(session):
         run_chat_turn(session, provider, convo.id, "hi there", deck_id=None)
     )
 
-    assert any(e.startswith("event: token") for e in events)
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "token" for e in events)
+    assert any(e.event == "done" for e in events)
 
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant"]
     assert messages[1].text_content == "Sure, let's talk about it!"
 
 
-def test_engine_disables_thinking_for_the_chat_loop(session):
-    # Thinking mode is the biggest lever on turn latency; the loop turns it off
-    # (deep reasoning lives in tool choices + the pipeline/nuance calls).
+def test_engine_thinks_on_the_planning_send_only(session):
+    # The first send decides what the turn is for; the dispatch sends after it
+    # are mechanical and stay fast.
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="c1", name="search_deckbuilding_knowledge", arguments={"query": "x"})],
+            raw_assistant_message={"role": "assistant"},
+        ),
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="c2", name="search_deckbuilding_knowledge", arguments={"query": "y"})],
+            raw_assistant_message={"role": "assistant"},
+        ),
+        AssistantTurn(text="hi", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    _collect(run_chat_turn(session, provider, convo.id, "hey", deck_id=None))
+    assert provider.thinking_flags == [True, False, False]
+
+
+def test_planning_thinking_can_be_switched_off(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_plan_thinking", False)
     provider = FakeProvider([AssistantTurn(text="hi", tool_calls=[])])
     convo = repo.create_conversation(session)
     _collect(run_chat_turn(session, provider, convo.id, "hey", deck_id=None))
@@ -96,9 +119,9 @@ def test_tool_call_then_final_response(session):
         run_chat_turn(session, provider, convo.id, "what's in my deck?", deck_id=deck.id)
     )
 
-    assert any(e.startswith("event: tool_call") for e in events)
-    assert any("deck_get_current" in e for e in events)
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "tool_call" for e in events)
+    assert any(e.event == "tool_call" and e.data["name"] == "deck_get_current" for e in events)
+    assert any(e.event == "done" for e in events)
 
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
@@ -109,7 +132,6 @@ def test_max_iterations_forces_a_final_text_response(session):
     """When the loop exhausts its tool-call budget, the engine must force one
     toolless wrap-up send so the player gets a real summary — not the old bare
     'reached max iterations' error that discarded a nearly-finished turn."""
-    from app.chat.engine import MAX_TOOL_ITERATIONS
 
     class NeverStopsProvider:
         """Returns a tool call on every tool-bearing send (so the loop never
@@ -147,9 +169,9 @@ def test_max_iterations_forces_a_final_text_response(session):
     )
 
     # The player gets a real answer and a clean close, not an error.
-    assert not any(e.startswith("event: error") for e in events)
-    assert any(e.startswith("event: done") for e in events)
-    assert any("summary of what I found" in e for e in events)
+    assert not any(e.event == "error" for e in events)
+    assert any(e.event == "done" for e in events)
+    assert any(e.event == "token" and "summary of what I found" in e.data["text"] for e in events)
     # Exactly one forced wrap-up, and it ran with thinking on (synthesis turn).
     assert provider.toolless_sends == 1
     # Thinking must stay OFF here. Turning it on broke the turn outright:
@@ -288,9 +310,9 @@ def test_deck_mutation_emits_deck_updated_event(mock_get_client, session):
         run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id)
     )
 
-    deck_updated_events = [e for e in events if e.startswith("event: deck_updated")]
+    deck_updated_events = [e for e in events if e.event == "deck_updated"]
     assert len(deck_updated_events) == 1
-    payload = json.loads(deck_updated_events[0].split("data: ", 1)[1])
+    payload = deck_updated_events[0].data
     assert payload["cards"][0]["name"] == "Sol Ring"
 
 
@@ -437,16 +459,15 @@ def test_proposals_revealed_only_after_trims_settle(mock_get_client, session):
         run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id)
     )
 
-    proposal_events = [e for e in events if e.startswith("event: deck_proposal")]
+    proposal_events = [e for e in events if e.event == "deck_proposal"]
     # Exactly one reveal, at the end.
     assert len(proposal_events) == 1
     # It carries only the survivor, not the trimmed Mind Stone.
-    payload = proposal_events[0]
-    assert "Sol Ring" in payload
-    assert "Mind Stone" not in payload
+    names = [p["card_name"] for p in proposal_events[0].data["proposals"]]
+    assert names == ["Sol Ring"]
     # The reveal comes before done.
-    done_idx = next(i for i, e in enumerate(events) if e.startswith("event: done"))
-    reveal_idx = next(i for i, e in enumerate(events) if e.startswith("event: deck_proposal"))
+    done_idx = next(i for i, e in enumerate(events) if e.event == "done")
+    reveal_idx = next(i for i, e in enumerate(events) if e.event == "deck_proposal")
     assert reveal_idx < done_idx
 
 
@@ -471,7 +492,7 @@ def test_tool_failure_does_not_crash_loop_and_model_sees_error(session):
             run_chat_turn(session, provider, convo.id, "look up a card", deck_id=None)
         )
 
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "done" for e in events)
     messages = repo.list_messages(session, convo.id)
     tool_message = [m for m in messages if m.role == "tool"][0]
     assert "failed" in tool_message.tool_results[0]["content"].lower()
@@ -497,9 +518,9 @@ def test_max_iterations_safety_valve_wraps_up_instead_of_erroring(session):
         run_chat_turn(session, provider, convo.id, "loop forever", deck_id=deck.id)
     )
 
-    assert not any(e.startswith("event: error") for e in events)
-    assert any(e.startswith("event: done") for e in events)
-    assert any("Here's where I got to." in e for e in events)
+    assert not any(e.event == "error" for e in events)
+    assert any(e.event == "done" for e in events)
+    assert any(e.event == "token" and "Here's where I got to." in e.data["text"] for e in events)
 
 
 def test_derive_title_truncates_long_text():
@@ -577,7 +598,7 @@ def test_history_replay_reconstructs_provider_native_messages(session):
 # stayed available for the job.
 
 
-from app.chat.engine import _redirect_to_pipeline
+from app.chat.engine import _redirect_to_pipeline  # noqa: E402 - section import
 
 
 def _changes(*specs):
@@ -740,12 +761,12 @@ def test_every_ui_facing_serialisation_carries_scores():
 
     from app.api import conversations as conversations_api
     from app.chat import engine as engine_module
-    from app.tools import deck_tools
+    from app.tools import proposals
 
     for module, marker in (
         (engine_module, "_settled_proposal_batch"),
         (conversations_api, "get_conversation"),
-        (deck_tools, "propose_deck_changes"),
+        (proposals, "propose_deck_changes"),
     ):
         source = inspect.getsource(module)
         assert '"reasoning"' in source, marker
@@ -787,7 +808,7 @@ def test_failed_turn_still_reveals_its_proposals(session):
         run_chat_turn(session, provider, convo.id, "build me a deck", deck_id=deck.id)
     )
 
-    assert any(e.startswith("event: error") for e in events)
+    assert any(e.event == "error" for e in events)
     # The proposal is pending in the database...
     assert repo.get_proposal(session, provider.created_id).status == "pending"
 
@@ -922,3 +943,352 @@ def test_player_named_is_in_the_tool_schema():
     spec = next(s for s in TOOL_SPECS if s.name == "propose_deck_changes")
     item = spec.parameters["properties"]["changes"]["items"]
     assert "player_named" in item["properties"]
+
+
+# ── A redirect that applied the commander must let suggest_cards run ─────
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_redirect_with_kept_commander_still_offers_suggest_cards(mock_get_client, session):
+    """The refusal text tells the model to re-issue the adds via suggest_cards.
+    The tool list on the very next send used to be withdraw-only, so the model
+    was instructed to do something it could not."""
+    mock_get_client.return_value.named.side_effect = lambda name, **k: {
+        "name": name, "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "open", "changes": [
+                    {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+                    {"action": "add", "card_name": "A"},
+                    {"action": "add", "card_name": "B"},
+                    {"action": "add", "card_name": "C"},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_2", name="propose_deck_changes",
+                arguments={"summary": "one", "changes": [
+                    {"action": "add", "card_name": "Sol Ring", "player_named": True},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_2"]},
+        ),
+        AssistantTurn(text="Done.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "build it", deck_id=deck.id))
+
+    names_per_send = [[t.name for t in tools] for tools in provider.tools_per_send]
+    assert "suggest_cards" in names_per_send[1], "the follow-up send must allow the pipeline"
+    assert names_per_send[2] == ["withdraw_pending_proposals"], "one iteration only"
+    assert "call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"] \
+        or "may call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"]
+
+
+# ── Bounded context ──────────────────────────────────────────────────────
+
+
+def test_bound_history_elides_old_large_tool_results_only():
+    from app.chat.engine import bound_history
+
+    big = "x" * 5000
+    small = "short"
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "tool_calls": ["a"]},
+        {"role": "tool", "tool_call_id": "a", "content": big},        # old, large: elided
+        {"role": "tool", "tool_call_id": "b", "content": small},      # old, small: kept
+        {"role": "tool", "tool_call_id": "c", "content": big},        # recent: kept
+        {"role": "tool", "tool_call_id": "d", "content": big},        # recent: kept
+        {"role": "assistant", "content": big},                        # never touched
+    ]
+
+    bounded = bound_history(history, keep_recent=2)
+
+    assert "elided" in bounded[2]["content"] and len(bounded[2]["content"]) < 500
+    assert bounded[3]["content"] == small
+    assert bounded[4]["content"] == big and bounded[5]["content"] == big
+    assert bounded[6]["content"] == big
+    # The original is untouched: this is a send-time view, not the record.
+    assert history[2]["content"] == big
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_provider_sees_bounded_history_but_db_keeps_everything(mock_get_client, session):
+    mock_get_client.return_value.named.return_value = {
+        "name": "Sol Ring", "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    # Six earlier tool results, all large.
+    seq = 0
+    for i in range(6):
+        repo.add_message(session, convo.id, role="assistant", sequence=seq,
+                         provider_native=[{"role": "assistant", "tool_calls": [f"c{i}"]}])
+        repo.add_message(session, convo.id, role="tool", sequence=seq + 1,
+                         provider_native=[{"role": "tool", "tool_call_id": f"c{i}", "content": "y" * 3000}])
+        seq += 2
+
+    provider = FakeProvider([AssistantTurn(text="ok", tool_calls=[])])
+    _collect(run_chat_turn(session, provider, convo.id, "next", deck_id=deck.id))
+
+    sent = provider.sent_history_snapshots[0]
+    tool_msgs = [m for m in sent if m.get("role") == "tool"]
+    assert sum("elided" in m["content"] for m in tool_msgs) == 2
+    assert sum(m["content"] == "y" * 3000 for m in tool_msgs) == 4
+    stored = [m for m in repo.list_messages(session, convo.id) if m.role == "tool"]
+    assert all(m.provider_native[0]["content"] == "y" * 3000 for m in stored)
+
+
+# ── A new batch supersedes the old one ───────────────────────────────────
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_new_batch_supersedes_stale_pending_cards_but_not_the_commander(mock_get_client, session):
+    from app.db.models import DENIAL_SUPERSEDED
+
+    mock_get_client.return_value.named.side_effect = lambda name, **k: {
+        "name": name, "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    from app.tools.proposals import propose_deck_changes
+    stale = propose_deck_changes(session, deck.id, "old", [
+        {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
+        {"action": "add", "card_name": "Old Pick"},
+    ], conversation_id=convo.id)
+    stale_ids = {p["card_name"]: p["id"] for p in stale["proposals"]}
+
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "new", "changes": [
+                    {"action": "add", "card_name": "New Pick"},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="Here.", tool_calls=[]),
+    ])
+    _collect(run_chat_turn(session, provider, convo.id, "something else", deck_id=deck.id))
+
+    old_pick = repo.get_proposal(session, stale_ids["Old Pick"])
+    assert old_pick.status == "denied"
+    assert old_pick.denial_reason == DENIAL_SUPERSEDED
+    commander = repo.get_proposal(session, stale_ids["Myrkul, Lord of Bones"])
+    assert commander.status == "pending"
+    new = [p for p in repo.list_proposals(session, convo.id) if p.card_name == "New Pick"]
+    assert new and new[0].status == "pending"
+
+
+# ── Streaming ────────────────────────────────────────────────────────────
+
+
+class StreamingFakeProvider(FakeProvider):
+    """A provider that streams: yields the turn's text in pieces, then the turn."""
+
+    def send_stream(self, system_prompt, history, tools, *, thinking=False):
+        turn = self.send(system_prompt, history, tools, thinking=thinking)
+        if turn.text:
+            for i in range(0, len(turn.text), 4):
+                yield turn.text[i:i + 4]
+        yield turn
+
+
+def test_streaming_provider_text_reaches_the_client_once(session):
+    provider = StreamingFakeProvider([AssistantTurn(text="Sure, let's talk.", tool_calls=[])])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "hi", deck_id=None))
+
+    tokens = [e.data["text"] for e in events if e.event == "token"]
+    assert "".join(tokens) == "Sure, let's talk."
+    assert len(tokens) > 1, "text should arrive in pieces, not one block"
+    assert repo.list_messages(session, convo.id)[-1].text_content == "Sure, let's talk."
+
+
+def test_text_alongside_a_tool_call_streams_with_a_break_before_the_reply(session):
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = StreamingFakeProvider([
+        AssistantTurn(
+            text="Checking the deck.",
+            tool_calls=[ToolCallRequest(id="c1", name="deck_get_current", arguments={})],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["c1"]},
+        ),
+        AssistantTurn(text="It is empty.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "what's in it?", deck_id=deck.id))
+
+    text = "".join(
+        e.data["text"] for e in events if e.event == "token"
+    )
+    assert text == "Checking the deck.\n\nIt is empty."
+
+
+# ── Thinking on the endorsement send; interim text kept ──────────────────
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_thinking_turns_on_for_the_send_after_a_batch(mock_get_client, session):
+    mock_get_client.return_value.named.return_value = {
+        "name": "Sol Ring", "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "Ramp", "changes": [{"action": "add", "card_name": "Sol Ring"}]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="Here's your ramp batch.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id))
+
+    assert provider.thinking_flags == [True, True]
+
+
+def test_interim_text_beside_a_tool_call_is_persisted(session):
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text="Checking the deck.",
+            tool_calls=[ToolCallRequest(id="c1", name="deck_get_current", arguments={})],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["c1"]},
+        ),
+        AssistantTurn(text="It is empty.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "what's in it?", deck_id=deck.id))
+
+    texts = [m.text_content for m in repo.list_messages(session, convo.id) if m.role == "assistant"]
+    assert texts == ["Checking the deck.", "It is empty."]
+
+
+def test_since_last_turn_note_rides_with_the_user_message(session):
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    session.add(DeckProposal(
+        conversation_id=convo.id, deck_id=deck.id, action="add",
+        card_name="Sol Ring", status="approved",
+    ))
+    session.commit()
+    provider = FakeProvider([AssistantTurn(text="ok", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "next batch please", deck_id=deck.id))
+
+    user_message = repo.list_messages(session, convo.id)[0]
+    assert user_message.text_content == "next batch please"
+    native = user_message.provider_native[0]["content"]
+    assert native.startswith("<since_last_turn>") and native.endswith("next batch please")
+    assert "approved Sol Ring" in native
+    # The system prompt carried the deck header.
+    assert "<deck_state>" in provider.sent_system_prompts[-1]
+
+
+# ── cancellation ───────────────────────────────────────────────────────────
+
+def test_stop_before_the_first_send_persists_a_stopped_reply(session):
+    provider = FakeProvider([AssistantTurn(text="never sent", tool_calls=[])])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(
+        session, provider, convo.id, "hello", deck_id=None, should_stop=lambda: True,
+    ))
+
+    assert provider.thinking_flags == []  # no provider call was made
+    assert any(e.event == "done" for e in events)
+    assert any(e.event == "token" and "stopped here by the player" in e.data["text"] for e in events)
+    messages = repo.list_messages(session, convo.id)
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert "stopped" in messages[1].text_content
+    assert "[The player stopped this reply before it was written.]" in messages[1].provider_native[0]["content"]
+
+
+def test_stop_between_iterations_keeps_the_tool_exchange(session):
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1  # first check passes; the second (after a tool round) stops
+
+    provider = FakeProvider([
+        AssistantTurn(
+            text="Let me check.",
+            tool_calls=[ToolCallRequest(id="c1", name="search_deckbuilding_knowledge", arguments={"query": "ramp"})],
+            raw_assistant_message={"role": "assistant"},
+        ),
+        AssistantTurn(text="never sent", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(
+        session, provider, convo.id, "hello", deck_id=None, should_stop=should_stop,
+    ))
+
+    assert len(provider.thinking_flags) == 1
+    assert any(e.event == "done" for e in events)
+    messages = repo.list_messages(session, convo.id)
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert messages[1].text_content == "Let me check."
+    assert "stopped here by the player" in messages[-1].text_content
+
+
+def test_stop_mid_stream_keeps_the_partial_text(session):
+    class StreamingProvider(FakeProvider):
+        def send_stream(self, system_prompt, history, tools, *, thinking=False):
+            self.thinking_flags.append(thinking)
+            for word in ["one ", "two ", "three ", "four ", "five ", "six ", "seven ", "eight ", "nine ", "ten "]:
+                yield word
+            yield AssistantTurn(text="one two three four five six seven eight nine ten", tool_calls=[])
+
+    stops = {"n": 0}
+
+    def should_stop():
+        stops["n"] += 1
+        return stops["n"] >= 2  # the pre-send check passes; the in-stream check stops
+
+    provider = StreamingProvider([])
+    convo = repo.create_conversation(session)
+    events = _collect(run_chat_turn(
+        session, provider, convo.id, "hello", deck_id=None, should_stop=should_stop,
+    ))
+
+    streamed = "".join(
+        e.data["text"] for e in events if e.event == "token"
+    )
+    assert streamed.startswith("one two three four five six seven eight ")
+    assert "ten" not in streamed
+    assert "stopped here by the player" in streamed
+    final = repo.list_messages(session, convo.id)[-1]
+    assert final.role == "assistant"
+    assert final.text_content.startswith("one two three four five six seven eight")
+    assert "[The player stopped this reply here.]" in final.provider_native[0]["content"]

@@ -13,18 +13,17 @@ job is to read the event log at whatever pace it can manage.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Callable
 
 from sqlmodel import Session
 
 from app.chat.engine import run_chat_turn
 from app.db import repository as repo
-from app.db.models import TURN_DONE, TURN_ERROR
+from app.db.models import TURN_CANCELLED, TURN_DONE, TURN_ERROR
 from app.db.session import get_engine
 from app.llm.factory import get_provider
 
@@ -41,29 +40,6 @@ _TERMINAL_EVENTS = {"done", "error"}
 
 def new_turn_id() -> str:
     return uuid.uuid4().hex
-
-
-def _parse_sse(chunk: str) -> tuple[str, dict[str, Any]] | None:
-    """Recover (event, data) from the SSE string the engine yields.
-
-    The engine formats SSE directly, and rewriting it to emit structured events
-    would touch every yield site in the agentic loop. Parsing here keeps this
-    change contained to the transport, which is the actual bug.
-    """
-    event = ""
-    data = ""
-    for line in chunk.split("\n"):
-        if line.startswith("event: "):
-            event = line[len("event: ") :]
-        elif line.startswith("data: "):
-            data = line[len("data: ") :]
-    if not event or not data:
-        return None
-    try:
-        return event, json.loads(data)
-    except json.JSONDecodeError:
-        logger.warning("Un-parseable SSE data in turn stream: %r", data[:200])
-        return None
 
 
 class _TokenBuffer:
@@ -98,18 +74,33 @@ class _TokenBuffer:
         self._first_at = None
 
 
+def _cancel_check(turn_id: str) -> Callable[[], bool]:
+    """Reads the cancel flag on its own short session, so a flag committed
+    by the cancel endpoint is visible whatever the worker's own transaction
+    state."""
+
+    def should_stop() -> bool:
+        try:
+            with Session(get_engine()) as session:
+                return repo.turn_cancel_requested(session, turn_id)
+        except Exception:  # noqa: BLE001 - a failed check is "keep going"
+            return False
+
+    return should_stop
+
+
 def execute_turn(turn_id: str, conversation_id: int, message: str, deck_id: int | None) -> None:
     """Drive one turn to completion, appending every event to its log."""
     with Session(get_engine()) as session:
         buffer = _TokenBuffer(session, turn_id)
         status, error = TURN_DONE, None
+        provider = None
+        should_stop = _cancel_check(turn_id)
         try:
             provider = get_provider()
-            for chunk in run_chat_turn(session, provider, conversation_id, message, deck_id):
-                parsed = _parse_sse(chunk)
-                if parsed is None:
-                    continue
-                event, data = parsed
+            for event, data in run_chat_turn(
+                session, provider, conversation_id, message, deck_id, should_stop=should_stop,
+            ):
                 if event == "token":
                     buffer.add(data.get("text", ""))
                     continue
@@ -126,7 +117,21 @@ def execute_turn(turn_id: str, conversation_id: int, message: str, deck_id: int 
             repo.append_turn_event(session, turn_id, "error", {"message": str(exc)})
         finally:
             buffer.flush()
-            repo.finish_turn(session, turn_id, status, error)
+            if status == TURN_DONE and should_stop():
+                status = TURN_CANCELLED
+            # The provider is built per turn, so its totals are this turn's
+            # cost. Recorded on the row and logged, so "what does a build cost"
+            # and "is the context bounding working" have an answer.
+            usage = getattr(provider, "usage", None) if provider is not None else None
+            if usage:
+                logger.info(
+                    "Turn %s usage: %d call(s), %d prompt + %d completion tokens "
+                    "(%d reasoning)",
+                    turn_id[:8], usage.get("llm_calls", 0),
+                    usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+                    usage.get("reasoning_tokens", 0),
+                )
+            repo.finish_turn(session, turn_id, status, error, usage=usage)
 
 
 def submit_turn(turn_id: str, conversation_id: int, message: str, deck_id: int | None) -> None:

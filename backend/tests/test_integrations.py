@@ -321,3 +321,25 @@ def test_import_decklist_rejects_unknown_mode(session):
     from app.tools.deck_tools import import_decklist
     with pytest.raises(ValueError):
         import_decklist(session, deck.id, "1 Sol Ring", mode="obliterate")
+
+
+def test_import_decklist_replace_keeps_deck_when_scryfall_fails(session):
+    """The wipe used to commit BEFORE name resolution, so a Scryfall outage
+    mid-import left the player with an empty deck and a 500."""
+    from unittest.mock import patch
+
+    from app.tools.deck_tools import import_decklist
+    from app.tools.scryfall_client import ScryfallError
+
+    deck = repo.create_deck(session, format="commander")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1)
+    repo.add_deck_card(session, deck.id, "Old Card", quantity=1)
+
+    with patch("app.tools.deck_tools.get_scryfall_client") as scry, \
+         patch("app.tools.deck_tools.get_tags_for_card", return_value=[]):
+        scry.return_value.collection.side_effect = ScryfallError("boom")
+        with pytest.raises(ScryfallError):
+            import_decklist(session, deck.id, "1 Arcane Signet", mode="replace")
+
+    names = {c.card_name for c in repo.list_deck_cards(session, deck.id)}
+    assert names == {"Sol Ring", "Old Card"}

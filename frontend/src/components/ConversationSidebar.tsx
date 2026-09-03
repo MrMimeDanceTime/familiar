@@ -1,5 +1,5 @@
 import { useTheme } from '../hooks/useTheme'
-import type { Conversation, Deck } from '../types/api'
+import type { Conversation, DeckSummary } from '../types/api'
 import { GearIcon, MoonIcon, SunIcon } from './icons'
 
 export type SidebarTab = 'conversations' | 'decks'
@@ -12,9 +12,9 @@ interface SidebarProps {
   onSelect: (id: number) => void
   onNew: () => void
   onDelete: (id: number) => void
-  decks: Deck[]
+  decks: DeckSummary[]
   activeDeckId: number | null
-  onSelectDeck: (deck: Deck) => void
+  onSelectDeck: (deck: DeckSummary) => void
   onNewDeck: () => void
   onDeleteDeck: (id: number) => void
   onOpenPreferences: () => void

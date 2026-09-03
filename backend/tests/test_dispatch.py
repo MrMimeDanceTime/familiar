@@ -5,6 +5,8 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.db import repository as repo
 from app.tools import deck_tools
+from app.tools import proposals
+from app.tools import deck_stats
 from app.tools.dispatch import (
     DECK_MUTATION_TOOLS,
     PROVIDER_SESSION_TOOLS,
@@ -61,7 +63,7 @@ def test_search_knowledge_executes_and_filters(tmp_path):
 
 
 def test_detect_roles_uses_tags_not_oracle_text():
-    from app.tools.deck_tools import _detect_roles
+    from app.tools.card_roles import _detect_roles
 
     # A ramp mana-rock tag makes it ramp regardless of (empty) oracle text.
     assert _detect_roles("Artifact", "", None, None, ["ramp", "mana-rock"]) == {"ramp"}
@@ -70,7 +72,7 @@ def test_detect_roles_uses_tags_not_oracle_text():
 
 
 def test_detect_roles_land_ramp_guards():
-    from app.tools.deck_tools import _detect_roles
+    from app.tools.card_roles import _detect_roles
 
     # A land with a generic non-ramp tag is only a land, never ramp.
     assert _detect_roles("Land", "", None, None, ["graveyard-hate"]) == {"land"}
@@ -79,7 +81,7 @@ def test_detect_roles_land_ramp_guards():
 
 
 def test_detect_roles_untagged_card_is_not_guessed_from_text():
-    from app.tools.deck_tools import _detect_roles
+    from app.tools.card_roles import _detect_roles
 
     # No tags, no oracle_id: a nonland card gets NO role (no regex guessing).
     assert _detect_roles("Creature", "draw a card. add {G}.", None, None, []) == set()
@@ -90,7 +92,7 @@ def test_detect_roles_untagged_card_is_not_guessed_from_text():
 @patch("app.knowledge.tag_lookup.get_tag_lookup", lambda: {})
 @patch("app.tools.deck_tools.get_scryfall_client")
 def test_compute_deck_stats_surfaces_untagged_cards(mock_scry, session):
-    from app.tools.deck_tools import compute_deck_stats
+    from app.tools.deck_stats import compute_deck_stats
 
     # Untagged cards trigger a backfill lookup; stub it to find nothing so
     # they stay untagged and the test makes no network call.
@@ -113,7 +115,7 @@ def test_compute_deck_stats_surfaces_untagged_cards(mock_scry, session):
 
 @patch("app.tools.deck_tools.get_scryfall_client")
 def test_compute_deck_stats_survives_scryfall_backfill_failure(mock_scry, session):
-    from app.tools.deck_tools import compute_deck_stats
+    from app.tools.deck_stats import compute_deck_stats
     from app.tools.scryfall_client import ScryfallError
 
     # A card missing tags triggers the backfill lookup; make Scryfall blow up.
@@ -138,7 +140,7 @@ def test_compute_deck_stats_survives_scryfall_backfill_failure(mock_scry, sessio
 @patch("app.knowledge.tag_lookup.get_tag_lookup", lambda: {})
 @patch("app.tools.deck_tools.get_scryfall_client")
 def test_compute_deck_stats_reports_deficiencies(mock_scry, session):
-    from app.tools.deck_tools import compute_deck_stats
+    from app.tools.deck_stats import compute_deck_stats
 
     mock_scry.return_value.collection.return_value = {"found": []}
     deck = repo.create_deck(session, format="commander")
@@ -179,7 +181,7 @@ def test_deck_snapshot_commander_category_overrides_tags(session):
 @patch("app.knowledge.tag_lookup.get_tag_lookup", lambda: {})
 @patch("app.tools.deck_tools.get_scryfall_client")
 def test_compute_deck_stats_no_deficiencies_for_noncommander(mock_scry, session):
-    from app.tools.deck_tools import compute_deck_stats
+    from app.tools.deck_stats import compute_deck_stats
 
     mock_scry.return_value.collection.return_value = {"found": []}
     deck = repo.create_deck(session, format="modern")
@@ -259,7 +261,7 @@ def test_withdraw_preserves_pending_commander(session):
     cmd = _pending(session, convo.id, deck.id, "set_commander", "Mass of Mysteries")
     card = _pending(session, convo.id, deck.id, "add", "Risen Reef")
 
-    result = deck_tools.withdraw_pending_proposals(session, deck.id)
+    result = proposals.withdraw_pending_proposals(session, deck.id)
 
     assert result["withdrawn"] == 1
     assert result["preserved_commander"] == 1
@@ -273,7 +275,7 @@ def test_withdraw_include_commander_cancels_it(session):
     convo = repo.create_conversation(session)
     cmd = _pending(session, convo.id, deck.id, "set_commander", "Mass of Mysteries")
 
-    result = deck_tools.withdraw_pending_proposals(
+    result = proposals.withdraw_pending_proposals(
         session, deck.id, include_commander=True
     )
 
@@ -290,7 +292,7 @@ def test_withdraw_specific_cards_only(session):
     b = _pending(session, convo.id, deck.id, "add", "Arcane Signet")
     c = _pending(session, convo.id, deck.id, "add", "Mind Stone")
 
-    result = deck_tools.withdraw_pending_proposals(
+    result = proposals.withdraw_pending_proposals(
         session, deck.id, card_names=["Mind Stone"]
     )
 
@@ -306,7 +308,7 @@ def test_withdraw_specific_cards_reports_unmatched_names(session):
     convo = repo.create_conversation(session)
     _pending(session, convo.id, deck.id, "add", "Sol Ring")
 
-    result = deck_tools.withdraw_pending_proposals(
+    result = proposals.withdraw_pending_proposals(
         session, deck.id, card_names=["sol ring", "Nonexistent Card"]
     )
 
@@ -323,7 +325,7 @@ def test_withdraw_specific_cards_does_not_touch_commander(session):
     cmd = _pending(session, convo.id, deck.id, "set_commander", "Judith, the Scourge Diva")
     card = _pending(session, convo.id, deck.id, "add", "Sol Ring")
 
-    result = deck_tools.withdraw_pending_proposals(
+    result = proposals.withdraw_pending_proposals(
         session, deck.id,
         card_names=["Judith, the Scourge Diva", "Sol Ring"],
     )
@@ -692,3 +694,113 @@ def test_tool_schemas_and_dispatch_registry_in_sync():
         f"these directly, add them to DISPATCH_ONLY_TOOLS; otherwise add a "
         f"ToolSpec."
     )
+
+
+def test_withdraw_marks_the_reason_as_the_models_not_the_players(session):
+    from app.db.models import DENIAL_WITHDRAWN
+
+    deck = repo.create_deck(session, name="W", format="commander")
+    convo = repo.create_conversation(session)
+    p = _pending(session, convo.id, deck.id, "add", "Sol Ring")
+
+    proposals.withdraw_pending_proposals(session, deck.id, card_names=["Sol Ring"])
+
+    session.refresh(p)
+    assert p.status == "denied"
+    assert p.denial_reason == DENIAL_WITHDRAWN
+
+
+def test_deck_get_current_omits_oracle_text_except_for_the_commander(session):
+    deck = repo.create_deck(session, name="O", format="commander", commander="Korvold, Fae-Cursed King")
+    repo.add_deck_card(session, deck.id, "Korvold, Fae-Cursed King", quantity=1,
+                       category="Commander", oracle_text="Whenever you sacrifice...")
+    repo.add_deck_card(session, deck.id, "Sol Ring", quantity=1, oracle_text="{T}: Add {C}{C}.")
+
+    with patch("app.tools.deck_tools._missing_auto_includes", return_value=[]):
+        lean = deck_tools.deck_get_current(session, deck.id)
+        full = deck_tools.deck_get_current(session, deck.id, include_oracle_text=True)
+
+    by_name = {c["name"]: c for c in lean["cards"]}
+    assert by_name["Korvold, Fae-Cursed King"]["oracle_text"] == "Whenever you sacrifice..."
+    assert "oracle_text" not in by_name["Sol Ring"]
+    assert "oracle_text_note" in lean
+    assert {c["name"]: c for c in full["cards"]}["Sol Ring"]["oracle_text"] == "{T}: Add {C}{C}."
+
+
+def test_stats_backfill_does_not_refetch_a_card_known_to_have_no_tags(session):
+    """`[]` means Scryfall was asked and the card has no community tags; only
+    `None` means never asked. Conflating them refetched forever."""
+    deck = repo.create_deck(session, name="B", format="commander")
+    repo.add_deck_card(session, deck.id, "Plain Vanilla", quantity=1,
+                       oracle_id="o-vanilla", type_line="Creature", tags=[])
+    repo.add_deck_card(session, deck.id, "Never Checked", quantity=1,
+                       oracle_id="o-never", type_line="Creature", tags=None)
+
+    with patch("app.tools.scryfall_client.get_scryfall_client") as client, \
+         patch("app.knowledge.tag_lookup.get_tags_for_card", return_value=[]):
+        client.return_value.collection.return_value = {
+            "found": [{"name": "Never Checked", "oracle_id": "o-never", "type_line": "Creature"}],
+            "not_found": [],
+        }
+        deck_stats.compute_deck_stats(session, deck.id)
+        requested = client.return_value.collection.call_args.args[0]
+
+    assert requested == ["Never Checked"]
+    checked = repo.get_deck_card(session, deck.id, "Never Checked")
+    assert checked.tags == []
+
+
+def test_mana_sources_flag_a_colour_short_on_sources():
+    """Three green pips per card and one green source: green comes up LOW."""
+    cards = [
+        type("C", (), {"card_name": n, "quantity": q})() for n, q in [
+            ("Mountain", 10), ("Forest", 2), ("Fireball", 1), ("Gigantosaurus", 3),
+        ]
+    ]
+    index = {
+        "mountain": {"produced_mana": ["R"], "type_line": "Basic Land — Mountain", "mana_cost": ""},
+        "forest": {"produced_mana": ["G"], "type_line": "Basic Land — Forest", "mana_cost": ""},
+        "fireball": {"produced_mana": [], "type_line": "Sorcery", "mana_cost": "{X}{R}"},
+        "gigantosaurus": {"produced_mana": [], "type_line": "Creature", "mana_cost": "{G}{G}{G}{G}{G}"},
+    }
+    rows = deck_stats._mana_sources(cards, index, commander_names=set())
+    by = {r["color"]: r for r in rows}
+    assert by["G"]["status"] == "LOW"
+    assert by["R"]["status"] == "OK"
+    assert by["G"]["sources"] == 2 and by["R"]["sources"] == 10
+    assert set(by) == {"R", "G"}
+
+
+def test_hybrid_pips_split_between_colours():
+    counts = deck_stats._pips_in_cost("{1}{W/U}{U}")
+    assert counts["W"] == 0.5 and counts["U"] == 1.5 and counts["B"] == 0
+
+
+def test_deck_price_sums_priced_cards_only():
+    cards = [type("C", (), {"card_name": n, "quantity": q})() for n, q in [("A", 2), ("B", 1), ("C", 1)]]
+    index = {"a": {"price_usd": 1.5}, "b": {"price_usd": None}}
+    assert deck_stats._deck_price(cards, index) == (3.0, 2)
+    assert deck_stats._deck_price(cards, {}) == (None, 0)
+
+
+def test_proposals_carry_the_index_price(session):
+    deck = repo.create_deck(session, name="P", format="commander")
+    convo = repo.create_conversation(session)
+    with patch("app.tools.deck_tools.get_scryfall_client") as client, \
+         patch("app.tools.proposals._prices_for", return_value={"sol ring": 1.75}):
+        client.return_value.named.side_effect = lambda n, **k: {"name": n}
+        result = proposals.propose_deck_changes(
+            session, deck.id, "b",
+            [{"action": "add", "card_name": "Sol Ring", "reasoning": "x"}],
+            conversation_id=convo.id,
+        )
+    assert result["proposals"][0]["price_usd"] == 1.75
+    assert repo.get_proposal(session, result["proposals"][0]["id"]).price_usd == 1.75
+
+
+def test_deck_set_plan_stores_and_clears_the_price_ceiling(session):
+    deck = repo.create_deck(session, name="B", format="commander")
+    snap = deck_tools.deck_set_plan(session, deck.id, max_card_price=10)
+    assert snap["max_card_price"] == 10.0
+    snap = deck_tools.deck_set_plan(session, deck.id, max_card_price=0)
+    assert snap["max_card_price"] is None

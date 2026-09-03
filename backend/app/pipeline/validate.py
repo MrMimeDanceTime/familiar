@@ -21,7 +21,7 @@ from typing import Any
 from sqlmodel import Session
 
 from app.pipeline.selection import Selection
-from app.tools.deck_tools import propose_deck_changes
+from app.tools.proposals import propose_deck_changes
 
 
 def selection_to_changes(

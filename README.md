@@ -5,14 +5,20 @@ Brainstorms and iteratively develops decklists with you — including off-meta c
 ideas — grounding every suggestion in real card data from Scryfall, EDHREC, a local
 deckbuilding knowledge base, and Scryfall's functional card tags.
 
-It proposes changes you approve or deny (it never edits the deck on its own),
-computes each deck's bracket and power level with a factor breakdown, imports
-decklists from Archidekt/Moxfield, remembers your standing preferences, and
-backs up its SQLite database on startup.
+It proposes changes you approve, deny, or undo (it never edits the deck on
+its own), can be stopped mid-reply, reads the deck and your decisions fresh
+each turn, scores every suggestion against play rate, mechanical fit with the
+commander, and your own history, respects a per-card budget, computes each
+deck's bracket, power level, price, mana-source balance, and the infinite
+combos it contains (from Commander Spellbook), deals opening
+hands, imports decklists from Archidekt/Moxfield and exports them for Arena
+and Archidekt, lets you add your own knowledge entries beside the seeded
+deckbuilding advice, remembers your standing preferences, and backs up its
+SQLite database on startup and daily.
 
 ## Structure
 
-- `backend/` — FastAPI app, SQLite persistence, LLM tool-calling loop (Claude or DeepSeek), knowledge base (FTS5), deck-platform integrations, startup backups
+- `backend/` — FastAPI app, SQLite persistence, LLM tool-calling loop (DeepSeek), knowledge base (FTS5), deck-platform integrations, scheduled DB backups
 - `frontend/` — React + TypeScript + Vite chat UI with a live deck side panel
 - `docs/` — architecture, product philosophy, and provider-specific gotchas for anyone (or any coding assistant) working on this codebase
 - `design-package/` — the UI visual-refresh design brief and approved handoff (reference material; not built or imported by the app)
@@ -35,11 +41,12 @@ Pass `-Port` to use a different port, e.g. `.\run.ps1 -Port 8080`.
 
 All settings live in `.env` (copied from `.env.example` on first run):
 
-- **LLM provider** — `LLM_PROVIDER` (`deepseek` default, or `anthropic`) plus
-  the matching API key/model. See `docs/PROVIDERS.md`.
-- **Backups** — `BACKUP_MODE` controls the startup DB snapshot: `folder`
-  (default; point `BACKUP_DIR` at a synced folder like Drive/OneDrive/Dropbox),
-  `pcloud` (set `PCLOUD_AUTH_TOKEN`), or `off`. `BACKUP_KEEP` caps retained
+- **LLM provider** — DeepSeek, via `DEEPSEEK_API_KEY` and the `DEEPSEEK_MODEL*`
+  settings. See `docs/PROVIDERS.md`.
+- **Backups** — `BACKUP_MODE` controls DB snapshots: `folder` (default; point
+  `BACKUP_DIR` at a synced folder like Drive/OneDrive/Dropbox), `pcloud` (set
+  `PCLOUD_AUTH_TOKEN`), or `off`. One snapshot is taken at startup and then
+  every `BACKUP_INTERVAL_HOURS` (default 24). `BACKUP_KEEP` caps retained
   snapshots.
 
 ### Frontend development (hot reload)

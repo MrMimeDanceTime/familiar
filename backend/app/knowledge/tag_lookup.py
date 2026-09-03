@@ -1,9 +1,15 @@
 """Scryfall Tagger oracle-tag lookup.
 
-Downloads the Oracle Tags bulk-data file from Scryfall (community-vetted
-functional tags — ramp, draw, removal, board-wipe, etc.) and builds an
-in-memory ``oracle_id → set of tag slugs`` dictionary.  The file is cached
-to disk and refreshed at most once every 24 hours.
+Two sources hold the same taggings. The local card index (``app.cards``) is
+the preferred one: it is refreshed in a background thread and answers from
+SQLite. This module's gzip bulk cache is the cold-start fallback, used until
+the first index import lands; it can download inside a request, which is why
+it is no longer the first choice.
+
+The fallback downloads the Oracle Tags bulk-data file from Scryfall
+(community-vetted functional tags — ramp, draw, removal, board-wipe, etc.)
+and builds an in-memory ``oracle_id → set of tag slugs`` dictionary.  The
+file is cached to disk and refreshed at most once every 24 hours.
 
 The bulk file is gzipped JSONL: one tag object per line, each with a
 ``slug`` and a list of ``taggings``.  It is streamed to disk rather than
@@ -195,18 +201,56 @@ def get_tag_lookup() -> dict[str, set[str]]:
     return _load_tags()
 
 
+# Once the card index has taggings it stays the source; the flag is never
+# cleared. A refresh briefly empties `card_tags` before refilling it, and
+# flipping back to the bulk cache in that window could trigger a download in
+# the middle of a request. A card tagged during the window comes back empty
+# and is repaired by the stats backfill on its next read.
+_index_has_tags = False
+
+
+def _tags_from_index(oracle_id: str) -> set[str] | None:
+    """Tags from the local card index, or None when the index cannot answer.
+
+    The index and this module's gzip cache hold the same Scryfall taggings.
+    The index is refreshed in a background thread and never downloads inside a
+    request, so it is the preferred source; the cache is the cold-start
+    fallback until the first import lands, and the only source when the index
+    tables do not exist (a bare test engine).
+    """
+    global _index_has_tags
+    try:
+        from app.cards import schema, store
+
+        if not _index_has_tags:
+            if not schema.has_tags():
+                return None
+            _index_has_tags = True
+        return store.tags_for(oracle_id)
+    except Exception:  # noqa: BLE001 - fall through to the cache
+        return None
+
+
+def tags_for_oracle_id(oracle_id: str | None) -> set[str]:
+    """Every oracle tag slug for a card, from the index when it has them."""
+    if not oracle_id:
+        return set()
+    from_index = _tags_from_index(oracle_id)
+    if from_index is not None:
+        return from_index
+    return get_tag_lookup().get(oracle_id, set())
+
+
 def get_tags_for_card(oracle_id: str | None) -> list[str]:
     """Return the list of oracle tag slugs for a card."""
-    if not oracle_id:
-        return []
-    return sorted(get_tag_lookup().get(oracle_id, set()))
+    return sorted(tags_for_oracle_id(oracle_id))
 
 
 def roles_from_tags(oracle_id: str | None) -> set[str]:
     """Map a card's Scryfall oracle tags to our internal role names."""
     if not oracle_id:
         return set()
-    tags = get_tag_lookup().get(oracle_id, set())
+    tags = tags_for_oracle_id(oracle_id)
     roles: set[str] = set()
     for tag in tags:
         if tag in _LAND_TAGS:

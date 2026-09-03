@@ -1,4 +1,13 @@
+from app.deckplan import DEFAULT_POWER, DEFAULT_TARGETS
 from app.llm.base import ToolSpec
+
+# Rendered from the plan module so the model is told the defaults the scorer
+# actually uses. A hand-typed copy here drifted to numbers two changes old.
+_DEFAULT_TARGETS_TEXT = (
+    f"{DEFAULT_TARGETS['land']} land / {DEFAULT_TARGETS['ramp']} ramp / "
+    f"{DEFAULT_TARGETS['draw']} draw / {DEFAULT_TARGETS['removal']} removal, "
+    f"the targets for power {DEFAULT_POWER}"
+)
 
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
@@ -25,11 +34,37 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="search_card_index",
+        description=(
+            "Full-text search over the local copy of every Magic card: name, "
+            "rules text, and type line, all terms required. Instant and "
+            "offline, so prefer it for quick 'what cards do X' lookups "
+            "(e.g. 'sacrifice a creature draw', 'legendary dragon haste'). "
+            "Results carry oracle text and functional tags. Use scryfall_search "
+            "when you need Scryfall's query syntax (mana value, rarity, set, "
+            "otag:), and scryfall_card_by_name to confirm one specific card."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to match in name, rules text, or type line"},
+                "limit": {"type": "integer", "default": 10, "description": "Max results, up to 50"},
+                "color_identity": {
+                    "type": "string",
+                    "description": "Restrict to cards within this colour identity, e.g. 'BR'. Omit for any.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
         name="scryfall_card_by_name",
         description=(
             "Look up a single Magic card by name (fuzzy match by default). Use this "
             "whenever you need to confirm a specific card's mana cost, oracle text, "
-            "or legality before mentioning it to the user."
+            "or legality before mentioning it to the user. Returns the card's "
+            "rulings too; cite them for timing and interaction questions rather "
+            "than reasoning from memory."
         ),
         parameters={
             "type": "object",
@@ -106,7 +141,10 @@ TOOL_SPECS: list[ToolSpec] = [
             "strengths and weaknesses, commander selection heuristics, synergy "
             "vs goodstuff tradeoffs, or sideboard construction. Returns the "
             "top matching entries with their full content. This knowledge base "
-            "is authoritative — prefer it over training-data assumptions."
+            "is authoritative — prefer it over training-data assumptions. An "
+            "entry with source 'user' was written by the player (house rules, "
+            "their playgroup's expectations, their own conclusions) and "
+            "outranks a seeded entry when the two disagree."
         ),
         parameters={
             "type": "object",
@@ -121,12 +159,14 @@ TOOL_SPECS: list[ToolSpec] = [
                         "Optional filter to one topic when the query keyword also "
                         "appears in unrelated entries. One of: mana-curve, ramp, "
                         "removal, card-draw, land-base, color-pie, commander, "
-                        "synergy, format-specific, power-level."
+                        "synergy, format-specific, power-level, playgroup (the "
+                        "player's own notes about their table)."
                     ),
                     "enum": [
                         "mana-curve", "ramp", "removal", "card-draw", "land-base",
                         "color-pie", "commander", "synergy", "format-specific",
                         "power-level",
+                        "playgroup",
                     ],
                 },
                 "top_k": {"type": "integer", "default": 5, "description": "Max results to return"},
@@ -146,11 +186,25 @@ TOOL_SPECS: list[ToolSpec] = [
             "in your history may name cards that were resolved long ago. Trust "
             "pending_proposals over your own memory of what you proposed. Note "
             "pending cards are NOT counted in total_cards — a proposal is not "
-            "yet part of the deck."
+            "yet part of the deck. Oracle text comes back for the commander(s) "
+            "only; set include_oracle_text=true when you need to reason about "
+            "the rules text of the whole list, or look up specific cards with "
+            "scryfall_card_collection."
         ),
         parameters={
             "type": "object",
-            "properties": {"deck_id": {"type": "integer"}},
+            "properties": {
+                "deck_id": {"type": "integer"},
+                "include_oracle_text": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Include oracle_text for every card, not just the "
+                        "commander(s). Costs a lot of context on a full deck; "
+                        "use it when you genuinely need the whole list's text."
+                    ),
+                },
+            },
             "required": ["deck_id"],
         },
     ),
@@ -168,7 +222,12 @@ TOOL_SPECS: list[ToolSpec] = [
             "counts may undercount, so caveat any count-based advice. The "
             "'deficiencies' field (commander only) compares lands/ramp/draw/"
             "removal against target ranges and flags each LOW/OK/HIGH — use it "
-            "to prioritise what a deck needs instead of re-deriving targets."
+            "to prioritise what a deck needs instead of re-deriving targets. "
+            "'mana_sources' compares each colour's share of mana sources with its "
+            "share of coloured pips and flags a colour that is LOW; "
+            "'total_price_usd' is the deck's price at the index's printing; "
+            "'combos' lists the combos the deck already contains (from Commander "
+            "Spellbook), which the bracket estimate also uses."
         ),
         parameters={
             "type": "object",
@@ -327,6 +386,15 @@ TOOL_SPECS: list[ToolSpec] = [
                         "Include constraints the player stated."
                     ),
                 },
+                "count": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": (
+                        "How many cards to propose, 1-10. Match the batch size "
+                        "you told the player (three to six is the usual batch); "
+                        "asking for more and trimming wastes picks."
+                    ),
+                },
             },
             "required": ["deck_id", "intent"],
         },
@@ -370,9 +438,10 @@ TOOL_SPECS: list[ToolSpec] = [
                     "type": "object",
                     "description": (
                         "How many cards each role should end up with. Omit a role "
-                        "to keep its default (36 land / 10 ramp / 10 draw / 8 "
-                        "removal). Match the deck's actual plan: a low-curve aggro "
-                        "deck wants fewer lands than a big-mana deck."
+                        f"to keep its default ({_DEFAULT_TARGETS_TEXT}; a stated "
+                        "power_level changes them). Match the deck's actual plan: "
+                        "a low-curve aggro deck wants fewer lands than a big-mana "
+                        "deck."
                     ),
                     "properties": {
                         "land": {"type": "integer"},
@@ -394,6 +463,17 @@ TOOL_SPECS: list[ToolSpec] = [
                         "from it using the same formula deck_get_stats scores "
                         "with, so leaving it unset silently aims the whole build "
                         "at the default instead of the player's goal."
+                    ),
+                },
+                "max_card_price": {
+                    "type": "number",
+                    "description": (
+                        "Budget ceiling per card in US dollars. Set it when the "
+                        "player names a budget ('nothing over $10', 'keep it "
+                        "cheap' = 5). Candidates above it are excluded from "
+                        "suggest_cards. 0 removes the ceiling. Unset, the player's "
+                        "standing budget preference applies (budget = $5, "
+                        "mid-range = $25, unlimited = none)."
                     ),
                 },
                 "off_meta": {

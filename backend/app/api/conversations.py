@@ -17,11 +17,14 @@ class ConversationOut(BaseModel):
 
 
 class MessageOut(BaseModel):
+    """A message as the UI needs it. Tool results are left out on purpose:
+    they are the largest thing in a conversation and the UI never renders
+    them, so a reload was shipping every deck read the model ever made."""
+
     id: int
     role: str
     text_content: str | None
     tool_calls: list | None
-    tool_results: list | None
     sequence: int
     created_at: str
 
@@ -65,7 +68,6 @@ def get_conversation(conversation_id: int):
                     role=m.role,
                     text_content=m.text_content,
                     tool_calls=m.tool_calls,
-                    tool_results=m.tool_results,
                     sequence=m.sequence,
                     created_at=m.created_at.isoformat(),
                 )
@@ -85,6 +87,7 @@ def get_conversation(conversation_id: int):
                     "reasoning": p.reasoning,
                     "scores": p.scores,
                     "denial_reason": p.denial_reason,
+                    "price_usd": p.price_usd,
                     "created_at": p.created_at.isoformat(),
                 }
                 for p in proposals_raw
