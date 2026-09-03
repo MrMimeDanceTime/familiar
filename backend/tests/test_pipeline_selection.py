@@ -124,3 +124,12 @@ def test_select_end_to_end_offline():
     assert "Demonic Tutor" in provider.calls[0]["user"]
     assert "ILLEGAL" in provider.calls[0]["user"]
     assert provider.calls[0]["model"] == "deepseek-v4-pro"
+
+
+def test_prompt_carries_the_players_own_words():
+    from app.pipeline.selection import build_prompt
+
+    _system, user = build_prompt(POOL, "ramp package", player_message="cheap  artifact ramp, no green\nplease")
+    assert "Player intent: ramp package\nPlayer's own words: cheap artifact ramp, no green please\n" in user
+    _system, bare = build_prompt(POOL, "ramp package")
+    assert "Player's own words" not in bare

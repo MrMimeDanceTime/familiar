@@ -276,6 +276,7 @@ def _suggest_cards(
     count: int | None = None,
     conversation_id: int | None = None,
     message_id: int | None = None,
+    player_message: str | None = None,
 ) -> dict:
     """Run the retrieval pipeline and return its proposal batch.
 
@@ -293,7 +294,7 @@ def _suggest_cards(
     result = build_suggestions(
         session, deck_id, intent, provider,
         conversation_id=conversation_id, message_id=message_id,
-        max_picks=picks,
+        max_picks=picks, player_message=player_message,
     )
     return {"ok": True, "summary": result.summary, "proposals": result.proposals}
 

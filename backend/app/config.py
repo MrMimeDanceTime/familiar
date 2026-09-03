@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # again. 0 recomputes immediately (the tests use that).
     power_nuance_settle_seconds: float = 90.0
 
+    # The chat loop thinks on the first send of a turn (where it decides what
+    # the turn is for and what to hand the pipeline) and on the send after a
+    # batch (where it decides which picks to stand behind); the tool-dispatch
+    # sends between them stay fast. Off makes the first send fast too.
+    chat_plan_thinking: bool = True
+    # How hard those chat sends may think: low | medium | high | empty for the
+    # provider default. The selection stage measured "low" at half the wait
+    # for the same picks; the chat sends are a smaller decision still.
+    chat_reasoning_effort: str = "low"
+
     # Cap on the chat model's response length. DeepSeek generates at ~40 tok/s,
     # so an unbounded final answer of 2000+ tokens takes ~50s purely to write —
     # measured as the dominant cause of slow turns. Bounding output both caps

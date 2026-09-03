@@ -307,6 +307,7 @@ def build_suggestions(
     off_meta: float | None = None,
     local_store: Any | None = None,
     local_pool_min: int = 25,
+    player_message: str | None = None,
 ) -> SuggestionResult:
     """Run the full retrieval pipeline for a deck and intent.
 
@@ -421,6 +422,7 @@ def build_suggestions(
             model=model, max_picks=max_picks, thinking=select_thinking,
             deck_context=_render_deck_context(snapshot),
             reasoning_effort=settings.select_reasoning_effort or None,
+            player_message=player_message,
         )
 
     debug = {

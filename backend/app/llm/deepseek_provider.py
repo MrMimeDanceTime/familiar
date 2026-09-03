@@ -64,7 +64,7 @@ def _require_reasoning_content(
 class DeepSeekProvider:
     def __init__(
         self, api_key: str, model: str, timeout: float | None = None,
-        max_tokens: int | None = None,
+        max_tokens: int | None = None, reasoning_effort: str | None = None,
     ) -> None:
         # Cap the per-request timeout: the SDK default (600s) reads as a total
         # UI freeze when a call stalls. With a timeout the SDK raises instead,
@@ -81,6 +81,9 @@ class DeepSeekProvider:
         # None means no cap. Only send() applies it; complete_json (pipeline)
         # sets its own limits.
         self._max_tokens = max_tokens
+        # Applied to send()/send_stream() calls that think. complete_json takes
+        # its own per-call value because the pipeline stages differ.
+        self._reasoning_effort = reasoning_effort or None
         # Tokens spent through this instance. The turn runner builds one
         # provider per turn, so these totals are the turn's cost, including the
         # pipeline and nuance calls made from inside tools.
@@ -129,16 +132,18 @@ class DeepSeekProvider:
         if thinking:
             messages = _require_reasoning_content(messages)
 
+        extra_body: dict[str, Any] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+        if thinking and self._reasoning_effort:
+            extra_body["reasoning_effort"] = self._reasoning_effort
+
         return {
             "model": model or self._model,
             "messages": messages,
             **max_kwargs,
             **tool_kwargs,
             # V4 decouples reasoning from the model ID: deepseek-v4-flash/pro
-            # default to non-thinking. Thinking is slow, so the engine turns it
-            # OFF for intermediate tool-dispatch iterations (mechanical "which
-            # tool next" decisions) and back ON for the final synthesis turn.
-            "extra_body": {"thinking": {"type": "enabled" if thinking else "disabled"}},
+            # default to non-thinking, so the flag is always sent explicitly.
+            "extra_body": extra_body,
         }
 
     def send_stream(

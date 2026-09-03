@@ -70,9 +70,31 @@ def test_immediate_final_response_no_tools(session):
     assert messages[1].text_content == "Sure, let's talk about it!"
 
 
-def test_engine_disables_thinking_for_the_chat_loop(session):
-    # Thinking mode is the biggest lever on turn latency; the loop turns it off
-    # (deep reasoning lives in tool choices + the pipeline/nuance calls).
+def test_engine_thinks_on_the_planning_send_only(session):
+    # The first send decides what the turn is for; the dispatch sends after it
+    # are mechanical and stay fast.
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="c1", name="search_deckbuilding_knowledge", arguments={"query": "x"})],
+            raw_assistant_message={"role": "assistant"},
+        ),
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="c2", name="search_deckbuilding_knowledge", arguments={"query": "y"})],
+            raw_assistant_message={"role": "assistant"},
+        ),
+        AssistantTurn(text="hi", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    _collect(run_chat_turn(session, provider, convo.id, "hey", deck_id=None))
+    assert provider.thinking_flags == [True, False, False]
+
+
+def test_planning_thinking_can_be_switched_off(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_plan_thinking", False)
     provider = FakeProvider([AssistantTurn(text="hi", tool_calls=[])])
     convo = repo.create_conversation(session)
     _collect(run_chat_turn(session, provider, convo.id, "hey", deck_id=None))
@@ -1148,7 +1170,7 @@ def test_thinking_turns_on_for_the_send_after_a_batch(mock_get_client, session):
 
     _collect(run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id))
 
-    assert provider.thinking_flags == [False, True]
+    assert provider.thinking_flags == [True, True]
 
 
 def test_interim_text_beside_a_tool_call_is_persisted(session):

@@ -16,6 +16,7 @@ from typing import Any, Iterator
 from sqlmodel import Session
 
 from app.chat import context
+from app.config import settings
 from app.chat.prompt import build_system_prompt
 from app.chat.streaming import (
     deck_proposal_event,
@@ -282,11 +283,12 @@ def run_chat_turn(
             restrict = proposals_emitted and not pipeline_followup_allowed
             tools_for_turn = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
             pipeline_followup_allowed = False
-            # The send after a batch lands is where the model decides which
-            # picks to stand behind and writes the reply the player reads.
-            # That is the one place judgment shows, so it gets thinking; the
-            # tool-dispatch iterations before it stay fast.
-            think_now = restrict
+            # Two sends carry judgment: the first, where the model decides
+            # what this turn is for and what to hand the pipeline, and the one
+            # after a batch lands, where it decides which picks to stand
+            # behind and writes the reply. Those think; the tool-dispatch
+            # iterations between them stay fast.
+            think_now = restrict or (iteration == 0 and settings.chat_plan_thinking)
             send_started = time.perf_counter()
             turn: AssistantTurn | None = None
             streamed_this_send = False
@@ -340,6 +342,10 @@ def run_chat_turn(
 
                 if call.name in PROPOSAL_TOOLS:
                     args["conversation_id"] = conversation_id
+                if call.name == "suggest_cards":
+                    # The selection stage sees the player's own words, not
+                    # only the intent the model distilled from them.
+                    args["player_message"] = user_text
 
                 # A hand-picked ADD batch is stripped out and redirected to the
                 # scoring pipeline; anything else in the same call still runs.
@@ -453,13 +459,9 @@ def run_chat_turn(
         # what the player expects when the model has effectively finished its
         # reasoning but kept a trailing tool call attached.
         #
-        # Thinking stays OFF, matching the rest of the loop. Turning it on here
-        # broke the turn outright: DeepSeek requires every assistant message in
-        # the history to carry `reasoning_content` when a call runs in thinking
-        # mode, and the loop's own messages were produced with thinking off, so
-        # they have none. The wrap-up then 400s with "The `reasoning_content` in
-        # the thinking mode must be passed back to the API" — losing exactly the
-        # turn this fallback exists to rescue.
+        # Thinking stays off: this send exists to get a reply out, and the
+        # provider backfills reasoning_content so mixing modes is safe either
+        # way.
         logger.warning(
             "chat: hit MAX_TOOL_ITERATIONS (%d) after %.2fs — forcing toolless wrap-up",
             MAX_TOOL_ITERATIONS, time.perf_counter() - turn_started,

@@ -376,3 +376,22 @@ def test_deepseek_usage_accumulates_across_send_and_complete_json(mock_openai_cl
     assert provider.usage == {
         "llm_calls": 2, "prompt_tokens": 20, "completion_tokens": 10, "reasoning_tokens": 0,
     }
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_chat_reasoning_effort_rides_on_thinking_sends_only(mock_openai_cls):
+    provider = DeepSeekProvider(api_key="k", model="deepseek-v4-pro", reasoning_effort="low")
+    client = mock_openai_cls.return_value
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="ok", tool_calls=None,
+                model_dump=lambda exclude_none=True: {"role": "assistant", "content": "ok"},
+            ),
+            finish_reason="stop",
+        )]
+    )
+    provider.send("sys", [{"role": "user", "content": "hi"}], [], thinking=True)
+    assert client.chat.completions.create.call_args.kwargs["extra_body"]["reasoning_effort"] == "low"
+    provider.send("sys", [{"role": "user", "content": "hi"}], [], thinking=False)
+    assert "reasoning_effort" not in client.chat.completions.create.call_args.kwargs["extra_body"]
