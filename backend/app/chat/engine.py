@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 from sqlmodel import Session
 
+from app.chat import context
 from app.chat.prompt import build_system_prompt
 from app.chat.streaming import (
     deck_proposal_event,
@@ -189,7 +190,12 @@ def run_chat_turn(
 ) -> Iterator[str]:
     """Run one user turn through the agentic loop, yielding formatted SSE strings."""
     history = _load_history(session, conversation_id)
-    history = provider.append_user_message(history, user_text)
+    # What the player decided since the last reply rides with their message
+    # so the model reads it as part of the turn; the stored transcript keeps
+    # the raw text for the UI and the annotated one for replay.
+    since = context.since_last_turn(session, deck_id)
+    model_text = f"{since}\n\n{user_text}" if since else user_text
+    history = provider.append_user_message(history, model_text)
 
     sequence = repo.next_sequence(session, conversation_id)
     if sequence == 0:
@@ -200,7 +206,7 @@ def run_chat_turn(
         role="user",
         sequence=sequence,
         text_content=user_text,
-        provider_native=[{"role": "user", "content": user_text}],
+        provider_native=[{"role": "user", "content": model_text}],
     )
     sequence += 1
 
@@ -214,7 +220,7 @@ def run_chat_turn(
             format_key = deck.format
 
     prefs = repo.get_or_create_preferences(session)
-    plan_is_set, total_cards = _deck_phase(session, deck_id)
+    state = context.deck_state(session, deck_id)
     system_prompt = build_system_prompt(
         format_key,
         preferred_bracket=prefs.preferred_bracket,
@@ -222,12 +228,14 @@ def run_chat_turn(
         budget=prefs.budget,
         rule0_notes=prefs.rule0_notes,
         build_preferences=prefs.build_preferences,
-        plan_is_set=plan_is_set,
-        total_cards=total_cards,
+        plan_is_set=state.plan_is_set,
+        total_cards=state.total_cards,
     )
-    grounding = _deck_grounding(session, deck_id)
-    if grounding:
-        system_prompt = f"{system_prompt}\n\n{grounding}"
+    # The variable blocks go last so the stable part of the prompt stays a
+    # cacheable prefix across turns.
+    for block in (context.player_history(session), state.block):
+        if block:
+            system_prompt = f"{system_prompt}\n\n{block}"
 
     # Proposals are created mid-turn (during a tool-call iteration) but the
     # message the player actually sees for that turn is the *final* assistant
@@ -577,91 +585,6 @@ def _finalize_turn(
         yield deck_proposal_event(settled)
     repo.touch_conversation(session, conversation_id)
     yield done_event(message.id, conversation_id)
-
-
-def _deck_phase(session: Session, deck_id: int | None) -> tuple[bool | None, int | None]:
-    """Where the deck is in its build, for the prompt's phase-specific blocks.
-
-    Returns ``(plan_is_set, total_cards)``, both None when there is no deck
-    or the read fails, which makes the prompt include every block.
-    """
-    if deck_id is None:
-        return None, None
-    try:
-        from app import deckplan
-
-        snapshot = repo.deck_snapshot(session, deck_id)
-        plan = deckplan.build_plan(snapshot)
-        return plan.has_plan(), int(snapshot.get("total_cards") or 0)
-    except Exception:  # noqa: BLE001 - the prompt must build regardless
-        return None, None
-
-
-# Maps a deficiency category from deck stats to (knowledge category, query)
-# used to proactively pull the relevant grounding entry into the turn.
-_DEFICIENCY_KNOWLEDGE = {
-    "lands": ("land-base", "land count formula commander"),
-    "ramp": ("ramp", "ramp package sizing commander"),
-    "draw": ("card-draw", "card draw density commander"),
-    "removal": ("removal", "removal suite composition commander"),
-}
-
-
-def _deck_grounding(session: Session, deck_id: int | None) -> str:
-    """Proactively retrieve knowledge for the attached deck's weak spots.
-
-    Retrieval is otherwise model-elective (it must choose to call the search
-    tool), so a deck with off-target ramp/draw/removal often gets advice from
-    training data instead of the curated knowledge base. When a deck has cards
-    and any deficiency is off-target, pull the matching knowledge entry and the
-    deck's own stat summary into the system prompt so the model reasons from
-    grounded numbers on its first turn. Best-effort: never break the turn.
-    """
-    if deck_id is None:
-        return ""
-    try:
-        from app.knowledge.store import search_knowledge
-        from app.tools.deck_tools import compute_deck_stats
-
-        stats = compute_deck_stats(session, deck_id)
-        if stats.get("total_cards", 0) == 0:
-            return ""
-
-        off_target = [d for d in stats.get("deficiencies", []) if d["status"] != "OK"]
-        if not off_target:
-            return ""
-
-        blocks: list[str] = []
-        seen: set[str] = set()
-        for d in off_target:
-            mapping = _DEFICIENCY_KNOWLEDGE.get(d["category"])
-            if not mapping:
-                continue
-            kb_category, query = mapping
-            if kb_category in seen:
-                continue
-            seen.add(kb_category)
-            hits = search_knowledge(query, top_k=1, format="commander", category=kb_category)
-            if hits:
-                blocks.append(f"- {hits[0]['title']}: {hits[0]['body']}")
-
-        summary = ", ".join(
-            f"{d['category']} {d['count']} ({d['status']} vs {d['target_low']}-{d['target_high']})"
-            for d in off_target
-        )
-        if not blocks:
-            return ""
-        return (
-            "<deck_grounding>\n"
-            "The attached deck has counts outside typical targets: "
-            f"{summary}. Relevant deckbuilding guidance retrieved for you "
-            "(prefer this over training-data assumptions; call deck_get_stats "
-            "for the full breakdown before quoting numbers):\n"
-            + "\n".join(blocks)
-            + "\n</deck_grounding>"
-        )
-    except Exception:  # noqa: BLE001 - grounding is best-effort, never fatal
-        return ""
 
 
 def _settled_proposal_batch(

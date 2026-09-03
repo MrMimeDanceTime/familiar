@@ -24,11 +24,13 @@ class FakeProvider:
     def __init__(self, turns):
         self._turns = list(turns)
         self.sent_history_snapshots = []
+        self.sent_system_prompts = []
         self.thinking_flags = []
         self.tools_per_send = []
 
     def send(self, system_prompt, history, tools, *, thinking=True):
         self.sent_history_snapshots.append(list(history))
+        self.sent_system_prompts.append(system_prompt)
         self.thinking_flags.append(thinking)
         self.tools_per_send.append(tools)
         return self._turns.pop(0)
@@ -1166,3 +1168,27 @@ def test_interim_text_beside_a_tool_call_is_persisted(session):
 
     texts = [m.text_content for m in repo.list_messages(session, convo.id) if m.role == "assistant"]
     assert texts == ["Checking the deck.", "It is empty."]
+
+
+def test_since_last_turn_note_rides_with_the_user_message(session):
+    from app.db.models import DeckProposal
+
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    session.add(DeckProposal(
+        conversation_id=convo.id, deck_id=deck.id, action="add",
+        card_name="Sol Ring", status="approved",
+    ))
+    session.commit()
+    provider = FakeProvider([AssistantTurn(text="ok", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "next batch please", deck_id=deck.id))
+
+    user_message = repo.list_messages(session, convo.id)[0]
+    assert user_message.text_content == "next batch please"
+    native = user_message.provider_native[0]["content"]
+    assert native.startswith("<since_last_turn>") and native.endswith("next batch please")
+    assert "approved Sol Ring" in native
+    # The system prompt carried the deck header.
+    assert "<deck_state>" in provider.sent_system_prompts[-1]

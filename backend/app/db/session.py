@@ -28,6 +28,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     # Brain-map verdict and structured denial reason on each proposal.
     ("deck_proposals", "scores", "JSON"),
     ("deck_proposals", "denial_reason", "TEXT"),
+    ("deck_proposals", "reported_status", "TEXT"),
     # Player-written knowledge entries alongside the seeded ones.
     ("knowledge_entries", "source", "TEXT"),
     # Per-turn token accounting.

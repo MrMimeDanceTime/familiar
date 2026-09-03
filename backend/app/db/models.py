@@ -117,6 +117,9 @@ class DeckProposal(SQLModel, table=True):
     # this one, wrong slot" mean different things to the learning loop, and
     # only the second is worth generalising from.
     denial_reason: str | None = None
+    # The last status the chat model was told about, so the next turn can
+    # report only what the player decided since. See app.chat.context.
+    reported_status: str | None = None
     # Price at proposal time, from the card index, so the review card can show
     # what a pick costs without a lookup per render.
     price_usd: float | None = None

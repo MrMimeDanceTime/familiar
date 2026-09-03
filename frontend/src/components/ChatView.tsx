@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DisplayMessage, ProposalBatch } from '../hooks/useChatStream'
-import { reviewSummary } from '../lib/reviewSummary'
+import { REVIEW_DONE_MESSAGE } from '../lib/deckPrompts'
 import { FamiliarMark } from './icons'
 import { MessageBubble } from './MessageBubble'
 import { ProposalCard } from './ProposalCard'
@@ -136,7 +136,7 @@ export function ChatView({ messages, activeTool, isStreaming, error, onSend, pro
 
   const handleContinue = useCallback((batchIndex: number) => {
     setDismissedBatches((prev) => new Set(prev).add(batchIndex))
-    onSend(reviewSummary(proposalBatches[batchIndex]?.proposals ?? []))
+    onSend(REVIEW_DONE_MESSAGE)
   }, [onSend, proposalBatches])
 
   // Anchor each batch under the assistant message that produced it. Batches

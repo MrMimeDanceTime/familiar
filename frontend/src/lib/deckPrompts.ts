@@ -4,6 +4,11 @@ const COLOR_NAMES: Record<string, string> = {
   W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green',
 }
 
+// What "Done reviewing" sends. The decisions themselves reach the model from
+// the server (app.chat.context.since_last_turn), read from the database, so
+// the message no longer has to carry them.
+export const REVIEW_DONE_MESSAGE = "I've reviewed the proposals. Let's continue."
+
 export const FORMAT_OPTIONS: { value: string; label: string }[] = [
   { value: 'commander', label: 'Commander/EDH' },
   { value: 'brawl', label: 'Brawl' },
