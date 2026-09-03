@@ -450,3 +450,50 @@ def test_deepseek_stream_recorded_thinking_tool_call_shape(mock_openai_cls):
     assert turn.raw_assistant_message["content"] == "Let me look."
     assert turn.stop_reason == "tool_calls"
     assert provider.usage["reasoning_tokens"] == 90
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_bare_assistant_messages_are_repaired_before_sending(mock_openai_cls):
+    """One assistant message with neither content nor tool_calls fails every
+    later call in a conversation; the provider repairs it at send time."""
+    provider = DeepSeekProvider(api_key="k", model="deepseek-v4-pro")
+    client = mock_openai_cls.return_value
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="ok", tool_calls=None,
+                model_dump=lambda exclude_none=True: {"role": "assistant", "content": "ok"},
+            ),
+            finish_reason="stop",
+        )]
+    )
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant"},
+        {"role": "user", "content": "again"},
+    ]
+    provider.send("sys", history, [], thinking=False)
+    sent = client.chat.completions.create.call_args.kwargs["messages"]
+    assert sent[2] == {"role": "assistant", "content": "[empty reply]"}
+    assert history[1] == {"role": "assistant"}  # the record is untouched
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_thinking_sends_get_their_own_output_budget(mock_openai_cls):
+    provider = DeepSeekProvider(
+        api_key="k", model="deepseek-v4-pro", max_tokens=1000, thinking_max_tokens=8000,
+    )
+    client = mock_openai_cls.return_value
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="ok", tool_calls=None,
+                model_dump=lambda exclude_none=True: {"role": "assistant", "content": "ok"},
+            ),
+            finish_reason="stop",
+        )]
+    )
+    provider.send("sys", [{"role": "user", "content": "hi"}], [], thinking=True)
+    assert client.chat.completions.create.call_args.kwargs["max_tokens"] == 8000
+    provider.send("sys", [{"role": "user", "content": "hi"}], [], thinking=False)
+    assert client.chat.completions.create.call_args.kwargs["max_tokens"] == 1000

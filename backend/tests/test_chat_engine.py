@@ -1292,3 +1292,39 @@ def test_stop_mid_stream_keeps_the_partial_text(session):
     assert final.role == "assistant"
     assert final.text_content.startswith("one two three four five six seven eight")
     assert "[The player stopped this reply here.]" in final.provider_native[0]["content"]
+
+
+# ── empty replies ──────────────────────────────────────────────────────────
+
+def test_empty_thinking_reply_is_retried_without_thinking(session):
+    provider = FakeProvider([
+        AssistantTurn(text=None, tool_calls=[], stop_reason="length",
+                      raw_assistant_message={"role": "assistant"}),
+        AssistantTurn(text="Here we go.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "hello", deck_id=None))
+
+    assert provider.thinking_flags == [True, False]
+    assert any(e.event == "done" for e in events)
+    messages = repo.list_messages(session, convo.id)
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert messages[1].text_content == "Here we go."
+
+
+def test_an_empty_reply_is_never_persisted_bare(session):
+    provider = FakeProvider([
+        AssistantTurn(text=None, tool_calls=[], stop_reason="length",
+                      raw_assistant_message={"role": "assistant"}),
+        AssistantTurn(text="", tool_calls=[], raw_assistant_message={"role": "assistant"}),
+    ])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "hello", deck_id=None))
+
+    assert provider.thinking_flags == [True, False]
+    final = repo.list_messages(session, convo.id)[-1]
+    assert "didn't manage to write a reply" in final.text_content
+    assert final.provider_native[0]["content"] == final.text_content
+    assert any(e.event == "token" and "didn't manage" in e.data["text"] for e in events)

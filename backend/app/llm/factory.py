@@ -19,6 +19,7 @@ def get_provider(name: str | None = None) -> ChatProvider:
             model=settings.deepseek_model,
             timeout=settings.llm_timeout_seconds,
             max_tokens=settings.chat_max_tokens,
+            thinking_max_tokens=settings.chat_thinking_max_tokens,
             reasoning_effort=settings.chat_reasoning_effort,
         )
 
