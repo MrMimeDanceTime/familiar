@@ -569,6 +569,21 @@ def _classify_type(type_line: str | None) -> str:
     return "Other"
 
 
+def _deck_is_settling(deck: Any) -> bool:
+    """True while the deck changed more recently than the settle window."""
+    from datetime import datetime, timezone
+
+    from app.config import settings
+
+    window = settings.power_nuance_settle_seconds
+    if window <= 0:
+        return False
+    updated = deck.updated_at
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - updated).total_seconds() < window
+
+
 def _resolve_power_nuance(
     session: Session,
     deck: Any,
@@ -576,20 +591,23 @@ def _resolve_power_nuance(
     base_score: int,
     base_factors: list[str],
     provider: Any | None,
-) -> tuple[int, float, str]:
-    """Return ``(nuanced_score, adjustment, reason)`` for the power level.
+) -> tuple[float, float, str, bool]:
+    """Return ``(nuanced_score, adjustment, reason, pending)`` for the power level.
 
     Cache-first: if the deck's stored ``power_nuance_key`` matches the current
     deck-content hash, reuse the cached adjustment (free — no LLM call), whether
-    or not a provider is present. On a miss WITH a provider, compute the nuance,
-    cache it, and apply. On a miss WITHOUT a provider (grounding, pipeline), skip
-    the LLM and return the base score unadjusted rather than blocking. Only
-    applied to the commander format — power level is a commander concept here.
+    or not a provider is present. On a miss WITH a provider, compute the nuance
+    on the fast model, cache it, and apply — unless the deck changed within the
+    settle window, in which case the base score is returned with ``pending``
+    set so the caller can come back once the deck stops moving. On a miss
+    WITHOUT a provider (grounding, pipeline), skip the LLM and return the base
+    score unadjusted rather than blocking. Only applied to the commander format
+    — power level is a commander concept here.
     """
     from app.tools.power_nuance import compute_nuance, deck_content_hash
 
     if deck is None or deck.format != "commander":
-        return base_score, 0.0, ""
+        return base_score, 0.0, "", False
 
     snapshot = repo.deck_snapshot(session, deck_id)
     key = deck_content_hash(snapshot)
@@ -597,17 +615,25 @@ def _resolve_power_nuance(
     if deck.power_nuance_key == key and deck.power_nuance_adj is not None:
         adj, reason = deck.power_nuance_adj, deck.power_nuance_reason or ""
     elif provider is not None:
-        adj, reason = compute_nuance(provider, snapshot, base_score, base_factors)
+        if _deck_is_settling(deck):
+            return base_score, 0.0, "", True
+        # A bounded ±1 classification against a closed rubric does not need the
+        # Pro model's depth; Flash answers it in a fraction of the time.
+        from app.llm.factory import get_fast_model
+
+        adj, reason = compute_nuance(
+            provider, snapshot, base_score, base_factors, model=get_fast_model(),
+        )
         repo.set_deck_power_nuance(session, deck_id, adj, reason, key)
     else:
-        return base_score, 0.0, ""
+        return base_score, 0.0, "", False
 
     # Keep the half-point: base is an integer band, adj is a multiple of 0.5, so
     # the sum is a clean .0/.5. Don't round — that would (a) use banker's rounding
     # (7.5->8 but 6.5->6, making a -0.5 a no-op on even bases) and (b) discard the
     # ±0.5 granularity the nuance exists to add. The frontend renders fractions.
     nuanced = min(10.0, max(1.0, base_score + adj))
-    return nuanced, adj, reason
+    return nuanced, adj, reason, False
 
 
 def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = None) -> dict:
@@ -631,7 +657,10 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
     # leaves some cards untagged (already surfaced via the "untagged" list and
     # the floor caveat), which is strictly better than the tool erroring out and
     # the model falling back to counting the list by hand.
-    missing = [c for c in cards if not c.oracle_id or not c.tags]
+    # `tags is None` means never looked up; `[]` means looked up and the card
+    # has no community tags. Treating the two alike made every stats call for
+    # a deck with one untagged card refetch it from Scryfall, forever.
+    missing = [c for c in cards if not c.oracle_id or c.tags is None]
     if missing:
         from app.knowledge.tag_lookup import get_tags_for_card
         from app.tools.scryfall_client import get_scryfall_client
@@ -649,7 +678,7 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
                         c.oracle_text = fc.get("oracle_text", "")
                     if not c.oracle_id:
                         c.oracle_id = oid
-                    if not c.tags:
+                    if c.tags is None and oid:
                         c.tags = get_tags_for_card(oid)
                     session.add(c)
             session.commit()
@@ -751,12 +780,15 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
     # Nuance is a bonus on top of the deterministic base; a provider/DB failure
     # here must never sink the stats call (see the backfill rationale above).
     try:
-        power_level, power_nuance_adj, power_nuance_reason = _resolve_power_nuance(
-            session, deck, deck_id, power_base, power_factors, provider,
+        power_level, power_nuance_adj, power_nuance_reason, nuance_pending = (
+            _resolve_power_nuance(
+                session, deck, deck_id, power_base, power_factors, provider,
+            )
         )
     except Exception:  # noqa: BLE001 - fall back to the deterministic base score
         session.rollback()
         power_level, power_nuance_adj, power_nuance_reason = power_base, 0.0, ""
+        nuance_pending = False
     if power_nuance_adj:
         sign = "+" if power_nuance_adj > 0 else ""
         power_factors = [
@@ -779,6 +811,7 @@ def compute_deck_stats(session: Session, deck_id: int, provider: Any | None = No
         "power_level_base": power_base,
         "power_nuance_adj": power_nuance_adj,
         "power_nuance_reason": power_nuance_reason,
+        "power_nuance_pending": nuance_pending,
         "power_factors": power_factors,
         "bracket": bracket,
         "bracket_factors": bracket_factors,

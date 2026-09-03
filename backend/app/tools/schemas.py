@@ -34,6 +34,30 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="search_card_index",
+        description=(
+            "Full-text search over the local copy of every Magic card: name, "
+            "rules text, and type line, all terms required. Instant and "
+            "offline, so prefer it for quick 'what cards do X' lookups "
+            "(e.g. 'sacrifice a creature draw', 'legendary dragon haste'). "
+            "Results carry oracle text and functional tags. Use scryfall_search "
+            "when you need Scryfall's query syntax (mana value, rarity, set, "
+            "otag:), and scryfall_card_by_name to confirm one specific card."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to match in name, rules text, or type line"},
+                "limit": {"type": "integer", "default": 10, "description": "Max results, up to 50"},
+                "color_identity": {
+                    "type": "string",
+                    "description": "Restrict to cards within this colour identity, e.g. 'BR'. Omit for any.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSpec(
         name="scryfall_card_by_name",
         description=(
             "Look up a single Magic card by name (fuzzy match by default). Use this "

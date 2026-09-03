@@ -103,6 +103,7 @@ def execute_turn(turn_id: str, conversation_id: int, message: str, deck_id: int 
     with Session(get_engine()) as session:
         buffer = _TokenBuffer(session, turn_id)
         status, error = TURN_DONE, None
+        provider = None
         try:
             provider = get_provider()
             for chunk in run_chat_turn(session, provider, conversation_id, message, deck_id):
@@ -126,7 +127,19 @@ def execute_turn(turn_id: str, conversation_id: int, message: str, deck_id: int 
             repo.append_turn_event(session, turn_id, "error", {"message": str(exc)})
         finally:
             buffer.flush()
-            repo.finish_turn(session, turn_id, status, error)
+            # The provider is built per turn, so its totals are this turn's
+            # cost. Recorded on the row and logged, so "what does a build cost"
+            # and "is the context bounding working" have an answer.
+            usage = getattr(provider, "usage", None) if provider is not None else None
+            if usage:
+                logger.info(
+                    "Turn %s usage: %d call(s), %d prompt + %d completion tokens "
+                    "(%d reasoning)",
+                    turn_id[:8], usage.get("llm_calls", 0),
+                    usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+                    usage.get("reasoning_tokens", 0),
+                )
+            repo.finish_turn(session, turn_id, status, error, usage=usage)
 
 
 def submit_turn(turn_id: str, conversation_id: int, message: str, deck_id: int | None) -> None:

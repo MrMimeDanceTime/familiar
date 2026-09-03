@@ -124,24 +124,44 @@ function App() {
   // user has already navigated away from is dropped instead of overwriting the
   // current deck's panel (the "click deck A, see deck B's numbers" race).
   const statsDeckRef = useRef<number | null>(null)
+  // The one scheduled nuance retry, so a burst of approvals collapses into a
+  // single follow-up once the deck settles rather than one timer per click.
+  const nuanceRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const loadStats = useCallback((deckId: number) => {
-    statsDeckRef.current = deckId
+  const loadNuance = useCallback((deckId: number) => {
+    if (nuanceRetryRef.current) {
+      clearTimeout(nuanceRetryRef.current)
+      nuanceRetryRef.current = null
+    }
     setNuanceLoading(true)
-    // Deterministic stats: fast, no LLM. Paints the panel immediately.
-    api.getDeckStats(deckId)
-      .then((s) => { if (statsDeckRef.current === deckId) setDeckStats(s) })
-      .catch(() => { if (statsDeckRef.current === deckId) setDeckStats(null) })
     // LLM-refined power level: separate request, covered by its own spinner.
     // Merged into the existing stats so only the power fields swap when it lands.
     api.getDeckStatsNuance(deckId)
       .then((n) => {
         if (statsDeckRef.current !== deckId) return
         setDeckStats((prev) => (prev ? { ...prev, ...n } : prev))
+        // The server declines to score a deck that is still changing. Come
+        // back once the settle window has passed; approvals in between just
+        // push that single retry further out.
+        if (n.power_nuance_pending) {
+          nuanceRetryRef.current = setTimeout(
+            () => { if (statsDeckRef.current === deckId) loadNuance(deckId) },
+            Math.max(1, n.settle_seconds) * 1000 + 500,
+          )
+        }
       })
       .catch(() => {})
       .finally(() => { if (statsDeckRef.current === deckId) setNuanceLoading(false) })
   }, [])
+
+  const loadStats = useCallback((deckId: number) => {
+    statsDeckRef.current = deckId
+    // Deterministic stats: fast, no LLM. Paints the panel immediately.
+    api.getDeckStats(deckId)
+      .then((s) => { if (statsDeckRef.current === deckId) setDeckStats(s) })
+      .catch(() => { if (statsDeckRef.current === deckId) setDeckStats(null) })
+    loadNuance(deckId)
+  }, [loadNuance])
 
   useEffect(() => {
     refreshConversations()

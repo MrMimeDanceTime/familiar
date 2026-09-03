@@ -265,6 +265,15 @@ def delete_deck(session: Session, deck_id: int) -> None:
 # --- Deck cards ---------------------------------------------------------------
 
 
+def _touch_deck(session: Session, deck_id: int) -> None:
+    """Stamp the deck as changed. Card edits count: the sidebar orders decks
+    by updated_at, and the power-nuance settle window reads it."""
+    deck = session.get(Deck, deck_id)
+    if deck is not None:
+        deck.updated_at = _utcnow()
+        session.add(deck)
+
+
 def list_deck_cards(session: Session, deck_id: int) -> list[DeckCard]:
     statement = select(DeckCard).where(DeckCard.deck_id == deck_id).order_by(DeckCard.added_at.asc())
     return list(session.exec(statement))
@@ -309,6 +318,7 @@ def add_deck_card(
         existing.tags = tags if tags is not None else existing.tags
         existing.notes = notes if notes is not None else existing.notes
         session.add(existing)
+        _touch_deck(session, deck_id)
         session.commit()
         session.refresh(existing)
         return existing
@@ -327,6 +337,7 @@ def add_deck_card(
         notes=notes,
     )
     session.add(card)
+    _touch_deck(session, deck_id)
     session.commit()
     session.refresh(card)
     return card
@@ -343,6 +354,8 @@ def clear_deck_cards(session: Session, deck_id: int) -> int:
     cards = list_deck_cards(session, deck_id)
     for card in cards:
         session.delete(card)
+    if cards:
+        _touch_deck(session, deck_id)
     session.commit()
     return len(cards)
 
@@ -360,9 +373,11 @@ def remove_deck_card(
     if quantity is not None and quantity < card.quantity:
         card.quantity -= quantity
         session.add(card)
+        _touch_deck(session, deck_id)
         session.commit()
         return True
     session.delete(card)
+    _touch_deck(session, deck_id)
     session.commit()
     return True
 
@@ -735,13 +750,22 @@ def get_turn(session: Session, turn_id: str, owner_id: int = SINGLE_USER_ID) -> 
 
 
 def finish_turn(
-    session: Session, turn_id: str, status: str, error: str | None = None
+    session: Session,
+    turn_id: str,
+    status: str,
+    error: str | None = None,
+    usage: dict[str, int] | None = None,
 ) -> None:
     turn = session.get(Turn, turn_id)
     if turn is None:
         return
     turn.status = status
     turn.error = error
+    if usage:
+        turn.llm_calls = usage.get("llm_calls")
+        turn.prompt_tokens = usage.get("prompt_tokens")
+        turn.completion_tokens = usage.get("completion_tokens")
+        turn.reasoning_tokens = usage.get("reasoning_tokens")
     turn.updated_at = _utcnow()
     session.add(turn)
     session.commit()

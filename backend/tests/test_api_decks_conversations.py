@@ -77,7 +77,8 @@ def test_nuance_endpoint_returns_power_fields(client, monkeypatch):
     body = resp.json()
     assert set(body) == {
         "power_level", "power_level_base", "power_nuance_adj",
-        "power_nuance_reason", "power_factors",
+        "power_nuance_reason", "power_nuance_pending", "settle_seconds",
+        "power_factors",
     }
 
 

@@ -723,3 +723,26 @@ def test_deck_get_current_omits_oracle_text_except_for_the_commander(session):
     assert "oracle_text" not in by_name["Sol Ring"]
     assert "oracle_text_note" in lean
     assert {c["name"]: c for c in full["cards"]}["Sol Ring"]["oracle_text"] == "{T}: Add {C}{C}."
+
+
+def test_stats_backfill_does_not_refetch_a_card_known_to_have_no_tags(session):
+    """`[]` means Scryfall was asked and the card has no community tags; only
+    `None` means never asked. Conflating them refetched forever."""
+    deck = repo.create_deck(session, name="B", format="commander")
+    repo.add_deck_card(session, deck.id, "Plain Vanilla", quantity=1,
+                       oracle_id="o-vanilla", type_line="Creature", tags=[])
+    repo.add_deck_card(session, deck.id, "Never Checked", quantity=1,
+                       oracle_id="o-never", type_line="Creature", tags=None)
+
+    with patch("app.tools.scryfall_client.get_scryfall_client") as client, \
+         patch("app.knowledge.tag_lookup.get_tags_for_card", return_value=[]):
+        client.return_value.collection.return_value = {
+            "found": [{"name": "Never Checked", "oracle_id": "o-never", "type_line": "Creature"}],
+            "not_found": [],
+        }
+        deck_tools.compute_deck_stats(session, deck.id)
+        requested = client.return_value.collection.call_args.args[0]
+
+    assert requested == ["Never Checked"]
+    checked = repo.get_deck_card(session, deck.id, "Never Checked")
+    assert checked.tags == []

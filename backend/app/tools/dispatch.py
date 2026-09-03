@@ -174,9 +174,47 @@ def _edhrec_card_synergy(card_name: str, commander_name: str) -> dict | None:
     return get_edhrec_client().card_synergy(card_name, commander_name)
 
 
+# Fields the model needs to reason about a search hit. The index row carries
+# more (image, rank, rarity), which is noise in a tool result.
+_SEARCH_FIELDS = (
+    "name", "mana_cost", "cmc", "type_line", "oracle_text", "color_identity",
+    "legal_commander", "keywords", "power", "toughness",
+)
+
+
+def _search_card_index(
+    query: str, limit: int = 10, color_identity: str | None = None
+) -> dict:
+    """Full-text search over the local card index.
+
+    Scryfall's API is the right tool for its query language; this is for the
+    quick "what cards say X" lookups the model makes several times a turn,
+    which the index answers instantly, offline, and without a rate limit.
+    """
+    from app.cards import schema as card_schema
+    from app.cards import store as card_store
+
+    if card_schema.card_count() == 0:
+        return {
+            "cards": [],
+            "note": "The local card index has not been built yet; use scryfall_search.",
+        }
+    limit = max(1, min(int(limit or 10), 50))
+    hits = card_store.search_text(query, limit=limit, identity=color_identity)
+    oracle_ids = [c["oracle_id"] for c in hits if c.get("oracle_id")]
+    tags = card_store.tags_for_many(oracle_ids)
+    cards = []
+    for hit in hits:
+        card = {k: hit.get(k) for k in _SEARCH_FIELDS}
+        card["tags"] = sorted(tags.get(hit.get("oracle_id"), set()))
+        cards.append(card)
+    return {"cards": cards, "count": len(cards)}
+
+
 # Tools that don't need DB access (no `session` arg injected).
 STATELESS_TOOLS: dict[str, Callable[..., Any]] = {
     "scryfall_search": _scryfall_search,
+    "search_card_index": _search_card_index,
     "scryfall_card_by_name": _scryfall_card_by_name,
     "scryfall_card_collection": _scryfall_card_collection,
     "edhrec_commander_recs": _edhrec_commander_recs,

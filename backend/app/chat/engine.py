@@ -1,11 +1,10 @@
 """The agentic chat loop: load history, call the provider, dispatch any
 tool calls, persist everything, and yield SSE-ready events as it goes.
 
-Per the v1 streaming decision, only the final text-bearing turn streams
-token-by-token (simulated here by yielding the whole text as one token
-event, since neither provider SDK is wired for token-level streaming
-yet — intermediate tool-calling turns are non-streamed request/response
-with a tool_call event for the UI's loading indicator).
+Text streams token-by-token whenever the provider can stream (DeepSeek
+does); a tool-calling iteration still emits a tool_call event for the UI's
+loading indicator, and any text the model wrote alongside the call streams
+too.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from app.chat.streaming import (
     tool_call_event,
 )
 from app.db import repository as repo
-from app.llm.base import ChatProvider, ToolResult
+from app.llm.base import AssistantTurn, ChatProvider, ToolResult
 from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
 from app.tools.schemas import TOOL_SPECS
 
@@ -256,6 +255,10 @@ def run_chat_turn(
     # then produces locks the turn down as usual. Without this the refusal text
     # said "call suggest_cards" while the very next tool list omitted it.
     pipeline_followup_allowed = False
+    # Text the model wrote alongside a tool call has already been streamed to
+    # the client when the next text arrives; a paragraph break keeps the two
+    # from running together in one bubble.
+    streamed_text = False
     try:
         turn_started = time.perf_counter()
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -268,9 +271,18 @@ def run_chat_turn(
             tools_for_turn = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
             pipeline_followup_allowed = False
             send_started = time.perf_counter()
-            turn = provider.send(
-                system_prompt, bound_history(history), tools_for_turn, thinking=False
-            )
+            turn: AssistantTurn | None = None
+            streamed_this_send = False
+            for item in _send(provider, system_prompt, bound_history(history), tools_for_turn):
+                if isinstance(item, AssistantTurn):
+                    turn = item
+                    continue
+                if streamed_text and not streamed_this_send:
+                    yield token_event("\n\n")
+                streamed_this_send = True
+                streamed_text = True
+                yield token_event(item)
+            assert turn is not None
             send_dt = time.perf_counter() - send_started
             tool_names = [c.name for c in turn.tool_calls] if turn.tool_calls else []
             logger.info(
@@ -288,6 +300,7 @@ def run_chat_turn(
                     session, conversation_id, sequence,
                     turn.text, turn.raw_assistant_message,
                     proposal_ids_this_turn, pending_summary,
+                    already_streamed=streamed_this_send,
                 )
                 return
 
@@ -425,11 +438,22 @@ def run_chat_turn(
             "chat: hit MAX_TOOL_ITERATIONS (%d) after %.2fs — forcing toolless wrap-up",
             MAX_TOOL_ITERATIONS, time.perf_counter() - turn_started,
         )
-        wrap = provider.send(system_prompt, bound_history(history), [], thinking=False)
+        wrap: AssistantTurn | None = None
+        wrap_streamed = False
+        for item in _send(provider, system_prompt, bound_history(history), []):
+            if isinstance(item, AssistantTurn):
+                wrap = item
+                continue
+            if streamed_text and not wrap_streamed:
+                yield token_event("\n\n")
+            wrap_streamed = True
+            yield token_event(item)
+        assert wrap is not None
         yield from _finalize_turn(
             session, conversation_id, sequence,
             wrap.text or _MAX_ITER_FALLBACK_TEXT, wrap.raw_assistant_message,
             proposal_ids_this_turn, pending_summary,
+            already_streamed=wrap_streamed and bool(wrap.text),
         )
     except Exception as exc:  # noqa: BLE001 - surface to client instead of crashing the stream
         # Reveal any proposals this turn already created before reporting the
@@ -479,6 +503,26 @@ _MAX_ITER_FALLBACK_TEXT = (
 )
 
 
+def _send(
+    provider: ChatProvider,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    tools: list[Any],
+) -> Iterator[str | AssistantTurn]:
+    """One provider call, streaming when the provider supports it.
+
+    Yields text chunks as they arrive and the AssistantTurn last. A provider
+    without ``send_stream`` (the test fakes, a future backend) is called
+    through ``send`` and yields only the turn, so the engine treats both the
+    same way. The chat loop always runs with thinking off (see the loop).
+    """
+    stream = getattr(provider, "send_stream", None)
+    if stream is None:
+        yield provider.send(system_prompt, history, tools, thinking=False)
+        return
+    yield from stream(system_prompt, history, tools, thinking=False)
+
+
 def _finalize_turn(
     session: Session,
     conversation_id: int,
@@ -487,12 +531,16 @@ def _finalize_turn(
     raw_assistant_message: dict[str, Any],
     proposal_ids_this_turn: list[int],
     pending_summary: str,
+    *,
+    already_streamed: bool = False,
 ) -> Iterator[str]:
     """Emit the final assistant message for a turn: stream its text, persist it,
     anchor this turn's proposals to it, reveal the settled batch, and close the
     turn. Shared by the normal (model ended on text) path and the max-iteration
-    wrap-up path so both deliver a real response instead of one erroring out."""
-    if text:
+    wrap-up path so both deliver a real response instead of one erroring out.
+    ``already_streamed`` means the text reached the client as it was generated
+    and must not be sent a second time."""
+    if text and not already_streamed:
         yield token_event(text)
     message = repo.add_message(
         session,

@@ -268,11 +268,16 @@ def get_deck_stats_nuance(deck_id: int):
         except Exception:
             provider = None
         stats = compute_deck_stats(session, deck_id, provider)
+        from app.config import settings
+
         return {
             "power_level": stats["power_level"],
             "power_level_base": stats["power_level_base"],
             "power_nuance_adj": stats["power_nuance_adj"],
             "power_nuance_reason": stats["power_nuance_reason"],
+            "power_nuance_pending": stats.get("power_nuance_pending", False),
+            # How long the client should wait before asking again when pending.
+            "settle_seconds": settings.power_nuance_settle_seconds,
             "power_factors": stats["power_factors"],
         }
 

@@ -470,3 +470,16 @@ def test_get_tags_for_card_reads_the_index_when_it_has_taggings(card_db, monkeyp
 
     assert tag_lookup.get_tags_for_card("oid-1") == ["mana-rock", "ramp"]
     assert tag_lookup.get_tags_for_card("oid-unknown") == []
+
+
+def test_search_card_index_tool_reads_the_local_index(imported):
+    from app.tools.dispatch import dispatch
+
+    result = dispatch("search_card_index", {"query": "sol ring", "limit": 5}, session=None)
+
+    assert result.ok
+    names = {c["name"] for c in result.content["cards"]}
+    assert "Sol Ring" in names
+    sol = next(c for c in result.content["cards"] if c["name"] == "Sol Ring")
+    assert "mana-rock" in sol["tags"]
+    assert "image_url" not in sol

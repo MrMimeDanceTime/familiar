@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # and surfaces as a tool error the model/user can see, instead of hanging.
     llm_timeout_seconds: float = 90.0
 
+    # How long a deck has to sit unchanged before the LLM power-level nuance is
+    # recomputed for it. The panel refreshes stats after every approval, and
+    # each approval changes the content hash, so without a settle window a
+    # 60-card build fired 60 reasoning calls on decks that were about to change
+    # again. 0 recomputes immediately (the tests use that).
+    power_nuance_settle_seconds: float = 90.0
+
     # Cap on the chat model's response length. DeepSeek generates at ~40 tok/s,
     # so an unbounded final answer of 2000+ tokens takes ~50s purely to write —
     # measured as the dominant cause of slow turns. Bounding output both caps

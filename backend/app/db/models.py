@@ -159,6 +159,13 @@ class Turn(SQLModel, table=True):
     owner_id: int = Field(default=SINGLE_USER_ID, index=True)
     status: str = Field(default=TURN_RUNNING, index=True)
     error: str | None = None
+    # What the turn cost, summed over every provider call it made (the chat
+    # loop plus any pipeline or nuance call from inside a tool). Null on turns
+    # that predate the columns.
+    llm_calls: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

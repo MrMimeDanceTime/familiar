@@ -16,6 +16,8 @@ import httpx
 SCRYFALL_BASE_URL = "https://api.scryfall.com"
 MIN_REQUEST_INTERVAL = 0.11  # ~9 req/s, safely under the 10 req/s ceiling
 MAX_RETRIES = 3
+# Base of the exponential backoff between connection-error retries.
+RETRY_BACKOFF_SECONDS = 0.5
 
 
 class ScryfallError(Exception):
@@ -101,6 +103,10 @@ class ScryfallClient:
                 response = self._client.request(method, path, **kwargs)
             except httpx.HTTPError as exc:
                 last_error = exc
+                # A connection error is usually momentary; an immediate retry
+                # hits the same condition. Short exponential backoff.
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_BACKOFF_SECONDS * (2 ** attempt))
                 continue
 
             if response.status_code == 404:

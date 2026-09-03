@@ -16,6 +16,15 @@ from app.knowledge import tag_lookup
 @pytest.fixture(autouse=True, scope="session")
 def _disable_card_index_refresh():
     settings.card_index_refresh_on_startup = False
+    # The nuance settle window is a production latency knob; the tests that
+    # exercise the nuance call want it to fire immediately. One test sets the
+    # window explicitly to check the debounce itself.
+    settings.power_nuance_settle_seconds = 0.0
+    # Connection-error retries back off in production; a test that exercises
+    # the retry path should not wait for it.
+    from app.tools import scryfall_client
+
+    scryfall_client.RETRY_BACKOFF_SECONDS = 0.0
     yield
 
 

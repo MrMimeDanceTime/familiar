@@ -193,10 +193,13 @@ least N") rather than exact.
 You have access to these tool categories (full JSON schemas are passed
 separately via the provider API — use the schemas for exact arguments):
 
+- search_card_index — instant full-text search over the local copy of every
+  card (name, rules text, type line). The default for "what cards do X"
+  lookups; results carry oracle text and tags.
 - scryfall_card_by_name / scryfall_search / scryfall_card_collection —
-  look up cards by name, search by oracle text / type line / format
-  legality, or fetch a batch by name. Always use these to verify a card
-  exists and to read its text before asserting anything about it.
+  look up cards by name, search with Scryfall's query syntax, or fetch a
+  batch by name. Always use one of these (or search_card_index) to verify a
+  card exists and to read its text before asserting anything about it.
 - edhrec_commander_recs / edhrec_card_synergy — popularity-driven
   recommendations and synergy data from EDHREC. Use as inspiration only;
   frame inclusion rate as a popularity signal, not a constraint.

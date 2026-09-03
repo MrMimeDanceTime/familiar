@@ -14,6 +14,10 @@ export interface DeckStatsNuance {
   power_level_base: number
   power_nuance_adj: number
   power_nuance_reason: string
+  // True when the deck changed too recently for the LLM nuance to be worth
+  // computing yet; ask again after settle_seconds.
+  power_nuance_pending: boolean
+  settle_seconds: number
   power_factors: string[]
 }
 
@@ -32,6 +36,7 @@ export interface DeckStats {
   power_level_base: number
   power_nuance_adj: number
   power_nuance_reason: string
+  power_nuance_pending?: boolean
   power_factors: string[]
   bracket: number
   bracket_factors: string[]
@@ -103,7 +108,6 @@ export interface ChatMessage {
   role: string
   text_content: string | null
   tool_calls: { id: string; name: string; arguments: Record<string, unknown> }[] | null
-  tool_results: { call_id: string; content: string }[] | null
   sequence: number
   created_at: string
 }

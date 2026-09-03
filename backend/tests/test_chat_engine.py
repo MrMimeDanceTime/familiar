@@ -1072,3 +1072,50 @@ def test_new_batch_supersedes_stale_pending_cards_but_not_the_commander(mock_get
     assert commander.status == "pending"
     new = [p for p in repo.list_proposals(session, convo.id) if p.card_name == "New Pick"]
     assert new and new[0].status == "pending"
+
+
+# ── Streaming ────────────────────────────────────────────────────────────
+
+
+class StreamingFakeProvider(FakeProvider):
+    """A provider that streams: yields the turn's text in pieces, then the turn."""
+
+    def send_stream(self, system_prompt, history, tools, *, thinking=False):
+        turn = self.send(system_prompt, history, tools, thinking=thinking)
+        if turn.text:
+            for i in range(0, len(turn.text), 4):
+                yield turn.text[i:i + 4]
+        yield turn
+
+
+def test_streaming_provider_text_reaches_the_client_once(session):
+    provider = StreamingFakeProvider([AssistantTurn(text="Sure, let's talk.", tool_calls=[])])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "hi", deck_id=None))
+
+    tokens = [json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")]
+    assert "".join(tokens) == "Sure, let's talk."
+    assert len(tokens) > 1, "text should arrive in pieces, not one block"
+    assert repo.list_messages(session, convo.id)[-1].text_content == "Sure, let's talk."
+
+
+def test_text_alongside_a_tool_call_streams_with_a_break_before_the_reply(session):
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = StreamingFakeProvider([
+        AssistantTurn(
+            text="Checking the deck.",
+            tool_calls=[ToolCallRequest(id="c1", name="deck_get_current", arguments={})],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["c1"]},
+        ),
+        AssistantTurn(text="It is empty.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "what's in it?", deck_id=deck.id))
+
+    text = "".join(
+        json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")
+    )
+    assert text == "Checking the deck.\n\nIt is empty."

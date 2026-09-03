@@ -192,3 +192,30 @@ def test_stats_always_expose_the_nuance_key_contract(session):
     assert required <= set(deck_tools.compute_deck_stats(session, empty.id, None))
     full = _seed_deck(session)
     assert required <= set(deck_tools.compute_deck_stats(session, full.id, None))
+
+
+def test_nuance_waits_for_the_deck_to_settle(session, monkeypatch):
+    """Every approval used to fire a reasoning call on a deck about to change
+    again. With a settle window, a freshly-changed deck returns the base score
+    marked pending and makes no LLM call."""
+    from unittest.mock import MagicMock
+
+    from app.config import settings
+
+    deck = _seed_deck(session)
+    monkeypatch.setattr(settings, "power_nuance_settle_seconds", 300.0)
+    provider = MagicMock()
+    provider.complete_json.return_value = '{"adjustment": 1.0, "reason": "x"}'
+
+    stats = deck_tools.compute_deck_stats(session, deck.id, provider)
+
+    assert stats["power_nuance_pending"] is True
+    assert stats["power_level"] == stats["power_level_base"]
+    provider.complete_json.assert_not_called()
+
+    # Once the window has passed, it computes on the fast model and caches.
+    monkeypatch.setattr(settings, "power_nuance_settle_seconds", 0.0)
+    stats = deck_tools.compute_deck_stats(session, deck.id, provider)
+    assert stats["power_nuance_pending"] is False
+    assert stats["power_nuance_adj"] == 1.0
+    assert provider.complete_json.call_args.kwargs["model"] == settings.deepseek_model_fast

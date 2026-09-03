@@ -154,4 +154,10 @@ def get_turn_status(turn_id: str, request: Request):
             "conversation_id": turn.conversation_id,
             "status": turn.status,
             "error": turn.error,
+            "usage": {
+                "llm_calls": turn.llm_calls,
+                "prompt_tokens": turn.prompt_tokens,
+                "completion_tokens": turn.completion_tokens,
+                "reasoning_tokens": turn.reasoning_tokens,
+            },
         }

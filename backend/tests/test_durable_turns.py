@@ -326,3 +326,27 @@ def test_no_heartbeat_once_the_turn_is_terminal(session):
 
     assert not any(e is HEARTBEAT for e in seen)
     assert [e.event for e in seen] == ["done"]
+
+
+def test_provider_usage_is_recorded_on_the_turn(session, monkeypatch):
+    conversation = repo.create_conversation(session)
+    turn_id = turn_runner.new_turn_id()
+    repo.create_turn(session, turn_id, conversation.id)
+
+    def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id):
+        provider.usage["llm_calls"] += 2
+        provider.usage["prompt_tokens"] += 300
+        provider.usage["completion_tokens"] += 40
+        yield 'event: done\ndata: {"message_id": 1, "conversation_id": %d}\n\n' % conversation_id
+
+    class Provider:
+        usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0}
+
+    monkeypatch.setattr(turn_runner, "run_chat_turn", fake_run_chat_turn)
+    monkeypatch.setattr(turn_runner, "get_provider", lambda: Provider())
+
+    turn_runner.execute_turn(turn_id, conversation.id, "hi", None)
+
+    session.expire_all()
+    turn = repo.get_turn(session, turn_id)
+    assert (turn.llm_calls, turn.prompt_tokens, turn.completion_tokens) == (2, 300, 40)

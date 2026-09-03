@@ -284,3 +284,95 @@ def test_send_backfills_only_when_thinking(mock_openai_cls):
     provider.send("sys", list(history), [], thinking=True)
     sent = mock_client.chat.completions.create.call_args.kwargs["messages"]
     assert sent[-1]["reasoning_content"] == ""
+
+
+def _chunk(content=None, tool_calls=None, finish_reason=None, usage=None):
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice] if (content is not None or tool_calls or finish_reason) else [], usage=usage)
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_send_stream_yields_text_then_the_turn(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    usage = SimpleNamespace(
+        prompt_tokens=120, completion_tokens=8,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=0),
+    )
+    mock_client.chat.completions.create.return_value = iter([
+        _chunk(content="Hel"),
+        _chunk(content="lo."),
+        _chunk(finish_reason="stop"),
+        _chunk(usage=usage),
+    ])
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    items = list(provider.send_stream("sys", [{"role": "user", "content": "hi"}], [TOOL]))
+
+    assert items[:2] == ["Hel", "lo."]
+    turn = items[-1]
+    assert turn.text == "Hello."
+    assert turn.tool_calls == []
+    assert turn.raw_assistant_message == {"role": "assistant", "content": "Hello."}
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["stream"] is True
+    assert provider.usage == {
+        "llm_calls": 1, "prompt_tokens": 120, "completion_tokens": 8, "reasoning_tokens": 0,
+    }
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_send_stream_assembles_tool_calls_from_deltas(mock_openai_cls):
+    """Argument JSON arrives in fragments across chunks and must be joined by
+    index before parsing; the raw message must match what send() persists."""
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+
+    def tc(index, id=None, name=None, arguments=None):
+        return SimpleNamespace(
+            index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments),
+        )
+
+    mock_client.chat.completions.create.return_value = iter([
+        _chunk(tool_calls=[tc(0, id="call_1", name="get_weather", arguments='{"ci')]),
+        _chunk(tool_calls=[tc(0, arguments='ty": "Oslo"}')]),
+        _chunk(tool_calls=[tc(1, id="call_2", name="get_weather", arguments='{"city": "Rome"}')]),
+        _chunk(finish_reason="tool_calls"),
+    ])
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    items = list(provider.send_stream("sys", [{"role": "user", "content": "hi"}], [TOOL]))
+
+    assert all(not isinstance(i, str) for i in items)
+    turn = items[-1]
+    assert [c.id for c in turn.tool_calls] == ["call_1", "call_2"]
+    assert turn.tool_calls[0].arguments == {"city": "Oslo"}
+    assert turn.stop_reason == "tool_calls"
+    assert turn.raw_assistant_message["tool_calls"][0] == {
+        "id": "call_1", "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city": "Oslo"}'},
+    }
+    assert "content" not in turn.raw_assistant_message
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_usage_accumulates_across_send_and_complete_json(mock_openai_cls):
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, completion_tokens_details=None)
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="{}", tool_calls=None,
+                                    model_dump=lambda exclude_none=True: {"role": "assistant", "content": "{}"}),
+            finish_reason="stop",
+        )],
+        usage=usage,
+    )
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    provider.send("sys", [{"role": "user", "content": "hi"}], [], thinking=False)
+    provider.complete_json("sys", "user")
+
+    assert provider.usage == {
+        "llm_calls": 2, "prompt_tokens": 20, "completion_tokens": 10, "reasoning_tokens": 0,
+    }
