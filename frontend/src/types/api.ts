@@ -173,6 +173,19 @@ export interface ConversationDetail {
   proposals: DeckProposal[]
 }
 
+/** A knowledge-base entry. Seeded entries are read-only; the player's own
+ *  carry source "user" and the model treats them as authoritative. */
+export interface KnowledgeEntry {
+  id: number
+  title: string
+  body: string
+  category: string
+  format: string
+  source: 'seed' | 'user'
+}
+
+export type KnowledgeEntryIn = Pick<KnowledgeEntry, 'title' | 'body' | 'category'> & { format?: string }
+
 export interface UserPreferences {
   preferred_bracket: string | null
   preferred_power: string | null

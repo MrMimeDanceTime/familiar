@@ -1,9 +1,11 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api import chat, conversations, decks
 from app.db import repository as repo
+# Registers the knowledge table with SQLModel's metadata before create_all.
+from app.knowledge import models as _knowledge_models  # noqa: F401
 
 
 @pytest.fixture
@@ -211,3 +213,40 @@ def test_revert_refuses_a_pending_or_commander_proposal(client, test_engine):
         ids = (pending.id, cmd.id)
     for pid in ids:
         assert client.post(f"/api/decks/proposals/{pid}/revert").status_code == 400
+
+
+def test_knowledge_entries_crud_and_seed_protection(client, test_engine, monkeypatch):
+    from app.api import knowledge
+    from app.knowledge.models import SOURCE_SEED, KnowledgeEntry
+
+    monkeypatch.setattr(knowledge, "get_engine", lambda: test_engine)
+    from app.knowledge.models import _ensure_fts
+    monkeypatch.setattr("app.knowledge.models.get_engine", lambda: test_engine)
+    _ensure_fts()
+    client.app.include_router(knowledge.router)
+    with Session(test_engine) as session:
+        session.add(KnowledgeEntry(title="Seeded", body="x", category="ramp", source=SOURCE_SEED))
+        session.commit()
+        seeded_id = session.exec(select(KnowledgeEntry)).first().id
+
+    created = client.post("/api/knowledge", json={
+        "title": "Our table", "body": "No infinite combos before turn 8.", "category": "playgroup",
+    })
+    assert created.status_code == 200
+    entry = created.json()
+    assert entry["source"] == "user"
+
+    assert client.post("/api/knowledge", json={"title": "t", "body": "b", "category": "nonsense"}).status_code == 400
+
+    mine = client.get("/api/knowledge?source=user").json()
+    assert [e["id"] for e in mine] == [entry["id"]]
+
+    updated = client.put(f"/api/knowledge/{entry['id']}", json={
+        "title": "Our table", "body": "No infinite combos, full stop.", "category": "playgroup",
+    })
+    assert updated.json()["body"] == "No infinite combos, full stop."
+
+    assert client.put(f"/api/knowledge/{seeded_id}", json={"title": "x", "body": "y", "category": "ramp"}).status_code == 403
+    assert client.delete(f"/api/knowledge/{seeded_id}").status_code == 403
+    assert client.delete(f"/api/knowledge/{entry['id']}").status_code == 200
+    assert client.get("/api/knowledge?source=user").json() == []

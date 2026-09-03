@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, DeckSummary, ImportMode, ImportResult, UserPreferences } from '../types/api'
+import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, DeckSummary, ImportMode, ImportResult, KnowledgeEntry, KnowledgeEntryIn, UserPreferences } from '../types/api'
 
 async function asJson<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -104,6 +104,29 @@ export const api = {
 
   getPreferences: (): Promise<UserPreferences> =>
     fetch('/api/preferences').then((r) => asJson<UserPreferences>(r)),
+
+  listKnowledge: (source?: 'user' | 'seed'): Promise<KnowledgeEntry[]> =>
+    fetch(`/api/knowledge${source ? `?source=${source}` : ''}`).then((r) => asJson<KnowledgeEntry[]>(r)),
+
+  listKnowledgeCategories: (): Promise<{ categories: string[] }> =>
+    fetch('/api/knowledge/categories').then((r) => asJson<{ categories: string[] }>(r)),
+
+  createKnowledge: (body: KnowledgeEntryIn): Promise<KnowledgeEntry> =>
+    fetch('/api/knowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => asJson<KnowledgeEntry>(r)),
+
+  updateKnowledge: (id: number, body: KnowledgeEntryIn): Promise<KnowledgeEntry> =>
+    fetch(`/api/knowledge/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => asJson<KnowledgeEntry>(r)),
+
+  deleteKnowledge: (id: number): Promise<{ ok: boolean }> =>
+    fetch(`/api/knowledge/${id}`, { method: 'DELETE' }).then((r) => asJson<{ ok: boolean }>(r)),
 
   updatePreferences: (body: Partial<UserPreferences>): Promise<UserPreferences> =>
     fetch('/api/preferences', {

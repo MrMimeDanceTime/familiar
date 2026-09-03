@@ -131,16 +131,19 @@ backend/app/
     turn_runner.py        runs a turn to completion on a worker thread, writing every event to the durable turn log
     turn_bus.py           how a reader learns new turn events exist (polling today; the log is the source of truth)
   api/
-    chat.py / conversations.py / decks.py / preferences.py
+    chat.py / conversations.py / decks.py / preferences.py / knowledge.py
 
 frontend/src/
   App.tsx, api/client.ts, api/sse.ts, api/cardImage.ts
   components/  ChatView, MessageBubble, ProposalCard, ToolActivityIndicator,
-               DeckPanel, DeckDetail, DeckCardRow, deckViz, ImportPanel,
-               PreferencesPanel, ConversationSidebar, CardPreview,
-               CardPinContext, PinnedTray, MobileHeader, MobileNav,
-               ErrorBoundary, icons
-  hooks/       useChatStream (SSE lifecycle), useDeck, useTheme
+               DeckPanel, DeckDetail, DeckBreakdown (the "why?" panels),
+               OpeningHand, ExportMenu, DeckCardRow, deckViz, ImportPanel,
+               PreferencesPanel, KnowledgeEditor, ConversationSidebar,
+               MobileViews, CardPreview, CardPinContext, PinnedTray,
+               MobileHeader, MobileNav, ErrorBoundary, icons
+  hooks/       useChatStream (SSE lifecycle), useProposals (batches, approve/deny/undo),
+               useDeckStats (stats + the nuance retry), useDeck, useTheme
+  lib/         exportDecklist (plain / Arena / categories), deckPrompts (quick-start prompts)
   styles/      global.css, fonts.css (self-hosted woff2 under public/fonts/)
   types/api.ts
 ```
@@ -149,13 +152,13 @@ frontend/src/
 
 - **Conversation**: `id, title, deck_id (FK, nullable), created_at, updated_at`
 - **Message**: `id, conversation_id (FK), role, text_content, provider_native (JSON), tool_calls (JSON), tool_results (JSON), sequence, created_at`
-- **Deck**: `id, name, commander, partner_commander, notes, power_level, format, created_at, updated_at` plus the cached power nuance (`power_nuance_adj, power_nuance_reason, power_nuance_key`) and the plan (`role_targets` (JSON), `themes` (JSON), `plan_notes, off_meta`) — see `app/deckplan.py`
+- **Deck**: `id, name, commander, partner_commander, notes, power_level, format, created_at, updated_at` plus the cached power nuance (`power_nuance_adj, power_nuance_reason, power_nuance_key`) and the plan (`role_targets` (JSON), `themes` (JSON), `plan_notes, off_meta, max_card_price`) — see `app/deckplan.py`. `updated_at` moves on card edits too; the nuance settle window and the sidebar ordering read it.
 - **DeckCard**: `id, deck_id (FK), card_name, quantity, category, mana_value, color_identity, type_line, oracle_text, oracle_id, tags (JSON), notes, added_at` — `oracle_id`/`tags` feed the functional-role stats (see `tag_lookup.py`)
-- **DeckProposal**: `id, conversation_id (FK), deck_id (FK), message_id, status (pending|approved|denied), action (add|remove|set_commander), card_name, quantity, category, commander_name, reasoning, scores (JSON), denial_reason, created_at` — the model never edits a deck directly; it proposes changes the player approves/denies (see `propose_deck_changes` tool and `apply_proposal`/`deny_proposal`). `scores` is the brain map's verdict at proposal time; `denial_reason` feeds the personal scoring layer. A batch is written atomically: a change that fails validation writes nothing.
-- **Turn**: `id (uuid hex), conversation_id (FK), owner_id, status (running|done|error), error, created_at, updated_at` — one execution of the chat loop, independent of any HTTP connection. Only one turn may be running per conversation (`POST /api/chat` returns 409 otherwise).
+- **DeckProposal**: `id, conversation_id (FK), deck_id (FK), message_id, status (pending|approved|denied), action (add|remove|set_commander), card_name, quantity, category, commander_name, reasoning, scores (JSON), denial_reason, price_usd, created_at` — the model never edits a deck directly; it proposes changes the player approves/denies (see `propose_deck_changes` tool and `apply_proposal`/`deny_proposal`). `scores` is the brain map's verdict at proposal time; `denial_reason` feeds the personal scoring layer. A batch is written atomically: a change that fails validation writes nothing.
+- **Turn**: `id (uuid hex), conversation_id (FK), owner_id, status (running|done|error), error, llm_calls, prompt_tokens, completion_tokens, reasoning_tokens, created_at, updated_at` — one execution of the chat loop, independent of any HTTP connection, with what it cost. Only one turn may be running per conversation (`POST /api/chat` returns 409 otherwise).
 - **TurnEvent**: `id, turn_id (FK), seq (per-turn, unique with turn_id), event, data (JSON), created_at` — the replay buffer clients tail from a cursor; purged for terminal turns older than a day.
 - **UserPreferences**: single row (`id=1`): `preferred_bracket, preferred_power, budget, rule0_notes, build_preferences` — surfaced in the system prompt so advice respects the player's standing preferences
-- **KnowledgeEntry** (+ `knowledge_fts` FTS5 mirror): `id, title, body, category, format` — seeded on startup, searched by the `search_deckbuilding_knowledge` tool
+- **KnowledgeEntry** (+ `knowledge_fts` FTS5 mirror): `id, title, body, category, format, source (seed|user)` — seeded on startup, searched by the `search_deckbuilding_knowledge` tool. The seeder replaces only `seed` rows; `user` rows are the player's own, edited through `/api/knowledge` and the preferences panel, and the prompt tells the model they win over seeded advice.
 
 `Message.provider_native` stores the exact provider-native message dict(s)
 for a turn so a conversation can be replayed byte-identical back into
@@ -172,6 +175,14 @@ once against `backend/familiar.db` — no migration framework, no data loss.
 Wipe the DB (delete `backend/familiar.db`, let `init_db` recreate it) only
 when the change can't be done in place — a column type change, a table
 restructure, or intentionally dropping data.
+
+## Streaming and cost
+
+The DeepSeek provider streams (`send_stream`); the engine forwards text as it
+arrives and assembles tool-call deltas into the same persisted shape the
+non-streaming path produced. Each provider instance tallies its token usage,
+and since the turn runner builds one provider per turn, the totals land on the
+Turn row and in the log as the turn's cost.
 
 ## Durable turns
 
@@ -213,7 +224,8 @@ unless asked for the whole list.
 
 ### Tools
 The model can't touch the deck directly. Beyond the Scryfall/EDHREC lookups it
-gets: `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
+gets: `search_card_index` (instant full-text search over the local card
+index), `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
 `deck_get_stats` (computed bracket 1-5, power 1-10, and the factor breakdown),
 `propose_deck_changes` / `withdraw_pending_proposals` (the approval workflow),
 `suggest_cards` (runs the `pipeline/` retrieval flow for open-ended "what should
@@ -243,6 +255,22 @@ an FTS5 index. `_ensure_fts()` creates the virtual table + sync triggers once;
 runs a BM25-ranked `MATCH` with optional format/category narrowing. Separately,
 `tag_lookup.py` caches Scryfall's Oracle Tags bulk file (~24h) and maps a card's
 `oracle_id` to functional roles (ramp/draw/removal/land) that drive deck stats.
+
+### Budget, prices, and mana sources
+The card index stores each card's USD price (`price_usd`, from the
+oracle-cards bulk file) and what it produces (`produced_mana`). A deck plan
+carries `max_card_price`; without one, the player's standing budget
+preference implies a ceiling (`deckplan.price_ceiling`). The pipeline marks a
+priced candidate over the ceiling illegal for the deck, the pool render shows
+prices, proposals carry theirs, and `compute_deck_stats` reports the deck's
+total price and a per-colour `mana_sources` check (share of sources against
+share of pips, LOW where a colour falls well short).
+
+### Power nuance
+The LLM ±1 nuance on the power level runs on the fast model and only once a
+deck has sat unchanged for `POWER_NUANCE_SETTLE_SECONDS`; until then the
+stats-nuance endpoint returns the base score marked pending and the panel
+schedules one retry. Approving ten cards costs one call, not ten.
 
 ### Brain map (`app/brainmap/`) and card index (`app/cards/`)
 The retrieval pipeline ranks its candidate pool through three independent

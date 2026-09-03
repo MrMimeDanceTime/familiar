@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { Conversation, Deck, DeckCard, DeckStats } from '../types/api'
+import { buildContextPrompt, FORMAT_OPTIONS } from '../lib/deckPrompts'
+import type { Conversation, Deck, DeckStats } from '../types/api'
+import { BracketWhy, PowerWhy } from './DeckBreakdown'
 import { DeckCardRow } from './DeckCardRow'
+import { ExportMenu } from './ExportMenu'
+import { OpeningHand } from './OpeningHand'
 import {
   BracketDiamonds,
   commanderColorIdentities,
@@ -17,29 +21,6 @@ const COLOR_NAMES: Record<string, string> = {
   W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green',
 }
 
-// Seven cards from the library (commander excluded, quantities honoured), the
-// way a real shuffle would deal them. Pure and seeded by a counter so "Draw
-// again" gives a fresh hand while a rerender does not.
-function drawHand(cards: DeckCard[], seed: number, size = 7): DeckCard[] {
-  const library: DeckCard[] = []
-  for (const c of cards) {
-    if (c.category === 'Commander') continue
-    for (let i = 0; i < c.quantity; i++) library.push(c)
-  }
-  // Mulberry32: small, deterministic, good enough for a goldfish hand.
-  let t = seed + 0x6d2b79f5
-  const rand = () => {
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-  for (let i = library.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1))
-    ;[library[i], library[j]] = [library[j], library[i]]
-  }
-  return library.slice(0, Math.min(size, library.length))
-}
-
 function priceText(price: number | null | undefined): string {
   if (typeof price !== 'number') return '—'
   return price >= 1000 ? `$${Math.round(price).toLocaleString()}` : `$${price.toFixed(price < 100 ? 2 : 0)}`
@@ -53,201 +34,6 @@ const POWER_TIER = (pl: number): string => {
   return 'Precon-level'
 }
 
-// ── "why?" breakdown parsing ────────────────────────────────────────────────
-// The backend hands us pre-formatted human strings (see _estimate_power_level /
-// _estimate_bracket in deck_tools.py). Rather than surface that raw text, we
-// parse the few known shapes back into structured rows the UI can style.
-
-interface PowerRow {
-  label: string
-  detail: string
-  points: number
-}
-
-// e.g. "Lands: 34 (focused sweet spot) +1.0" → {label, detail, points}
-function parsePowerRow(line: string): PowerRow | null {
-  const m = line.match(/^([^:]+):\s*(.*?)\s*([+-][\d.]+)\s*$/)
-  if (!m) return null
-  return { label: m[1].trim(), detail: m[2].trim(), points: parseFloat(m[3]) }
-}
-
-interface PowerBreakdown {
-  raw: number
-  base: number
-  level: number
-  rows: PowerRow[]
-}
-
-function parsePowerFactors(factors: string[]): PowerBreakdown | null {
-  // First line is the summary of the deterministic base: "Raw: 6.5 + 1 = 7/10".
-  // (This is the BASE level; the nuanced final level comes from stats, not here.)
-  const head = factors[0]?.match(/Raw:\s*([\d.]+).*?=\s*(\d+)\/10/)
-  // The appended "LLM nuance: +x (reason)" line has its value mid-string, so
-  // parsePowerRow (which expects a trailing +/-n) correctly skips it — nuance is
-  // rendered separately from the structured stats fields, not from this text.
-  const rows = factors.slice(1).map(parsePowerRow).filter((r): r is PowerRow => r !== null)
-  if (!head) return null
-  const base = parseInt(head[2], 10)
-  return { raw: parseFloat(head[1]), base, level: base, rows }
-}
-
-interface BracketRow {
-  label: string
-  cards: string[]
-  note: string
-}
-
-// e.g. "Game Changers (1): Rhystic Study" or "Game Changers: none"
-function parseBracketRow(line: string): BracketRow {
-  const m = line.match(/^([^:]+):\s*(.*)$/)
-  if (!m) return { label: line.trim(), cards: [], note: '' }
-  const label = m[1].replace(/\s*\(\d+\)\s*$/, '').trim()
-  const rest = m[2].trim()
-  if (!rest || rest.toLowerCase() === 'none') {
-    return { label, cards: [], note: 'none' }
-  }
-  return { label, cards: rest.split(',').map((c) => c.trim()).filter(Boolean), note: '' }
-}
-
-interface BracketBreakdown {
-  bracket: number
-  verdict: string
-  rows: BracketRow[]
-}
-
-function parseBracketFactors(factors: string[]): BracketBreakdown | null {
-  // First line is the verdict: "Bracket 3: 1 Game Changer(s) present"
-  const head = factors[0]?.match(/^Bracket\s*(\d+):\s*(.*)$/)
-  if (!head) return null
-  const rows = factors.slice(1).map(parseBracketRow)
-  return { bracket: parseInt(head[1], 10), verdict: head[2].trim(), rows }
-}
-
-function PowerWhy({
-  factors,
-  level,
-  base,
-  nuanceAdj,
-  nuanceReason,
-}: {
-  factors: string[]
-  level: number
-  base: number
-  nuanceAdj: number
-  nuanceReason: string
-}) {
-  const data = parsePowerFactors(factors)
-  if (!data) {
-    return <div className="why-panel why-panel--raw">{factors.join('\n')}</div>
-  }
-  // Show the nuance row whenever the LLM produced a judgment (a reason), even
-  // when it chose NOT to move the score (adj 0). A zero with a reason is
-  // informative — "the model looked and the fundamentals already capture it" —
-  // and hiding it makes a fully-evaluated deck look un-evaluated.
-  const hasNuanceJudgment = nuanceReason.trim().length > 0
-  const nuanceMovedScore = nuanceAdj !== 0
-  const maxPts = Math.max(...data.rows.map((r) => Math.abs(r.points)), Math.abs(nuanceAdj), 2)
-  const fmtAdj = (a: number) => (a > 0 ? `+${a.toFixed(1)}` : a < 0 ? a.toFixed(1) : '0')
-  return (
-    <div className="why-panel">
-      <div className="why-panel__head">
-        <div className="why-panel__title">
-          {nuanceMovedScore ? (
-            <>Power level {base} → {level}/10</>
-          ) : (
-            <>Power level {level}/10</>
-          )}
-        </div>
-        <div className="why-panel__sub">
-          {data.rows.length} fundamentals scored · base 1 + {data.raw.toFixed(1)} earned
-          {hasNuanceJudgment
-            ? nuanceMovedScore ? ' · LLM nuance applied' : ' · LLM nuance: no change'
-            : ''}
-        </div>
-      </div>
-      <ul className="why-rows">
-        {data.rows.map((r) => (
-          <li className="why-row" key={r.label}>
-            <span className="why-row__label">{r.label}</span>
-            <span className="why-row__detail">{r.detail}</span>
-            <span className="why-row__bar" aria-hidden>
-              <span
-                className={`why-row__bar-fill ${r.points <= 0 ? 'why-row__bar-fill--zero' : ''}`}
-                style={{ width: `${(Math.abs(r.points) / maxPts) * 100}%` }}
-              />
-            </span>
-            <span className={`why-row__pts ${r.points <= 0 ? 'why-row__pts--zero' : ''}`}>
-              {r.points > 0 ? `+${r.points.toFixed(1)}` : r.points.toFixed(1)}
-            </span>
-          </li>
-        ))}
-        {hasNuanceJudgment && (
-          <li className="why-row why-row--nuance" key="__nuance">
-            <span className="why-row__label">✦ LLM nuance</span>
-            <span className="why-row__detail">{nuanceReason}</span>
-            <span className="why-row__bar" aria-hidden>
-              <span
-                className={`why-row__bar-fill why-row__bar-fill--nuance ${nuanceAdj <= 0 ? 'why-row__bar-fill--zero' : ''}`}
-                style={{ width: `${(Math.abs(nuanceAdj) / maxPts) * 100}%` }}
-              />
-            </span>
-            <span className={`why-row__pts ${nuanceAdj <= 0 ? 'why-row__pts--zero' : ''}`}>
-              {fmtAdj(nuanceAdj)}
-            </span>
-          </li>
-        )}
-      </ul>
-    </div>
-  )
-}
-
-function BracketWhy({ factors }: { factors: string[] }) {
-  const data = parseBracketFactors(factors)
-  if (!data) {
-    return <div className="why-panel why-panel--raw">{factors.join('\n')}</div>
-  }
-  return (
-    <div className="why-panel">
-      <div className="why-panel__head">
-        <div className="why-panel__title why-panel__title--bracket">
-          Bracket {data.bracket}
-          <span className="why-panel__of"> / 5</span>
-        </div>
-        <div className="why-panel__sub">{data.verdict}</div>
-      </div>
-      <ul className="why-rows why-rows--bracket">
-        {data.rows.map((r) => (
-          <li className="why-row why-row--bracket" key={r.label}>
-            <span className="why-row__label">{r.label}</span>
-            {r.note === 'none' ? (
-              <span className="why-chip why-chip--none">none</span>
-            ) : (
-              <span className="why-chips">
-                {r.cards.map((c) => (
-                  <span className="why-chip" key={c}>{c}</span>
-                ))}
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-const FORMAT_OPTIONS: { value: string; label: string }[] = [
-  { value: 'commander', label: 'Commander/EDH' },
-  { value: 'brawl', label: 'Brawl' },
-  { value: 'oathbreaker', label: 'Oathbreaker' },
-  { value: 'standard', label: 'Standard' },
-  { value: 'modern', label: 'Modern' },
-  { value: 'pioneer', label: 'Pioneer' },
-  { value: 'pauper', label: 'Pauper' },
-  { value: 'legacy', label: 'Legacy' },
-  { value: 'vintage', label: 'Vintage' },
-  { value: 'premodern', label: 'Premodern' },
-]
-
 interface DeckDetailProps {
   deck: Deck
   stats: DeckStats | null
@@ -258,67 +44,10 @@ interface DeckDetailProps {
   onQuickStart: (deckId: number, prompt: string) => void
 }
 
-function buildContextPrompt(deck: Deck, stats: DeckStats | null, focus: string): string {
-  const lines: string[] = []
-  lines.push(`I'm working on my deck "${deck.name}".`)
-
-  if (deck.commander) {
-    lines.push(`Commander: ${deck.commander}${deck.partner_commander ? ' / ' + deck.partner_commander : ''}.`)
-  }
-  const formatLabel = FORMAT_OPTIONS.find((f) => f.value === deck.format)?.label ?? deck.format
-  lines.push(`Format: ${formatLabel}.`)
-
-  const byCategory = new Map<string, typeof deck.cards>()
-  for (const c of deck.cards) {
-    const key = c.category ?? 'Uncategorized'
-    byCategory.set(key, [...(byCategory.get(key) ?? []), c])
-  }
-  lines.push('')
-  lines.push('## Current decklist')
-  for (const [cat, cards] of byCategory.entries()) {
-    lines.push(`//${cat}`)
-    for (const c of cards) {
-      lines.push(`${c.quantity} ${c.name}`)
-    }
-    lines.push('')
-  }
-
-  if (stats && stats.total_cards > 0) {
-    lines.push('## Stats')
-    lines.push(`- Cards: ${stats.total_cards}`)
-    lines.push(`- Avg mana value (nonland): ${stats.avg_mv}`)
-    lines.push(`- Lands: ${stats.land_count} (${stats.land_pct}%)`)
-    if (stats.ramp_count) lines.push(`- Ramp: ${stats.ramp_count}`)
-    if (stats.draw_count) lines.push(`- Draw: ${stats.draw_count}`)
-    if (stats.removal_count) lines.push(`- Removal: ${stats.removal_count}`)
-    if (stats.color_distribution.length > 0) {
-      const colorSummary = stats.color_distribution
-        .map((c) => `${COLOR_NAMES[c.color] ?? c.color} (${c.pct}%)`)
-        .join(', ')
-      lines.push(`- Color distribution: ${colorSummary}`)
-    }
-    if (stats.type_breakdown.length > 0) {
-      const typeSummary = stats.type_breakdown
-        .filter((t) => t.count > 0)
-        .map((t) => `${t.type}: ${t.count}`)
-        .join(', ')
-      lines.push(`- Type breakdown: ${typeSummary}`)
-    }
-    lines.push(`- Power level: ${stats.power_level}/10`)
-    lines.push(`- Commander bracket: ${stats.bracket}/5`)
-  }
-
-  lines.push('')
-  lines.push(focus)
-
-  return lines.join('\n')
-}
-
 export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, onStartConversation, onSelectConversation, onQuickStart }: DeckDetailProps) {
   const [renaming, setRenaming] = useState(false)
   const [draftName, setDraftName] = useState('')
   const [showImport, setShowImport] = useState(false)
-  const [copied, setCopied] = useState(false)
   const importBtnRef = useRef<HTMLButtonElement>(null)
   const [expandedBreakdown, setExpandedBreakdown] = useState<'power' | 'bracket' | null>(null)
   const [deckConversations, setDeckConversations] = useState<Conversation[]>([])
@@ -332,17 +61,6 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
   const [draftNotes, setDraftNotes] = useState(deck.notes ?? '')
   const [savingNotes, setSavingNotes] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
-  // Opening hand: a seed of 0 means "not drawn yet"; each draw bumps it, and
-  // mulligans count so the hand can say how many cards go to the bottom.
-  const [handSeed, setHandSeed] = useState(0)
-  const [mulligans, setMulligans] = useState(0)
-  const hand = useMemo(() => (handSeed ? drawHand(deck.cards, handSeed) : []), [deck.cards, handSeed])
-  const handLands = hand.filter((c) => (c.type_line ?? '').toLowerCase().includes('land')).length
-
-  useEffect(() => {
-    setHandSeed(0)
-    setMulligans(0)
-  }, [deck.id])
 
   useEffect(() => {
     api.listDeckConversations(deck.id).then(setDeckConversations).catch(() => {})
@@ -428,27 +146,6 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
 
   const notesDirty = draftNotes.trim() !== (deck.notes ?? '').trim()
 
-  const handleExport = useCallback(() => {
-    const lines: string[] = []
-    // Commander(s) first — no blank line after: a blank line reads as a
-    // sideboard/maybeboard separator to Archidekt and Cockatrice, which
-    // would dump the entire 99 into the sideboard.
-    for (const c of deck.cards) {
-      if (c.category === 'Commander') {
-        lines.push(`${c.quantity} ${c.name}`)
-      }
-    }
-    // Rest of the deck
-    for (const c of deck.cards) {
-      if (c.category !== 'Commander') {
-        lines.push(`${c.quantity} ${c.name}`)
-      }
-    }
-    navigator.clipboard.writeText(lines.join('\n').trim())
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [deck])
-
   const grouped = new Map<string, typeof deck.cards>()
   for (const card of deck.cards) {
     const raw = card.category || 'Uncategorized'
@@ -505,9 +202,7 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
           </span>
         </div>
         <div className="deck-detail__header-actions">
-          <button className="btn btn--secondary btn--mono" onClick={handleExport}>
-            {copied ? 'Copied!' : 'Export'}
-          </button>
+          <ExportMenu deck={deck} />
           <button
             ref={importBtnRef}
             className={`btn btn--secondary btn--mono ${showImport ? 'btn--active' : ''}`}
@@ -772,40 +467,7 @@ export function DeckDetail({ deck, stats, nuanceLoading = false, onDeckUpdated, 
         </div>
       </div>
 
-      {/* ── Opening hand ── */}
-      {deck.cards.some((c) => c.category !== 'Commander') && (
-        <div className="deck-detail__section">
-          <div className="deck-detail__notes-head">
-            <div className="micro-label">
-              Opening hand{handSeed ? ` · ${handLands} land${handLands === 1 ? '' : 's'}` : ''}
-              {mulligans > 0 && ` · mulligan ${mulligans}, bottom ${mulligans}`}
-            </div>
-            <span className="deck-detail__chips">
-              <button
-                className="btn btn--ghost btn--chip"
-                onClick={() => { setHandSeed(Date.now() & 0x7fffffff); setMulligans(0) }}
-              >
-                {handSeed ? 'Draw again' : 'Draw seven'}
-              </button>
-              {handSeed > 0 && (
-                <button
-                  className="btn btn--ghost btn--chip"
-                  onClick={() => { setHandSeed((s) => (s * 31 + 7) & 0x7fffffff); setMulligans((m) => m + 1) }}
-                >
-                  Mulligan
-                </button>
-              )}
-            </span>
-          </div>
-          {handSeed > 0 && (
-            <div className="opening-hand">
-              {hand.map((c, i) => (
-                <DeckCardRow key={`${c.name}-${i}`} card={{ ...c, quantity: 1 }} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      <OpeningHand cards={deck.cards} deckId={deck.id} />
 
       {/* ── Notes ── */}
       <div className="deck-detail__section">

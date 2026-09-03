@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api/client'
-import { CardPinProvider, useCardPins } from './components/CardPinContext'
+import { CardPinProvider } from './components/CardPinContext'
 import { ChatView } from './components/ChatView'
 import { Sidebar } from './components/ConversationSidebar'
 import type { SidebarTab } from './components/ConversationSidebar'
@@ -10,80 +10,70 @@ import { GearIcon, MoonIcon, SunIcon } from './components/icons'
 import { MobileHeader } from './components/MobileHeader'
 import type { MobileTab } from './components/MobileNav'
 import { MobileNav } from './components/MobileNav'
+import { MobileConversationList, MobileDeckList, MobilePinsView } from './components/MobileViews'
 import { PinnedTray } from './components/PinnedTray'
 import { PreferencesPanel } from './components/PreferencesPanel'
 import { useChatStream } from './hooks/useChatStream'
-import type { ProposalBatch } from './hooks/useChatStream'
 import { useDeck } from './hooks/useDeck'
+import { useDeckStats } from './hooks/useDeckStats'
+import { groupProposalsIntoBatches, useProposals } from './hooks/useProposals'
 import { useTheme } from './hooks/useTheme'
-import type { Conversation, Deck, DeckProposal, DeckStats, DeckSummary } from './types/api'
+import type { Conversation, Deck, DeckSummary } from './types/api'
 import './styles/global.css'
 
 type MobileView = 'chats-list' | 'chat' | 'decks-list' | 'deck-detail' | 'pins'
-
-// Summarize a batch for its inline header — e.g. "3 additions, 1 commander".
-function summarizeBatch(proposals: DeckProposal[]): string {
-  const adds = proposals.filter((p) => p.action === 'add').length
-  const removes = proposals.filter((p) => p.action === 'remove').length
-  const cmd = proposals.filter((p) => p.action === 'set_commander').length
-  const parts: string[] = []
-  if (cmd) parts.push(cmd === 1 ? 'commander' : `${cmd} commanders`)
-  if (adds) parts.push(`${adds} ${adds === 1 ? 'addition' : 'additions'}`)
-  if (removes) parts.push(`${removes} ${removes === 1 ? 'cut' : 'cuts'}`)
-  return parts.length ? `Proposed ${parts.join(', ')}` : 'Proposed changes'
-}
-
-// Regroup a conversation's persisted proposals into the batches they were
-// created in (proposals from one tool call share a message_id), each anchored
-// to that assistant message so the UI can render it inline where it happened.
-// Proposals predating the anchoring change have message_id === null and fall
-// into a single trailing batch, preserving old behavior for old conversations.
-function groupProposalsIntoBatches(proposals: DeckProposal[]): ProposalBatch[] {
-  const byMessage = new Map<number | null, DeckProposal[]>()
-  for (const p of proposals) {
-    const key = p.message_id ?? null
-    const bucket = byMessage.get(key)
-    if (bucket) bucket.push(p)
-    else byMessage.set(key, [p])
-  }
-  return [...byMessage.entries()].map(([anchorMessageId, group]) => ({
-    summary: summarizeBatch(group),
-    proposals: group,
-    anchorMessageId,
-  }))
-}
 
 function App() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [decks, setDecks] = useState<DeckSummary[]>([])
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('conversations')
   const [activeConversationId, setActiveConversationId] = useState<number | null>(null)
-  const [deckStats, setDeckStats] = useState<DeckStats | null>(null)
-  const [nuanceLoading, setNuanceLoading] = useState(false)
-  const [proposalBatches, setProposalBatches] = useState<ProposalBatch[]>([])
   const [prefsOpen, setPrefsOpen] = useState(false)
   const { isDark, toggle: toggleTheme } = useTheme()
   const { deck, setDeck, loadDeck, clearDeck } = useDeck()
+  const { stats: deckStats, nuanceLoading, loadStats } = useDeckStats(deck)
+
+  const refreshConversations = useCallback(() => {
+    api.listConversations().then(setConversations).catch(() => {})
+  }, [])
+
+  const refreshDecks = useCallback(() => {
+    api.listDecks().then(setDecks).catch(() => {})
+  }, [])
+
+  // Deck auto-naming runs server-side in the background (it's a slow LLM
+  // call), so a freshly-committed commander leaves the deck "Untitled Deck"
+  // in the approve response. Poll the deck a few times to pick up the
+  // generated name once it lands, then refresh the sidebar list.
+  const pollForName = useCallback((deckId: number) => {
+    let tries = 0
+    const poll = async () => {
+      tries += 1
+      const fresh = await api.getDeck(deckId).catch(() => null)
+      if (fresh && fresh.name !== 'Untitled Deck') {
+        // Only replace the panel deck if the user is still viewing this one.
+        setDeck((cur) => (cur && cur.id === fresh.id ? fresh : cur))
+        refreshDecks()
+      } else if (tries < 6) {
+        setTimeout(poll, 2000)
+      }
+    }
+    setTimeout(poll, 2000)
+  }, [setDeck, refreshDecks])
+
+  const onProposalDeckChanged = useCallback((updated: Deck) => {
+    setDeck(updated)
+    loadStats(updated.id)
+    if (updated.name === 'Untitled Deck' && updated.commander) pollForName(updated.id)
+  }, [setDeck, loadStats, pollForName])
+
+  const proposals = useProposals({ onDeckChanged: onProposalDeckChanged })
+  const { batches: proposalBatches, setBatches: setProposalBatches, pendingCount } = proposals
+
   const { messages, sendMessage, reset, activeTool, isStreaming, error } = useChatStream({
     onDeckUpdated: setDeck,
-    // Earlier batches are left exactly as the server has them. Marking their
-    // pending cards denied here only changed the screen: the rows stayed
-    // pending in the database, the model kept seeing them in pending_proposals,
-    // and a reload brought them back. If a stale batch should go, the model
-    // withdraws it and the server says so.
-    onDeckProposal: (batch) => {
-      setProposalBatches((prev) => [...prev, batch])
-    },
-    onTurnComplete: (finalMessageId) => {
-      // Pin this turn's freshly-streamed batches (still anchor-less) to the
-      // assistant bubble that just landed, so they render inline immediately
-      // rather than floating at the bottom until the next reload.
-      setProposalBatches((prev) =>
-        prev.map((b) =>
-          b.anchorMessageId == null ? { ...b, anchorMessageId: finalMessageId } : b,
-        ),
-      )
-    },
+    onDeckProposal: proposals.addBatch,
+    onTurnComplete: proposals.anchorPending,
     onConversationCreated: (id) => {
       setActiveConversationId(id)
       refreshConversations()
@@ -111,72 +101,10 @@ function App() {
     }
   }, [mobileView])
 
-  const refreshConversations = useCallback(() => {
-    api.listConversations().then(setConversations).catch(() => {})
-  }, [])
-
-  const refreshDecks = useCallback(() => {
-    api.listDecks().then(setDecks).catch(() => {})
-  }, [])
-
-  // The deck whose stats are currently wanted. Every stats/nuance response is
-  // checked against this before it's applied, so a slow response for a deck the
-  // user has already navigated away from is dropped instead of overwriting the
-  // current deck's panel (the "click deck A, see deck B's numbers" race).
-  const statsDeckRef = useRef<number | null>(null)
-  // The one scheduled nuance retry, so a burst of approvals collapses into a
-  // single follow-up once the deck settles rather than one timer per click.
-  const nuanceRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const loadNuance = useCallback((deckId: number) => {
-    if (nuanceRetryRef.current) {
-      clearTimeout(nuanceRetryRef.current)
-      nuanceRetryRef.current = null
-    }
-    setNuanceLoading(true)
-    // LLM-refined power level: separate request, covered by its own spinner.
-    // Merged into the existing stats so only the power fields swap when it lands.
-    api.getDeckStatsNuance(deckId)
-      .then((n) => {
-        if (statsDeckRef.current !== deckId) return
-        setDeckStats((prev) => (prev ? { ...prev, ...n } : prev))
-        // The server declines to score a deck that is still changing. Come
-        // back once the settle window has passed; approvals in between just
-        // push that single retry further out.
-        if (n.power_nuance_pending) {
-          nuanceRetryRef.current = setTimeout(
-            () => { if (statsDeckRef.current === deckId) loadNuance(deckId) },
-            Math.max(1, n.settle_seconds) * 1000 + 500,
-          )
-        }
-      })
-      .catch(() => {})
-      .finally(() => { if (statsDeckRef.current === deckId) setNuanceLoading(false) })
-  }, [])
-
-  const loadStats = useCallback((deckId: number) => {
-    statsDeckRef.current = deckId
-    // Deterministic stats: fast, no LLM. Paints the panel immediately.
-    api.getDeckStats(deckId)
-      .then((s) => { if (statsDeckRef.current === deckId) setDeckStats(s) })
-      .catch(() => { if (statsDeckRef.current === deckId) setDeckStats(null) })
-    loadNuance(deckId)
-  }, [loadNuance])
-
   useEffect(() => {
     refreshConversations()
     refreshDecks()
   }, [refreshConversations, refreshDecks])
-
-  useEffect(() => {
-    if (deck) {
-      loadStats(deck.id)
-    } else {
-      statsDeckRef.current = null
-      setDeckStats(null)
-      setNuanceLoading(false)
-    }
-  }, [deck, loadStats])
 
   const handleSelectConversation = useCallback(
     async (id: number) => {
@@ -200,7 +128,7 @@ function App() {
       }
       setProposalBatches(groupProposalsIntoBatches(detail.proposals))
     },
-    [reset, loadDeck, clearDeck],
+    [reset, loadDeck, clearDeck, setProposalBatches],
   )
 
   const handleNewConversation = useCallback(() => {
@@ -208,7 +136,7 @@ function App() {
     reset([])
     clearDeck()
     setProposalBatches([])
-  }, [reset, clearDeck])
+  }, [reset, clearDeck, setProposalBatches])
 
   const handleDeleteConversation = useCallback(
     async (id: number) => {
@@ -291,75 +219,9 @@ function App() {
     [decks, refreshDecks, reset, sendMessage, handleSelectConversation, loadDeck],
   )
 
-  const handleApplyProposal = useCallback(
-    async (proposalId: number) => {
-      const updatedDeck = await api.applyProposal(proposalId)
-      setDeck(updatedDeck)
-      setProposalBatches((prev) =>
-        prev.map((batch) => ({
-          ...batch,
-          proposals: batch.proposals.map((p) =>
-            p.id === proposalId ? { ...p, status: 'approved' as const } : p,
-          ),
-        })),
-      )
-      loadStats(updatedDeck.id)
-      // Deck auto-naming now runs server-side in the background (it's a slow LLM
-      // call), so a freshly-committed commander leaves the deck "Untitled Deck"
-      // in this response. Poll the deck a few times to pick up the generated
-      // name once it lands, then refresh the sidebar list.
-      if (updatedDeck.name === 'Untitled Deck' && updatedDeck.commander) {
-        let tries = 0
-        const poll = async () => {
-          tries += 1
-          const fresh = await api.getDeck(updatedDeck.id).catch(() => null)
-          if (fresh && fresh.name !== 'Untitled Deck') {
-            // Only replace the panel deck if the user is still viewing this one.
-            setDeck((cur) => (cur && cur.id === fresh.id ? fresh : cur))
-            refreshDecks()
-          } else if (tries < 6) {
-            setTimeout(poll, 2000)
-          }
-        }
-        setTimeout(poll, 2000)
-      }
-    },
-    [setDeck, loadStats, refreshDecks],
-  )
-
-  const handleRevertProposal = useCallback(
-    async (proposalId: number) => {
-      const updatedDeck = await api.revertProposal(proposalId)
-      setDeck(updatedDeck)
-      setProposalBatches((prev) =>
-        prev.map((batch) => ({
-          ...batch,
-          proposals: batch.proposals.map((p) =>
-            p.id === proposalId ? { ...p, status: 'pending' as const } : p,
-          ),
-        })),
-      )
-      loadStats(updatedDeck.id)
-    },
-    [setDeck, loadStats],
-  )
-
-  const handleDenyProposal = useCallback(
-    async (proposalId: number, reason?: string) => {
-      await api.denyProposal(proposalId, reason)
-      setProposalBatches((prev) =>
-        prev.map((batch) => ({
-          ...batch,
-          proposals: batch.proposals.map((p) =>
-            p.id === proposalId
-              ? { ...p, status: 'denied' as const, denial_reason: reason ?? null }
-              : p,
-          ),
-        })),
-      )
-    },
-    [],
-  )
+  const handleApplyProposal = proposals.apply
+  const handleDenyProposal = proposals.deny
+  const handleRevertProposal = proposals.revert
 
   const handleSend = useCallback(
     (text: string) => {
@@ -395,9 +257,6 @@ function App() {
     setMobileTab(tab)
     setMobileView(tabLastView.current[tab])
   }, [])
-
-  const pendingCount =
-    proposalBatches.reduce((sum, b) => sum + b.proposals.filter((p) => p.status === 'pending').length, 0)
 
   // ── Derived state ──────────────────────────────────────────────────────
 
@@ -462,7 +321,7 @@ function App() {
               proposalBatches={proposalBatches}
               onApplyProposal={handleApplyProposal}
               onDenyProposal={handleDenyProposal}
-            onRevertProposal={handleRevertProposal}
+              onRevertProposal={handleRevertProposal}
               cardNames={cardNames}
             />
             <DeckPanel deck={deck} stats={deckStats} onDeckUpdated={handleDeckUpdated} onStartConversation={navigateToDeckConversation} onSelectConversation={handleSelectConversation} />
@@ -520,23 +379,11 @@ function App() {
 
           <div className="mobile-content">
             {mobileView === 'chats-list' && (
-              <div className="mobile-list">
-                {conversations.length === 0 && (
-                  <p className="mobile-list__empty">No conversations yet. Start a new one.</p>
-                )}
-                {conversations.map((c) => (
-                  <button
-                    key={c.id}
-                    className={`mobile-list__item ${c.id === activeConversationId ? 'mobile-list__item--active' : ''}`}
-                    onClick={() => handleMobileSelectConv(c.id)}
-                  >
-                    <span className="mobile-list__item-title">{c.title || 'Untitled'}</span>
-                    <span className="mobile-list__item-date">
-                      {new Date(c.updated_at).toLocaleDateString()}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              <MobileConversationList
+                conversations={conversations}
+                activeId={activeConversationId}
+                onSelect={handleMobileSelectConv}
+              />
             )}
 
             {mobileView === 'chat' && (
@@ -549,27 +396,13 @@ function App() {
                 proposalBatches={proposalBatches}
                 onApplyProposal={handleApplyProposal}
                 onDenyProposal={handleDenyProposal}
-            onRevertProposal={handleRevertProposal}
+                onRevertProposal={handleRevertProposal}
                 cardNames={cardNames}
               />
             )}
 
             {mobileView === 'decks-list' && (
-              <div className="mobile-list">
-                {decks.length === 0 && (
-                  <p className="mobile-list__empty">No decks yet. Create one to get started.</p>
-                )}
-                {decks.map((d) => (
-                  <button
-                    key={d.id}
-                    className={`mobile-list__item ${d.id === deck?.id ? 'mobile-list__item--active' : ''}`}
-                    onClick={() => handleMobileSelectDeck(d)}
-                  >
-                    <span className="mobile-list__item-title">{d.name}</span>
-                    {d.commander && <span className="mobile-list__item-deck">{d.commander}</span>}
-                  </button>
-                ))}
-              </div>
+              <MobileDeckList decks={decks} activeId={deck?.id ?? null} onSelect={handleMobileSelectDeck} />
             )}
 
             {mobileView === 'deck-detail' && deck && (
@@ -598,49 +431,6 @@ function App() {
       </div>
       <PinnedTray />
     </CardPinProvider>
-  )
-}
-
-/** Full-screen pinned-card view for the mobile Pins tab. */
-function MobilePinsView() {
-  const { pinned, unpin, clear } = useCardPins()
-
-  if (pinned.length === 0) {
-    return (
-      <div className="mobile-list">
-        <p className="mobile-list__empty">
-          No cards pinned yet. Tap a card name in a message or deck list to pin it for comparison.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="mobile-pins">
-      <div className="mobile-pins__head">
-        <span className="micro-label">Pinned · {pinned.length}</span>
-        <button className="pinned-tray__clear" onClick={clear}>Clear all</button>
-      </div>
-      <div className="mobile-pins__grid">
-        {pinned.map((name) => (
-          <div key={name} className="mobile-pins__card">
-            <img
-              src={`https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}&format=image`}
-              alt={name}
-              loading="lazy"
-            />
-            <button
-              className="pinned-card__close"
-              onClick={() => unpin(name)}
-              title={`Unpin ${name}`}
-              aria-label={`Unpin ${name}`}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
   )
 }
 

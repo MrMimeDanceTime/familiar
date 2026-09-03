@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { Deck, DeckStats } from '../types/api'
 import { DeckCardRow } from './DeckCardRow'
+import { ExportMenu } from './ExportMenu'
 import { commanderColorIdentities, CommanderPip } from './deckViz'
 import { ImportPanel } from './ImportPanel'
 
@@ -28,7 +29,6 @@ export function DeckPanel({ deck, stats, onDeckUpdated, onStartConversation, onS
   const [renaming, setRenaming] = useState(false)
   const [draftName, setDraftName] = useState('')
   const [showImport, setShowImport] = useState(false)
-  const [copied, setCopied] = useState(false)
   const importBtnRef = useRef<HTMLButtonElement>(null)
 
   const startRename = useCallback(() => {
@@ -46,34 +46,6 @@ export function DeckPanel({ deck, stats, onDeckUpdated, onStartConversation, onS
     onDeckUpdated(updated)
     setRenaming(false)
   }, [deck, draftName, onDeckUpdated])
-
-  const handleExport = useCallback(() => {
-    if (!deck) return
-    const grouped = new Map<string, typeof deck.cards>()
-    for (const card of deck.cards) {
-      const key = card.category ?? 'Uncategorized'
-      grouped.set(key, [...(grouped.get(key) ?? []), card])
-    }
-    const lines: string[] = []
-    // Commander(s) first — no blank line after: a blank line reads as a
-    // sideboard/maybeboard separator to Archidekt and Cockatrice, which
-    // would dump the entire 99 into the sideboard.
-    for (const c of deck.cards) {
-      if (c.category === 'Commander') {
-        lines.push(`${c.quantity} ${c.name}`)
-      }
-    }
-    // Rest of the deck
-    for (const [category, cards] of grouped.entries()) {
-      if (category === 'Commander') continue
-      for (const c of cards) {
-        lines.push(`${c.quantity} ${c.name}`)
-      }
-    }
-    navigator.clipboard.writeText(lines.join('\n').trim())
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [deck])
 
   const handleOpenConversation = useCallback(() => {
     if (!deck) return
@@ -137,9 +109,7 @@ export function DeckPanel({ deck, stats, onDeckUpdated, onStartConversation, onS
         )}
 
         <div className="deck-panel__actions">
-          <button className="btn btn--secondary btn--mono" onClick={handleExport}>
-            {copied ? 'Copied!' : 'Export'}
-          </button>
+          <ExportMenu deck={deck} />
           <button
             ref={importBtnRef}
             className={`btn btn--secondary btn--mono ${showImport ? 'btn--active' : ''}`}

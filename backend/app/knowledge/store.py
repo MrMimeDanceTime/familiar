@@ -36,7 +36,7 @@ def search_knowledge(
     # set can return fewer than top_k (or zero) even when good matches
     # exist further down the BM25 ranking.
     sql = """
-        SELECT ke.title, ke.body, ke.category, ke.format
+        SELECT ke.title, ke.body, ke.category, ke.format, ke.source
         FROM knowledge_fts kf
         JOIN knowledge_entries ke ON ke.id = kf.rowid
         WHERE knowledge_fts MATCH :q
@@ -53,7 +53,7 @@ def search_knowledge(
 
     results: list[dict] = []
     for row in rows:
-        title, body, entry_category, entry_format = row
+        title, body, entry_category, entry_format, source = row
         if format and entry_format not in (format, "any"):
             continue
         if category and entry_category != category:
@@ -63,6 +63,9 @@ def search_knowledge(
             "body": body,
             "category": entry_category,
             "format": entry_format,
+            # The player's own entries carry their playgroup's rules and
+            # preferences; the model should know which advice is theirs.
+            "source": source or "seed",
         })
         if len(results) >= top_k:
             break

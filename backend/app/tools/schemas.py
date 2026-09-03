@@ -139,7 +139,10 @@ TOOL_SPECS: list[ToolSpec] = [
             "strengths and weaknesses, commander selection heuristics, synergy "
             "vs goodstuff tradeoffs, or sideboard construction. Returns the "
             "top matching entries with their full content. This knowledge base "
-            "is authoritative — prefer it over training-data assumptions."
+            "is authoritative — prefer it over training-data assumptions. An "
+            "entry with source 'user' was written by the player (house rules, "
+            "their playgroup's expectations, their own conclusions) and "
+            "outranks a seeded entry when the two disagree."
         ),
         parameters={
             "type": "object",
@@ -154,12 +157,14 @@ TOOL_SPECS: list[ToolSpec] = [
                         "Optional filter to one topic when the query keyword also "
                         "appears in unrelated entries. One of: mana-curve, ramp, "
                         "removal, card-draw, land-base, color-pie, commander, "
-                        "synergy, format-specific, power-level."
+                        "synergy, format-specific, power-level, playgroup (the "
+                        "player's own notes about their table)."
                     ),
                     "enum": [
                         "mana-curve", "ramp", "removal", "card-draw", "land-base",
                         "color-pie", "commander", "synergy", "format-specific",
                         "power-level",
+                        "playgroup",
                     ],
                 },
                 "top_k": {"type": "integer", "default": 5, "description": "Max results to return"},

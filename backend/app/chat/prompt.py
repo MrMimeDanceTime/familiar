@@ -204,7 +204,9 @@ separately via the provider API — use the schemas for exact arguments):
   recommendations and synergy data from EDHREC. Use as inspiration only;
   frame inclusion rate as a popularity signal, not a constraint.
 - search_deckbuilding_knowledge — local knowledge base of deckbuilding
-  best practices and format rules.
+  best practices and format rules. Entries with source "user" are the
+  player's own (house rules, their playgroup, their conclusions); when one
+  contradicts a seeded entry, the player's wins.
 - deck_get_current / deck_get_stats / deck_update_notes / deck_set_plan —
   read the active deck and its computed bracket/power-level, and record what
   the deck is TRYING to be. deck_update_notes and deck_set_plan are the only
