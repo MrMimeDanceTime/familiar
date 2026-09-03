@@ -28,6 +28,7 @@ from app.chat.streaming import (
 from app.db import repository as repo
 from app.llm.base import AssistantTurn, ChatProvider, ToolResult
 from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
+from app.tools.render import render_result
 from app.tools.schemas import TOOL_SPECS
 
 logger = logging.getLogger("app.chat.engine")
@@ -383,7 +384,10 @@ def run_chat_turn(
                     continue
 
                 result = dispatch(call.name, args, session, provider=provider)
-                content = str(result.content) if not result.ok else _serialize(result.content)
+                content = (
+                    str(result.content) if not result.ok
+                    else render_result(call.name, result.content)
+                )
                 results.append(ToolResult(call_id=call.id, content=content))
 
                 tool_calls_log.append({"id": call.id, "name": call.name, "arguments": call.arguments})
@@ -617,12 +621,6 @@ def _settled_proposal_batch(
             "price_usd": p.price_usd,
         })
     return {"ok": True, "summary": summary, "proposals": proposals}
-
-
-def _serialize(value: Any) -> str:
-    import json
-
-    return json.dumps(value)
 
 
 _NAME_SYSTEM_PROMPT = (
