@@ -148,6 +148,7 @@ DENIAL_SUPERSEDED = "superseded"
 TURN_RUNNING = "running"
 TURN_DONE = "done"
 TURN_ERROR = "error"
+TURN_CANCELLED = "cancelled"
 
 
 class Turn(SQLModel, table=True):
@@ -168,6 +169,9 @@ class Turn(SQLModel, table=True):
     owner_id: int = Field(default=SINGLE_USER_ID, index=True)
     status: str = Field(default=TURN_RUNNING, index=True)
     error: str | None = None
+    # Set by the cancel endpoint; the engine checks it between provider calls
+    # and while streaming, and finishes the turn early with what it has.
+    cancel_requested: bool = False
     # What the turn cost, summed over every provider call it made (the chat
     # loop plus any pipeline or nuance call from inside a tool). Null on turns
     # that predate the columns.

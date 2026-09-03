@@ -794,6 +794,28 @@ def get_turn(session: Session, turn_id: str, owner_id: int = SINGLE_USER_ID) -> 
     return turn
 
 
+def request_turn_cancel(
+    session: Session, turn_id: str, owner_id: int = SINGLE_USER_ID
+) -> Turn | None:
+    """Ask a running turn to stop. Returns the turn, or None when it is not
+    the owner's or is already over; the engine honours the flag at its next
+    check."""
+    turn = get_turn(session, turn_id, owner_id=owner_id)
+    if turn is None or turn.status != TURN_RUNNING:
+        return None
+    turn.cancel_requested = True
+    turn.updated_at = _utcnow()
+    session.add(turn)
+    session.commit()
+    return turn
+
+
+def turn_cancel_requested(session: Session, turn_id: str) -> bool:
+    session.expire_all()
+    turn = session.get(Turn, turn_id)
+    return bool(turn and turn.cancel_requested)
+
+
 def finish_turn(
     session: Session,
     turn_id: str,

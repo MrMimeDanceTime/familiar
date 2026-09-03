@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { StreamInterrupted, getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
+import { StreamInterrupted, cancelTurn, getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
 import type { Deck, DeckProposal } from '../types/api'
 
 export interface DisplayMessage {
@@ -276,6 +276,21 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     [consumeTurn, persistTurn],
   )
 
+  /**
+   * Stop the running turn. The server finishes it at its next checkpoint and
+   * the stream ends with `done` as usual, so the reader is left running; a
+   * failed request just leaves the turn running, which the user can retry.
+   */
+  const stopTurn = useCallback(async () => {
+    const turn = activeTurn.current
+    if (!turn) return
+    try {
+      await cancelTurn(turn.turnId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
   // Resume on tab-return. Mobile browsers suspend a backgrounded tab's fetch
   // body, so the reader dies even though the turn keeps running server-side;
   // reconnecting from the cursor replays whatever was missed.
@@ -340,5 +355,5 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  return { messages, sendMessage, reset, activeTool, isStreaming, error }
+  return { messages, sendMessage, stopTurn, reset, activeTool, isStreaming, error }
 }

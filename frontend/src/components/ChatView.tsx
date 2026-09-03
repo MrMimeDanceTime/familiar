@@ -79,6 +79,7 @@ interface ChatViewProps {
   isStreaming: boolean
   error: string | null
   onSend: (text: string) => void
+  onStop?: () => void
   proposalBatches: ProposalBatch[]
   onApplyProposal: (id: number) => Promise<void>
   onDenyProposal: (id: number, reason?: string) => Promise<void>
@@ -86,7 +87,7 @@ interface ChatViewProps {
   cardNames: string[]
 }
 
-export function ChatView({ messages, activeTool, isStreaming, error, onSend, proposalBatches, onApplyProposal, onDenyProposal, onRevertProposal, cardNames }: ChatViewProps) {
+export function ChatView({ messages, activeTool, isStreaming, error, onSend, onStop, proposalBatches, onApplyProposal, onDenyProposal, onRevertProposal, cardNames }: ChatViewProps) {
   const [draft, setDraft] = useState('')
   const [dismissedBatches, setDismissedBatches] = useState<Set<number>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -211,9 +212,15 @@ export function ChatView({ messages, activeTool, isStreaming, error, onSend, pro
           placeholder="Brainstorm a deck idea…"
           disabled={isStreaming}
         />
-        <button type="submit" disabled={isStreaming || !draft.trim()}>
-          Send
-        </button>
+        {isStreaming && onStop ? (
+          <button type="button" className="chat-view__stop" onClick={onStop} title="Stop this reply">
+            Stop
+          </button>
+        ) : (
+          <button type="submit" disabled={isStreaming || !draft.trim()}>
+            Send
+          </button>
+        )}
       </form>
     </div>
   )

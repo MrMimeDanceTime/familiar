@@ -327,3 +327,35 @@ describe('resume record', () => {
     })
   })
 })
+
+describe('stopping a turn', () => {
+  it('asks the server to cancel and keeps reading until done', async () => {
+    const { result } = renderHook(() => useChatStream())
+    await startTurn(result)
+
+    act(() => {
+      stream.send('token', { text: 'Half a ', seq: 1 })
+    })
+    await act(async () => {
+      await result.current.stopTurn()
+    })
+    expect(stream.cancelled).toEqual(['turn-abc'])
+    expect(result.current.isStreaming).toBe(true)
+
+    act(() => {
+      stream.send('token', { text: '(stopped)', seq: 2 })
+      stream.send('done', { message_id: 3, conversation_id: 1, seq: 3 })
+      stream.close()
+    })
+    await waitFor(() => expect(result.current.isStreaming).toBe(false))
+    expect(result.current.messages.find((m) => m.role === 'assistant')?.text).toBe('Half a (stopped)')
+  })
+
+  it('is a no-op with no turn running', async () => {
+    const { result } = renderHook(() => useChatStream())
+    await act(async () => {
+      await result.current.stopTurn()
+    })
+    expect(stream.cancelled).toEqual([])
+  })
+})

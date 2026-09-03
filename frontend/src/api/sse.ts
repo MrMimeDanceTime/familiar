@@ -124,6 +124,16 @@ export async function streamTurnEvents(
   }
 }
 
+/**
+ * Ask the server to stop a running turn. The engine finishes the turn with
+ * whatever it has at its next checkpoint, so the stream still ends with a
+ * `done` event; the caller keeps reading until then.
+ */
+export async function cancelTurn(turnId: string): Promise<void> {
+  const resp = await fetch(`/api/chat/turns/${turnId}/cancel`, { method: 'POST' })
+  if (!resp.ok) throw new Error(`Cancel failed: ${resp.status}`)
+}
+
 export async function getTurnStatus(
   turnId: string,
 ): Promise<{ status: string; conversation_id: number; error: string | null }> {

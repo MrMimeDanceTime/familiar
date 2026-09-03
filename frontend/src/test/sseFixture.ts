@@ -25,6 +25,8 @@ export interface StreamHandle {
   readonly connectCount: number
   /** The `after` cursor of the most recent connection. */
   readonly lastAfter: number
+  /** Turn ids the client has asked the server to cancel. */
+  readonly cancelled: readonly string[]
   /** Resolves once the client has connected at least `n` times. */
   waitForConnect(n?: number): Promise<void>
 }
@@ -43,6 +45,7 @@ export function installFetchMock(options: {
   const encoder = new TextEncoder()
 
   let controller: Controller | null = null
+  const cancelled: string[] = []
   let connectCount = 0
   let lastAfter = 0
   const connectWaiters: Array<{ n: number; resolve: () => void }> = []
@@ -66,6 +69,12 @@ export function installFetchMock(options: {
           JSON.stringify({ turn_id: turnId, conversation_id: 1 }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         )
+      }
+
+      const cancelMatch = url.match(/^\/api\/chat\/turns\/([^/?]+)\/cancel$/)
+      if (cancelMatch && init?.method === 'POST') {
+        cancelled.push(cancelMatch[1])
+        return new Response(JSON.stringify({ turn_id: cancelMatch[1], status: 'running', cancel_requested: true }), { status: 200 })
       }
 
       const statusMatch = url.match(/^\/api\/chat\/turns\/([^/?]+)$/)
@@ -137,6 +146,9 @@ export function installFetchMock(options: {
     },
     get connectCount() {
       return connectCount
+    },
+    get cancelled() {
+      return cancelled
     },
     get lastAfter() {
       return lastAfter

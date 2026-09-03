@@ -36,6 +36,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("turn", "prompt_tokens", "INTEGER"),
     ("turn", "completion_tokens", "INTEGER"),
     ("turn", "reasoning_tokens", "INTEGER"),
+    ("turn", "cancel_requested", "INTEGER"),
 ]
 
 

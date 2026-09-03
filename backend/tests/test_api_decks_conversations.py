@@ -250,3 +250,23 @@ def test_knowledge_entries_crud_and_seed_protection(client, test_engine, monkeyp
     assert client.delete(f"/api/knowledge/{seeded_id}").status_code == 403
     assert client.delete(f"/api/knowledge/{entry['id']}").status_code == 200
     assert client.get("/api/knowledge?source=user").json() == []
+
+
+def test_cancel_endpoint_flags_a_running_turn(client, test_engine, monkeypatch):
+    from app.db.models import TURN_DONE
+
+    monkeypatch.setattr(chat, "submit_turn", lambda *a, **k: None)
+    started = client.post("/api/chat", json={"conversation_id": "new", "message": "hi"}).json()
+    turn_id = started["turn_id"]
+
+    resp = client.post(f"/api/chat/turns/{turn_id}/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["cancel_requested"] is True
+    with Session(test_engine) as session:
+        assert repo.turn_cancel_requested(session, turn_id) is True
+        repo.finish_turn(session, turn_id, TURN_DONE)
+
+    again = client.post(f"/api/chat/turns/{turn_id}/cancel")
+    assert again.status_code == 200
+    assert again.json()["cancel_requested"] is False
+    assert client.post("/api/chat/turns/nope/cancel").status_code == 404

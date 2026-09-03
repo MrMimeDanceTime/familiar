@@ -488,6 +488,12 @@ body.has-pinned-tray .chat-view__messages {
   max-height: 160px;
 }
 
+.chat-view__input .chat-view__stop {
+  background: var(--bg-soft);
+  color: var(--text-h);
+  border-color: var(--border);
+}
+
 .chat-view__input textarea::placeholder {
   color: var(--label);
 }

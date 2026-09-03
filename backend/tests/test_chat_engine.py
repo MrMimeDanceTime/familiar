@@ -1214,3 +1214,83 @@ def test_since_last_turn_note_rides_with_the_user_message(session):
     assert "approved Sol Ring" in native
     # The system prompt carried the deck header.
     assert "<deck_state>" in provider.sent_system_prompts[-1]
+
+
+# ── cancellation ───────────────────────────────────────────────────────────
+
+def test_stop_before_the_first_send_persists_a_stopped_reply(session):
+    provider = FakeProvider([AssistantTurn(text="never sent", tool_calls=[])])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(
+        session, provider, convo.id, "hello", deck_id=None, should_stop=lambda: True,
+    ))
+
+    assert provider.thinking_flags == []  # no provider call was made
+    assert any(e.startswith("event: done") for e in events)
+    assert any("stopped here by the player" in e for e in events)
+    messages = repo.list_messages(session, convo.id)
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert "stopped" in messages[1].text_content
+    assert "[The player stopped this reply before it was written.]" in messages[1].provider_native[0]["content"]
+
+
+def test_stop_between_iterations_keeps_the_tool_exchange(session):
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1  # first check passes; the second (after a tool round) stops
+
+    provider = FakeProvider([
+        AssistantTurn(
+            text="Let me check.",
+            tool_calls=[ToolCallRequest(id="c1", name="search_deckbuilding_knowledge", arguments={"query": "ramp"})],
+            raw_assistant_message={"role": "assistant"},
+        ),
+        AssistantTurn(text="never sent", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+
+    events = _collect(run_chat_turn(
+        session, provider, convo.id, "hello", deck_id=None, should_stop=should_stop,
+    ))
+
+    assert len(provider.thinking_flags) == 1
+    assert any(e.startswith("event: done") for e in events)
+    messages = repo.list_messages(session, convo.id)
+    assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert messages[1].text_content == "Let me check."
+    assert "stopped here by the player" in messages[-1].text_content
+
+
+def test_stop_mid_stream_keeps_the_partial_text(session):
+    class StreamingProvider(FakeProvider):
+        def send_stream(self, system_prompt, history, tools, *, thinking=False):
+            self.thinking_flags.append(thinking)
+            for word in ["one ", "two ", "three ", "four ", "five ", "six ", "seven ", "eight ", "nine ", "ten "]:
+                yield word
+            yield AssistantTurn(text="one two three four five six seven eight nine ten", tool_calls=[])
+
+    stops = {"n": 0}
+
+    def should_stop():
+        stops["n"] += 1
+        return stops["n"] >= 2  # the pre-send check passes; the in-stream check stops
+
+    provider = StreamingProvider([])
+    convo = repo.create_conversation(session)
+    events = _collect(run_chat_turn(
+        session, provider, convo.id, "hello", deck_id=None, should_stop=should_stop,
+    ))
+
+    streamed = "".join(
+        json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")
+    )
+    assert streamed.startswith("one two three four five six seven eight ")
+    assert "ten" not in streamed
+    assert "stopped here by the player" in streamed
+    final = repo.list_messages(session, convo.id)[-1]
+    assert final.role == "assistant"
+    assert final.text_content.startswith("one two three four five six seven eight")
+    assert "[The player stopped this reply here.]" in final.provider_native[0]["content"]

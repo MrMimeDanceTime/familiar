@@ -70,7 +70,7 @@ function App() {
   const proposals = useProposals({ onDeckChanged: onProposalDeckChanged })
   const { batches: proposalBatches, setBatches: setProposalBatches, pendingCount } = proposals
 
-  const { messages, sendMessage, reset, activeTool, isStreaming, error } = useChatStream({
+  const { messages, sendMessage, stopTurn, reset, activeTool, isStreaming, error } = useChatStream({
     onDeckUpdated: setDeck,
     onDeckProposal: proposals.addBatch,
     onTurnComplete: proposals.anchorPending,
@@ -330,6 +330,7 @@ function App() {
               isStreaming={isStreaming}
               error={error}
               onSend={handleSend}
+              onStop={stopTurn}
               proposalBatches={proposalBatches}
               onApplyProposal={handleApplyProposal}
               onDenyProposal={handleDenyProposal}
@@ -405,6 +406,7 @@ function App() {
                 isStreaming={isStreaming}
                 error={error}
                 onSend={handleSend}
+                onStop={stopTurn}
                 proposalBatches={proposalBatches}
                 onApplyProposal={handleApplyProposal}
                 onDenyProposal={handleDenyProposal}

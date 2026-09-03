@@ -19,7 +19,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.chat import turn_runner
 from app.chat.turn_bus import HEARTBEAT, PollingEventBus
 from app.db import repository as repo
-from app.db.models import TURN_DONE, TURN_ERROR, TURN_RUNNING
+from app.db.models import TURN_CANCELLED, TURN_DONE, TURN_ERROR, TURN_RUNNING
 
 
 @pytest.fixture
@@ -151,7 +151,7 @@ def test_turn_completes_with_no_client_attached(session, monkeypatch):
     turn_id = turn_runner.new_turn_id()
     repo.create_turn(session, turn_id, conversation.id)
 
-    def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id):
+    def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id, should_stop=None):
         yield 'event: token\ndata: {"text": "Considering "}\n\n'
         yield 'event: tool_call\ndata: {"name": "scryfall_search", "arguments": {}}\n\n'
         yield 'event: token\ndata: {"text": "your deck."}\n\n'
@@ -333,7 +333,7 @@ def test_provider_usage_is_recorded_on_the_turn(session, monkeypatch):
     turn_id = turn_runner.new_turn_id()
     repo.create_turn(session, turn_id, conversation.id)
 
-    def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id):
+    def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id, should_stop=None):
         provider.usage["llm_calls"] += 2
         provider.usage["prompt_tokens"] += 300
         provider.usage["completion_tokens"] += 40
@@ -350,3 +350,34 @@ def test_provider_usage_is_recorded_on_the_turn(session, monkeypatch):
     session.expire_all()
     turn = repo.get_turn(session, turn_id)
     assert (turn.llm_calls, turn.prompt_tokens, turn.completion_tokens) == (2, 300, 40)
+
+
+def test_cancel_request_marks_the_turn_cancelled(session, monkeypatch):
+    conversation = repo.create_conversation(session)
+    turn_id = turn_runner.new_turn_id()
+    repo.create_turn(session, turn_id, conversation.id)
+    assert repo.request_turn_cancel(session, turn_id) is not None
+
+    seen: dict[str, object] = {}
+
+    def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id, should_stop=None):
+        seen["stop"] = should_stop()
+        yield 'event: token\ndata: {"text": "(stopped)"}\n\n'
+        yield 'event: done\ndata: {"message_id": 1, "conversation_id": %d}\n\n' % conversation_id
+
+    monkeypatch.setattr(turn_runner, "run_chat_turn", fake_run_chat_turn)
+    monkeypatch.setattr(turn_runner, "get_provider", lambda: object())
+    turn_runner.execute_turn(turn_id, conversation.id, "hi", None)
+
+    assert seen["stop"] is True
+    session.expire_all()
+    assert repo.get_turn(session, turn_id).status == TURN_CANCELLED
+
+
+def test_cancel_is_refused_once_the_turn_is_over(session):
+    conversation = repo.create_conversation(session)
+    turn_id = turn_runner.new_turn_id()
+    repo.create_turn(session, turn_id, conversation.id)
+    repo.finish_turn(session, turn_id, TURN_DONE)
+    assert repo.request_turn_cancel(session, turn_id) is None
+    assert repo.turn_cancel_requested(session, turn_id) is False

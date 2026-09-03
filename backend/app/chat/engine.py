@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from sqlmodel import Session
 
@@ -183,14 +183,31 @@ def bound_history(
     return bounded
 
 
+# While a reply streams, the cancel flag is checked once per this many
+# chunks: often enough that Stop feels immediate, rare enough that the check
+# (a small query) never shows in the token rate.
+STOP_CHECK_EVERY_CHUNKS = 8
+
+STOPPED_NOTE = "(stopped here by the player)"
+
+
 def run_chat_turn(
     session: Session,
     provider: ChatProvider,
     conversation_id: int,
     user_text: str,
     deck_id: int | None,
+    *,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Iterator[str]:
-    """Run one user turn through the agentic loop, yielding formatted SSE strings."""
+    """Run one user turn through the agentic loop, yielding formatted SSE strings.
+
+    ``should_stop`` is polled between provider calls and while a reply
+    streams; when it returns True the turn is finished with whatever it has,
+    persisted so the transcript stays consistent, and the ``done`` event is
+    emitted as usual.
+    """
+    should_stop = should_stop or (lambda: False)
     history = _load_history(session, conversation_id)
     # What the player decided since the last reply rides with their message
     # so the model reads it as part of the turn; the stored transcript keeps
@@ -272,9 +289,19 @@ def run_chat_turn(
     # the client when the next text arrives; a paragraph break keeps the two
     # from running together in one bubble.
     streamed_text = False
+    # Text streamed so far this turn, in case the player stops it mid-reply
+    # and the partial text is all there is to persist.
+    streamed_parts: list[str] = []
     try:
         turn_started = time.perf_counter()
         for iteration in range(MAX_TOOL_ITERATIONS):
+            if should_stop():
+                logger.info("chat: turn stopped by the player before iteration %d", iteration)
+                yield from _stop_turn(
+                    session, conversation_id, sequence, "".join(streamed_parts),
+                    proposal_ids_this_turn, pending_summary,
+                )
+                return
             # Thinking mode roughly doubles per-call latency and the chat loop is
             # mostly mechanical tool-dispatch plus narration of decisions already
             # made through the tool sequence — the deep reasoning lives in the
@@ -292,6 +319,7 @@ def run_chat_turn(
             send_started = time.perf_counter()
             turn: AssistantTurn | None = None
             streamed_this_send = False
+            chunks = 0
             for item in _send(
                 provider, system_prompt, bound_history(history), tools_for_turn,
                 thinking=think_now,
@@ -301,10 +329,22 @@ def run_chat_turn(
                     continue
                 if streamed_text and not streamed_this_send:
                     yield token_event("\n\n")
+                    streamed_parts.append("\n\n")
                 streamed_this_send = True
                 streamed_text = True
+                streamed_parts.append(item)
                 yield token_event(item)
-            assert turn is not None
+                chunks += 1
+                if chunks % STOP_CHECK_EVERY_CHUNKS == 0 and should_stop():
+                    break
+            if turn is None:
+                # Stopped mid-stream: the provider never delivered a turn.
+                logger.info("chat: turn stopped by the player mid-reply")
+                yield from _stop_turn(
+                    session, conversation_id, sequence, "".join(streamed_parts),
+                    proposal_ids_this_turn, pending_summary,
+                )
+                return
             send_dt = time.perf_counter() - send_started
             tool_names = [c.name for c in turn.tool_calls] if turn.tool_calls else []
             logger.info(
@@ -501,6 +541,39 @@ def run_chat_turn(
         except Exception:  # noqa: BLE001 - never let recovery mask the real error
             logger.exception("chat: could not reveal proposals after a failed turn")
         yield error_event(str(exc))
+
+
+def _stop_turn(
+    session: Session,
+    conversation_id: int,
+    sequence: int,
+    partial_text: str,
+    proposal_ids_this_turn: list[int],
+    pending_summary: str,
+) -> Iterator[str]:
+    """Finish a turn the player stopped.
+
+    Persists an assistant message so the transcript still alternates and the
+    model sees, next turn, that its reply was cut short rather than that it
+    said nothing. Proposals already created are revealed as usual: they are
+    real rows, and hiding them would read as data loss.
+    """
+    partial = partial_text.strip()
+    if partial:
+        ui_text = f"{partial}\n\n{STOPPED_NOTE}"
+        yield token_event(f"\n\n{STOPPED_NOTE}")
+    else:
+        ui_text = STOPPED_NOTE
+        yield token_event(STOPPED_NOTE)
+    model_text = (
+        f"{partial}\n\n[The player stopped this reply here.]" if partial
+        else "[The player stopped this reply before it was written.]"
+    )
+    yield from _finalize_turn(
+        session, conversation_id, sequence, ui_text,
+        {"role": "assistant", "content": model_text},
+        proposal_ids_this_turn, pending_summary, already_streamed=True,
+    )
 
 
 def _supersede_stale_batches(

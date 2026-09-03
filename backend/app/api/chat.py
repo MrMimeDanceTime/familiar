@@ -142,6 +142,23 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
     )
 
 
+@router.post("/turns/{turn_id}/cancel")
+def cancel_turn(turn_id: str, request: Request):
+    """Stop a running turn at its next checkpoint.
+
+    The engine finishes the turn with whatever it has written so far, so the
+    transcript stays consistent and the player can redirect immediately.
+    """
+    with Session(get_engine()) as session:
+        turn = repo.get_turn(session, turn_id, owner_id=current_owner_id(request))
+        if turn is None:
+            raise HTTPException(status_code=404, detail="Turn not found")
+        if turn.status != TURN_RUNNING:
+            return {"turn_id": turn.id, "status": turn.status, "cancel_requested": False}
+        repo.request_turn_cancel(session, turn_id, owner_id=current_owner_id(request))
+        return {"turn_id": turn.id, "status": turn.status, "cancel_requested": True}
+
+
 @router.get("/turns/{turn_id}")
 def get_turn_status(turn_id: str, request: Request):
     """Cheap status check, for a client deciding whether to resume a turn."""
