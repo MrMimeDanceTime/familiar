@@ -39,8 +39,9 @@ Claude Code on this repo.
   exactly zero. Nothing caught that for two stages, because nobody was
   measuring.
 
-- **Touching the prompt, the tool descriptions, or the engine's turn logic?
-  Run the behaviour eval.** `backend/tools/behaviour_eval.py replay` re-runs
+- **Touching the prompt, the per-turn context blocks (`app/chat/context.py`),
+  the tool result rendering (`app/tools/render.py`), the tool descriptions,
+  or the engine's turn logic? Run the behaviour eval.** `backend/tools/behaviour_eval.py replay` re-runs
   stored user turns through the live loop against a scratch copy of the DB and
   scores each reply on the rules the prompt asks for and the code cannot
   enforce (role batches through the pipeline, plan set before the first batch,

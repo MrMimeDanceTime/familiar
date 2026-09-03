@@ -113,7 +113,12 @@ backend/app/
     factory.py        get_provider(name)
   tools/
     scryfall_client.py / edhrec_client.py   external data clients
-    deck_tools.py      deck_* tool implementations (import, stats/bracket/power, proposals)
+    deck_tools.py      deck read, card edits, commander, plan, decklist import (Scryfall-validated)
+    deck_stats.py      compute_deck_stats: curve, roles, bracket, power (+ LLM nuance), price, mana sources, combos; memoised per deck content
+    proposals.py       propose_deck_changes / withdraw_pending_proposals — the only way the model changes a deck
+    card_roles.py      functional roles and display category from Scryfall tags
+    card_lists.py      Game Changers (index-backed, hand list as fallback), banned list, tutors, MLD, fast mana
+    render.py          tool results as compact text for the model's context (JSON fallback)
     schemas.py         JSON-Schema ToolSpec definitions (provider-neutral; tune wording here to fix model misuse)
     dispatch.py         name -> callable registry, catches exceptions into error ToolResults
   knowledge/
@@ -136,9 +141,10 @@ backend/app/
   db/
     models.py / session.py / repository.py   (Conversation, Message, Deck, DeckCard, DeckProposal, UserPreferences)
   chat/
-    engine.py           THE agentic loop — see PROVIDER_SHAPES.md
+    engine.py           THE agentic loop — see PROVIDER_SHAPES.md; a _TurnState holds the turn's rules
+    context.py           what the model sees each turn: deck_state, since_last_turn, player_history
     prompt.py            system prompt (behavior contract, see PRODUCT.md)
-    streaming.py          SSE event formatting
+    streaming.py          the ChatEvent vocabulary the engine yields, and SSE formatting for the API
     turn_runner.py        runs a turn to completion on a worker thread, writing every event to the durable turn log
     turn_bus.py           how a reader learns new turn events exist (polling today; the log is the source of truth)
   api/
@@ -195,6 +201,36 @@ non-streaming path produced. Each provider instance tallies its token usage,
 and since the turn runner builds one provider per turn, the totals land on the
 Turn row and in the log as the turn's cost.
 
+## What the model sees each turn
+
+The engine builds three blocks from the database before the first send
+(`app/chat/context.py`), so the model is not blind between tool calls:
+
+- `<deck_state>` on the system prompt: deck size, commander and identity,
+  the plan and what it still needs, role counts, bracket and power, off-target
+  roles with the knowledge-base entry for each, combos, missing staples, and
+  what is awaiting the player's decision. It replaces the deck read most
+  turns used to open with, and the prompt lines that told the model to read
+  `total_cards` every turn.
+- `<since_last_turn>` prepended to the player's message: what they approved,
+  denied (with their reason), or undid since the last reply. Each proposal
+  remembers the last status it was reported at (`reported_status`), so a
+  decision is reported once. "Done reviewing" sends a plain continue.
+- `<player_history>` once the record has enough decisions: approvals against
+  denials, the denial reasons they reach for, cards passed on repeatedly,
+  and their curve lean.
+
+Tool results reach the model as compact text (`app/tools/render.py`), not
+JSON: a deck read is one line per card, a card lookup carries its text and
+rulings under the name, proposals carry their ids and scores.
+
+Thinking policy in the chat loop: the first send of a turn (what is this
+turn for, what to hand the pipeline) and the send after a batch (which
+picks to stand behind) think, capped at `CHAT_REASONING_EFFORT`; the
+tool-dispatch sends between them do not. `CHAT_PLAN_THINKING=false` makes
+the first send fast too. The selection stage sees the player's own message
+beside the intent the chat model distilled from it.
+
 ## Durable turns
 
 `POST /api/chat` starts a turn and returns its id immediately; the turn then
@@ -204,11 +240,19 @@ and follows live, so reconnect, refresh, and cold load are one code path. A
 single stream is capped at 15 minutes; the client treats a clean close with
 no `done`/`error` event as a cap, checks the turn's status, and resumes.
 
+`POST /api/chat/turns/{id}/cancel` asks a running turn to stop. The engine
+checks the flag before each provider call and every few streamed chunks,
+persists what it has (a partial reply is kept with a note so the transcript
+still alternates and the model sees it was cut off), reveals any proposals
+already created, and ends the turn with `done` and status `cancelled`. The
+composer shows Stop while a turn runs.
+
 ## SSE event vocabulary
 
 `token`, `tool_call`, `deck_proposal`, `deck_updated`, `done`, `error` —
-formatted in `app/chat/streaming.py`, consumed by
-`frontend/src/hooks/useChatStream.ts`. A proposal tool
+yielded by the engine as `ChatEvent` tuples (`app/chat/streaming.py`),
+written to the turn log by the runner, formatted as SSE by the API, and
+consumed by `frontend/src/hooks/useChatStream.ts`. A proposal tool
 (`propose_deck_changes` or `suggest_cards`) creates the pending proposals
 mid-turn, but the engine does NOT stream them immediately. Once any batch is
 created, the model is restricted to `withdraw_pending_proposals` (it can trim
@@ -242,7 +286,8 @@ index), `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
 `suggest_cards` (runs the `pipeline/` retrieval flow for open-ended "what should
 I add" requests — see below), and `deck_update_notes`. Specs live in
 `app/tools/schemas.py` — tune the description wording there to correct model
-misuse rather than adding code.
+misuse rather than adding code. Results are rendered as text by
+`app/tools/render.py`; a tool without a renderer falls back to JSON.
 
 ### Retrieval pipeline (`app/pipeline/`)
 See [PIPELINE.md](PIPELINE.md) for the full walkthrough (stages, model/thinking
@@ -257,7 +302,8 @@ returns the same proposal shape as `propose_deck_changes`, so it plugs into the
 existing approval workflow with no new plumbing. It's currently triggered by the
 model electing to call the `suggest_cards` tool (entry-gated, but everything
 after entry is deterministic); a future proactive trigger could grow out of the
-`_deck_grounding` hook in `engine.py`.
+`deck_state` block in `app/chat/context.py`, which already knows what the deck
+is short on.
 
 ### Knowledge base (`app/knowledge/`)
 Deckbuilding best-practice entries in a `knowledge_entries` table mirrored into

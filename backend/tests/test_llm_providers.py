@@ -286,10 +286,11 @@ def test_send_backfills_only_when_thinking(mock_openai_cls):
     assert sent[-1]["reasoning_content"] == ""
 
 
-def _chunk(content=None, tool_calls=None, finish_reason=None, usage=None):
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+def _chunk(content=None, tool_calls=None, finish_reason=None, usage=None, reasoning=None):
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls, reasoning_content=reasoning)
     choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice] if (content is not None or tool_calls or finish_reason) else [], usage=usage)
+    has_choice = content is not None or tool_calls or finish_reason or reasoning is not None
+    return SimpleNamespace(choices=[choice] if has_choice else [], usage=usage)
 
 
 @patch("app.llm.deepseek_provider.OpenAI")
@@ -395,3 +396,57 @@ def test_chat_reasoning_effort_rides_on_thinking_sends_only(mock_openai_cls):
     assert client.chat.completions.create.call_args.kwargs["extra_body"]["reasoning_effort"] == "low"
     provider.send("sys", [{"role": "user", "content": "hi"}], [], thinking=False)
     assert "reasoning_effort" not in client.chat.completions.create.call_args.kwargs["extra_body"]
+
+
+@patch("app.llm.deepseek_provider.OpenAI")
+def test_deepseek_stream_recorded_thinking_tool_call_shape(mock_openai_cls):
+    """The chunk sequence a thinking-mode tool call actually produces: a
+    keep-alive chunk with no choices, reasoning deltas, a burst of text, two
+    tool calls whose arguments interleave across chunks, then the finish and
+    a usage-only chunk. Reasoning is kept on the raw message and never
+    yielded as text."""
+    mock_client = MagicMock()
+    mock_openai_cls.return_value = mock_client
+
+    def tc(index, id=None, name=None, arguments=None):
+        return SimpleNamespace(
+            index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments),
+        )
+
+    usage = SimpleNamespace(
+        prompt_tokens=900, completion_tokens=140,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=90),
+    )
+    mock_client.chat.completions.create.return_value = iter([
+        SimpleNamespace(choices=[], usage=None),
+        _chunk(reasoning="The deck is short on "),
+        _chunk(reasoning="ramp; check the plan first."),
+        _chunk(content="Let me "),
+        _chunk(content="look."),
+        _chunk(tool_calls=[tc(0, id="call_a", name="deck_get", arguments="")]),
+        _chunk(tool_calls=[tc(0, name="_current", arguments='{"deck_')]),
+        _chunk(tool_calls=[tc(1, id="call_b", name="search_card_index", arguments='{"query": "ma')]),
+        _chunk(tool_calls=[tc(0, arguments='id": 1}')]),
+        _chunk(tool_calls=[tc(1, arguments='na dork"}')]),
+        _chunk(finish_reason="tool_calls"),
+        _chunk(usage=usage),
+    ])
+
+    provider = DeepSeekProvider(api_key="fake", model="deepseek-v4-pro")
+    items = list(provider.send_stream(
+        "sys", [{"role": "user", "content": "hi"}], [TOOL], thinking=True,
+    ))
+
+    assert [i for i in items if isinstance(i, str)] == ["Let me ", "look."]
+    turn = items[-1]
+    assert turn.text == "Let me look."
+    assert [(c.id, c.name, c.arguments) for c in turn.tool_calls] == [
+        ("call_a", "deck_get_current", {"deck_id": 1}),
+        ("call_b", "search_card_index", {"query": "mana dork"}),
+    ]
+    assert turn.raw_assistant_message["reasoning_content"] == (
+        "The deck is short on ramp; check the plan first."
+    )
+    assert turn.raw_assistant_message["content"] == "Let me look."
+    assert turn.stop_reason == "tool_calls"
+    assert provider.usage["reasoning_tokens"] == 90

@@ -175,6 +175,12 @@ class DeepSeekProvider:
             ) from exc
 
         text_parts: list[str] = []
+        # Thinking-mode streams carry the reasoning as its own delta field.
+        # It is never shown, but it is kept on the raw message: DeepSeek
+        # wants the reasoning of a tool-calling assistant message passed back
+        # with the tool results, and the streaming path used to drop it and
+        # rely on the empty-string backfill.
+        reasoning_parts: list[str] = []
         calls: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
         usage: Any = None
@@ -191,6 +197,8 @@ class DeepSeekProvider:
                     finish_reason = choice.finish_reason
                 if delta is None:
                     continue
+                if getattr(delta, "reasoning_content", None):
+                    reasoning_parts.append(delta.reasoning_content)
                 if getattr(delta, "content", None):
                     text_parts.append(delta.content)
                     yield delta.content
@@ -220,6 +228,8 @@ class DeepSeekProvider:
             for c in ordered
         ]
         raw: dict[str, Any] = {"role": "assistant"}
+        if reasoning_parts:
+            raw["reasoning_content"] = "".join(reasoning_parts)
         if text:
             raw["content"] = text
         if ordered:

@@ -6,7 +6,8 @@ ideas — grounding every suggestion in real card data from Scryfall, EDHREC, a 
 deckbuilding knowledge base, and Scryfall's functional card tags.
 
 It proposes changes you approve, deny, or undo (it never edits the deck on
-its own), scores every suggestion against play rate, mechanical fit with the
+its own), can be stopped mid-reply, reads the deck and your decisions fresh
+each turn, scores every suggestion against play rate, mechanical fit with the
 commander, and your own history, respects a per-card budget, computes each
 deck's bracket, power level, price, mana-source balance, and the infinite
 combos it contains (from Commander Spellbook), deals opening

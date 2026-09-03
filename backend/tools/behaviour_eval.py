@@ -51,6 +51,7 @@ _ROLE_WORDS = re.compile(
 )
 _BRACKETED = re.compile(r"\[\[([^\][]+)\]\]")
 _PROPOSAL_TOOLS = {"propose_deck_changes", "suggest_cards"}
+_DECK_READ_TOOLS = {"deck_get_current", "deck_get_stats"}
 
 
 def score_turn(record: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +101,9 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
         "hand_pick_refusals": refusals,
         "tool_errors": errors,
         "tool_calls": len(calls),
+        # The deck_state header exists so the model need not open every turn
+        # with a deck read; this is how to tell whether it worked.
+        "deck_reads": sum(1 for n in names if n in _DECK_READ_TOOLS),
         "rounds": record.get("rounds"),
         "role_batch_via_pipeline": role_batch_via_pipeline,
         "plan_set_before_batch": plan_set_before_batch,
@@ -120,6 +124,7 @@ def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
         "refusals_per_turn": round(sum(s["hand_pick_refusals"] for s in scores) / n, 3),
         "errors_per_turn": round(sum(s["tool_errors"] for s in scores) / n, 3),
         "calls_per_turn": round(sum(s["tool_calls"] for s in scores) / n, 2),
+        "deck_reads_per_turn": round(sum(s.get("deck_reads", 0) for s in scores) / n, 2),
         "role_batch_via_pipeline_rate": rate("role_batch_via_pipeline"),
         "plan_set_before_batch_rate": rate("plan_set_before_batch"),
         "mean_reply_words": round(sum(s["reply_words"] for s in scores) / n, 1),
