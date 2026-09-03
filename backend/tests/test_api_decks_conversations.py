@@ -183,7 +183,7 @@ def test_revert_undoes_an_approved_add(client, test_engine):
                 "name": n, "cmc": 1.0, "color_identity": [], "oracle_id": f"o-{n}",
                 "type_line": "Artifact", "oracle_text": "",
             }
-            from app.tools.deck_tools import propose_deck_changes
+            from app.tools.proposals import propose_deck_changes
             pid = propose_deck_changes(
                 session, deck["id"], "b",
                 [{"action": "add", "card_name": "Sol Ring", "reasoning": "x"}],

@@ -36,7 +36,7 @@ from app.pipeline import roles as role_taxonomy
 PLANNED_ROLES: tuple[str, ...] = ("land", "ramp", "draw", "removal")
 
 # Targets per power level, derived from the scoring formula in
-# ``deck_tools._estimate_power_level`` rather than invented.
+# ``deck_stats._estimate_power_level`` rather than invented.
 #
 # The two were previously unrelated, and the mismatch was not subtle: a deck
 # hitting the old defaults (36/10/10/8) EXACTLY scored power 6 and could not

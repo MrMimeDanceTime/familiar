@@ -6,7 +6,7 @@ import respx
 
 from app.cards import combos, schema
 from app.pipeline.shaping import DeckContext, render_pool, shape
-from app.tools.deck_tools import _apply_combo_floor
+from app.tools.deck_stats import _apply_combo_floor
 
 SOURCE = "https://json.commanderspellbook.com/variants.json"
 

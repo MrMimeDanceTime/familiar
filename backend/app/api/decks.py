@@ -14,7 +14,8 @@ from app.integrations.base import (
     list_providers,
 )
 from app.integrations.service import fetch_into_deck
-from app.tools.deck_tools import compute_deck_stats, import_decklist, set_deck_commanders
+from app.tools.deck_stats import compute_deck_stats
+from app.tools.deck_tools import import_decklist, set_deck_commanders
 from app.tools.scryfall_client import ScryfallError
 
 router = APIRouter(prefix="/api/decks", tags=["decks"])

@@ -22,7 +22,7 @@ combo profiles).
 
 import pytest
 
-from app.tools.deck_tools import _estimate_bracket
+from app.tools.deck_stats import _estimate_bracket
 
 # Real cards, so the name matching in _estimate_bracket does real work.
 GAME_CHANGERS = [
@@ -142,14 +142,14 @@ def test_game_changers_come_from_the_card_index_when_it_has_them(monkeypatch):
     hand-typed list is only the cold-start fallback."""
     from unittest.mock import patch
 
-    from app.tools import deck_tools
+    from app.tools import card_lists
 
-    monkeypatch.setattr(deck_tools, "_gc_cache", None)
+    monkeypatch.setattr(card_lists, "_gc_cache", None)
     with patch("app.cards.store.game_changer_names", return_value=["Brand New Bomb"]):
-        names = deck_tools.game_changer_names()
+        names = card_lists.game_changer_names()
     assert names == frozenset({"Brand New Bomb"})
 
-    monkeypatch.setattr(deck_tools, "_gc_cache", None)
+    monkeypatch.setattr(card_lists, "_gc_cache", None)
     with patch("app.cards.store.game_changer_names", return_value=[]):
-        fallback = deck_tools.game_changer_names()
+        fallback = card_lists.game_changer_names()
     assert "Rhystic Study" in fallback

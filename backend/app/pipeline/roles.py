@@ -1,7 +1,7 @@
 """Fine-grained functional role taxonomy for the retrieval pipeline.
 
 The rest of the app tags cards with four *coarse* roles (ramp / draw / removal
-/ land) via ``deck_tools._detect_roles`` and ``tag_lookup._tag_to_role``. Those
+/ land) via ``card_roles._detect_roles`` and ``tag_lookup._tag_to_role``. Those
 feed ``deck_get_stats`` and drive the bracket/power-level math. This module does
 NOT replace them — it layers a richer taxonomy on top for stage-4 selection,
 where the reasoning model benefits from knowing a card is specifically a

@@ -761,12 +761,12 @@ def test_every_ui_facing_serialisation_carries_scores():
 
     from app.api import conversations as conversations_api
     from app.chat import engine as engine_module
-    from app.tools import deck_tools
+    from app.tools import proposals
 
     for module, marker in (
         (engine_module, "_settled_proposal_batch"),
         (conversations_api, "get_conversation"),
-        (deck_tools, "propose_deck_changes"),
+        (proposals, "propose_deck_changes"),
     ):
         source = inspect.getsource(module)
         assert '"reasoning"' in source, marker
@@ -1065,7 +1065,7 @@ def test_new_batch_supersedes_stale_pending_cards_but_not_the_commander(mock_get
     convo = repo.create_conversation(session)
     repo.set_conversation_deck(session, convo.id, deck.id)
 
-    from app.tools.deck_tools import propose_deck_changes
+    from app.tools.proposals import propose_deck_changes
     stale = propose_deck_changes(session, deck.id, "old", [
         {"action": "set_commander", "card_name": "Myrkul, Lord of Bones"},
         {"action": "add", "card_name": "Old Pick"},

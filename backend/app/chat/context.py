@@ -90,7 +90,7 @@ def deck_state(session: Session, deck_id: int | None) -> DeckState:
 
 
 def _deck_state(session: Session, deck_id: int) -> DeckState:
-    from app.tools.deck_tools import compute_deck_stats
+    from app.tools.deck_stats import compute_deck_stats
 
     snapshot = repo.deck_snapshot(session, deck_id)
     plan = deckplan.build_plan(snapshot)

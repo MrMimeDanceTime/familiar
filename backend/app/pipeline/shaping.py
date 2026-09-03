@@ -27,7 +27,7 @@ from typing import Any
 from app.pipeline import roles
 
 # Single source of truth for the banned list — do not duplicate it here.
-from app.tools.deck_tools import _BANNED_COMMANDER
+from app.tools.card_lists import _BANNED_COMMANDER
 
 _BANNED_LOWER = {n.lower() for n in _BANNED_COMMANDER}
 

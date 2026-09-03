@@ -23,6 +23,7 @@ from sqlmodel import Session
 from app.db import repository as repo
 from app.db.session import get_engine
 from app.tools import deck_tools
+from app.tools import proposals
 
 
 @pytest.fixture
@@ -55,7 +56,7 @@ def _deck_and_conversation(client):
 
 def _propose(deck_id, conversation_id, *cards):
     with Session(get_engine()) as s:
-        result = deck_tools.propose_deck_changes(
+        result = proposals.propose_deck_changes(
             s,
             deck_id=deck_id,
             conversation_id=conversation_id,

@@ -415,7 +415,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
     # hand-set — the same tags that drive scoring, so display and scoring can
     # never disagree. Commander(s) are a deck designation, not a functional
     # tag, so they override to "Commander".
-    from app.tools.deck_tools import category_for_card
+    from app.tools.card_roles import category_for_card
     commander_names = {
         n.lower() for n in (deck.commander, deck.partner_commander) if n
     }

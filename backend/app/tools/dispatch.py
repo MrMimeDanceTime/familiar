@@ -15,7 +15,7 @@ from sqlmodel import Session
 
 from app.knowledge.store import search_knowledge
 from app.knowledge.tag_lookup import get_tags_for_card
-from app.tools import deck_tools
+from app.tools import deck_tools, proposals
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
 from app.tools.scryfall_client import ScryfallError, get_scryfall_client
 
@@ -258,8 +258,8 @@ SESSION_TOOLS: dict[str, Callable[..., Any]] = {
     "deck_set_commander": deck_tools.deck_set_commander,
     "deck_update_notes": deck_tools.deck_update_notes,
     "deck_set_plan": deck_tools.deck_set_plan,
-    "propose_deck_changes": deck_tools.propose_deck_changes,
-    "withdraw_pending_proposals": deck_tools.withdraw_pending_proposals,
+    "propose_deck_changes": proposals.propose_deck_changes,
+    "withdraw_pending_proposals": proposals.withdraw_pending_proposals,
 }
 
 

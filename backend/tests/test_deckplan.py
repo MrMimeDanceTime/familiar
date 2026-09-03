@@ -392,7 +392,7 @@ def test_targets_actually_score_their_power_level(level):
 
     This is the test that would have caught the original mismatch.
     """
-    from app.tools.deck_tools import _estimate_power_level
+    from app.tools.deck_stats import _estimate_power_level
 
     t = TARGETS_BY_POWER[level]
     scored, factors = _estimate_power_level(
@@ -408,7 +408,7 @@ def test_power_seven_targets_reach_bracket_three():
     """Bracket 3 without a Game Changer needs mv <= 2.5, ramp >= 10, and
     interaction >= 10. The old 8-removal target missed that by two cards, so a
     "Bracket 3 / power 7" request could hit neither."""
-    from app.tools.deck_tools import _estimate_bracket
+    from app.tools.deck_stats import _estimate_bracket
 
     t = TARGETS_BY_POWER[7]
     bracket, _ = _estimate_bracket(
@@ -489,7 +489,7 @@ def test_cannot_propose_a_card_already_in_the_deck(tmp_path):
     from sqlmodel import Session
 
     from app.db import repository as repo
-    from app.tools.deck_tools import propose_deck_changes
+    from app.tools.proposals import propose_deck_changes
 
     engine = _proposing_engine(tmp_path, "dupe.db")
     with Session(engine) as session:
@@ -524,7 +524,7 @@ def test_basic_lands_can_still_stack(tmp_path):
     from sqlmodel import Session
 
     from app.db import repository as repo
-    from app.tools.deck_tools import propose_deck_changes
+    from app.tools.proposals import propose_deck_changes
 
     engine = _proposing_engine(tmp_path, "basics.db")
     with Session(engine) as session:
@@ -559,7 +559,7 @@ def test_a_bad_change_sinks_the_whole_batch_not_half_of_it(tmp_path):
     from sqlmodel import Session
 
     from app.db import repository as repo
-    from app.tools.deck_tools import propose_deck_changes
+    from app.tools.proposals import propose_deck_changes
 
     engine = _proposing_engine(tmp_path, "atomic.db")
     with Session(engine) as session:

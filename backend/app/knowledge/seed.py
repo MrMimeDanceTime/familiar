@@ -12,7 +12,7 @@ already populated).
 from sqlmodel import Session, select, text
 
 from app.knowledge.models import KnowledgeEntry
-from app.tools.deck_tools import _BANNED_COMMANDER, _GAME_CHANGERS, _FAST_MANA
+from app.tools.card_lists import _BANNED_COMMANDER, _FAST_MANA, _GAME_CHANGERS
 
 ENTRIES: list[dict[str, str]] = [
     # ── Mana Curve ───────────────────────────────────────────────────────
