@@ -58,6 +58,17 @@ card-index refresh and pins the oracle-tag lookup to an empty in-memory map;
 tests that need Scryfall or EDHREC patch the client. A test that only passes
 with a cached bulk file sitting in `backend/` is a bug in the test.
 
+Behaviour of the chat loop is measured, not guessed: `tools/behaviour_eval.py`
+replays stored user turns through the live loop against a scratch copy of the
+database and scores rule adherence (see `CLAUDE.md`). Run it before and after
+a prompt change.
+
+The system prompt (`app/chat/prompt.py`) describes the interface the model
+works through and the rules code cannot enforce; rules the engine enforces
+are described as automatic rather than commanded. Two blocks follow the
+deck's phase: the full plan block while no plan is set, the completion
+notecard from 95 cards.
+
 Frontend tests run with vitest from `frontend/`:
 
 ```

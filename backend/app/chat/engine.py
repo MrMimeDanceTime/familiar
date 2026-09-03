@@ -214,6 +214,7 @@ def run_chat_turn(
             format_key = deck.format
 
     prefs = repo.get_or_create_preferences(session)
+    plan_is_set, total_cards = _deck_phase(session, deck_id)
     system_prompt = build_system_prompt(
         format_key,
         preferred_bracket=prefs.preferred_bracket,
@@ -221,6 +222,8 @@ def run_chat_turn(
         budget=prefs.budget,
         rule0_notes=prefs.rule0_notes,
         build_preferences=prefs.build_preferences,
+        plan_is_set=plan_is_set,
+        total_cards=total_cards,
     )
     grounding = _deck_grounding(session, deck_id)
     if grounding:
@@ -574,6 +577,24 @@ def _finalize_turn(
         yield deck_proposal_event(settled)
     repo.touch_conversation(session, conversation_id)
     yield done_event(message.id, conversation_id)
+
+
+def _deck_phase(session: Session, deck_id: int | None) -> tuple[bool | None, int | None]:
+    """Where the deck is in its build, for the prompt's phase-specific blocks.
+
+    Returns ``(plan_is_set, total_cards)``, both None when there is no deck
+    or the read fails, which makes the prompt include every block.
+    """
+    if deck_id is None:
+        return None, None
+    try:
+        from app import deckplan
+
+        snapshot = repo.deck_snapshot(session, deck_id)
+        plan = deckplan.build_plan(snapshot)
+        return plan.has_plan(), int(snapshot.get("total_cards") or 0)
+    except Exception:  # noqa: BLE001 - the prompt must build regardless
+        return None, None
 
 
 # Maps a deficiency category from deck stats to (knowledge category, query)
