@@ -382,6 +382,15 @@ TOOL_SPECS: list[ToolSpec] = [
                         "Include constraints the player stated."
                     ),
                 },
+                "count": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": (
+                        "How many cards to propose, 1-10. Match the batch size "
+                        "you told the player (three to six is the usual batch); "
+                        "asking for more and trimming wastes picks."
+                    ),
+                },
             },
             "required": ["deck_id", "intent"],
         },

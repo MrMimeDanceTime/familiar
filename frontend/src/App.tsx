@@ -111,16 +111,28 @@ function App() {
       setActiveConversationId(id)
       setSidebarTab('conversations')
       const detail = await api.getConversation(id)
-      reset(
-        detail.messages
-          .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.text_content))
-          .map((m) => ({
-            id: `server-${m.id}`,
-            role: m.role as 'user' | 'assistant',
-            text: m.text_content ?? '',
-            serverId: m.id,
-          })),
-      )
+      // Text the model wrote alongside a tool call is stored as its own
+      // message; live, it streamed into the same bubble as the reply that
+      // followed. Merge consecutive assistant messages so a reload reads the
+      // way the turn did, keeping the final message's id for anchoring.
+      const merged: { id: string; role: 'user' | 'assistant'; text: string; serverId: number }[] = []
+      for (const m of detail.messages) {
+        if (!(m.role === 'user' || (m.role === 'assistant' && m.text_content))) continue
+        const last = merged[merged.length - 1]
+        if (m.role === 'assistant' && last?.role === 'assistant') {
+          last.text = `${last.text}\n\n${m.text_content ?? ''}`
+          last.serverId = m.id
+          last.id = `server-${m.id}`
+          continue
+        }
+        merged.push({
+          id: `server-${m.id}`,
+          role: m.role as 'user' | 'assistant',
+          text: m.text_content ?? '',
+          serverId: m.id,
+        })
+      }
+      reset(merged)
       if (detail.conversation.deck_id) {
         loadDeck(detail.conversation.deck_id)
       } else {

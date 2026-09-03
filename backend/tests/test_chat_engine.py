@@ -1119,3 +1119,50 @@ def test_text_alongside_a_tool_call_streams_with_a_break_before_the_reply(sessio
         json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")
     )
     assert text == "Checking the deck.\n\nIt is empty."
+
+
+# ── Thinking on the endorsement send; interim text kept ──────────────────
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_thinking_turns_on_for_the_send_after_a_batch(mock_get_client, session):
+    mock_get_client.return_value.named.return_value = {
+        "name": "Sol Ring", "cmc": 1.0, "color_identity": [],
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "Ramp", "changes": [{"action": "add", "card_name": "Sol Ring"}]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="Here's your ramp batch.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id))
+
+    assert provider.thinking_flags == [False, True]
+
+
+def test_interim_text_beside_a_tool_call_is_persisted(session):
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text="Checking the deck.",
+            tool_calls=[ToolCallRequest(id="c1", name="deck_get_current", arguments={})],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["c1"]},
+        ),
+        AssistantTurn(text="It is empty.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "what's in it?", deck_id=deck.id))
+
+    texts = [m.text_content for m in repo.list_messages(session, convo.id) if m.role == "assistant"]
+    assert texts == ["Checking the deck.", "It is empty."]

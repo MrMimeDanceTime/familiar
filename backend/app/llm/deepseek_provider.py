@@ -100,6 +100,7 @@ class DeepSeekProvider:
         history: list[dict[str, Any]],
         tools: list[ToolSpec],
         thinking: bool,
+        model: str | None = None,
     ) -> dict[str, Any]:
         openai_tools = [
             {
@@ -129,7 +130,7 @@ class DeepSeekProvider:
             messages = _require_reasoning_content(messages)
 
         return {
-            "model": self._model,
+            "model": model or self._model,
             "messages": messages,
             **max_kwargs,
             **tool_kwargs,
@@ -147,6 +148,7 @@ class DeepSeekProvider:
         tools: list[ToolSpec],
         *,
         thinking: bool = False,
+        model: str | None = None,
     ) -> Iterator[str | AssistantTurn]:
         """Like send(), but yields text as it arrives and the AssistantTurn last.
 
@@ -155,7 +157,7 @@ class DeepSeekProvider:
         answer. Tool-call deltas are accumulated by index and assembled into
         the same raw message shape send() persists, so replay is unchanged.
         """
-        kwargs = self._request_kwargs(system_prompt, history, tools, thinking)
+        kwargs = self._request_kwargs(system_prompt, history, tools, thinking, model)
         try:
             stream = self._client.chat.completions.create(
                 **kwargs, stream=True, stream_options={"include_usage": True},
@@ -238,8 +240,9 @@ class DeepSeekProvider:
         tools: list[ToolSpec],
         *,
         thinking: bool = True,
+        model: str | None = None,
     ) -> AssistantTurn:
-        kwargs = self._request_kwargs(system_prompt, history, tools, thinking)
+        kwargs = self._request_kwargs(system_prompt, history, tools, thinking, model)
         try:
             response = self._client.chat.completions.create(**kwargs)
         except Exception as exc:

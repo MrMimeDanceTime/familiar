@@ -50,6 +50,7 @@ class ChatProvider(Protocol):
         tools: list[ToolSpec],
         *,
         thinking: bool = True,
+        model: str | None = None,
     ) -> AssistantTurn: ...
 
     def complete_json(

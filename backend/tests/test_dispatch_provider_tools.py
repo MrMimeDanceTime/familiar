@@ -86,3 +86,23 @@ def test_missing_provider_is_reported_clearly():
     result = dispatch("deck_get_stats", {"deck_id": 1}, MagicMock(), provider=None)
     assert not result.ok
     assert "provider" in result.content.lower()
+
+
+def test_suggest_cards_passes_count_through_as_max_picks(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.tools import dispatch as dispatch_mod
+
+    seen = {}
+
+    def fake_build(session, deck_id, intent, provider, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(summary="s", proposals=[])
+
+    monkeypatch.setattr("app.pipeline.service.build_suggestions", fake_build)
+    dispatch_mod._suggest_cards(None, provider=object(), deck_id=1, intent="ramp", count=3)
+    assert seen["max_picks"] == 3
+    dispatch_mod._suggest_cards(None, provider=object(), deck_id=1, intent="ramp")
+    assert seen["max_picks"] == 5
+    dispatch_mod._suggest_cards(None, provider=object(), deck_id=1, intent="ramp", count=40)
+    assert seen["max_picks"] == 10

@@ -235,11 +235,17 @@ SESSION_TOOLS: dict[str, Callable[..., Any]] = {
 }
 
 
+# The prompt asks for batches of three to six; a default of five leaves the
+# model trimming one rather than four.
+_DEFAULT_SUGGEST_COUNT = 5
+
+
 def _suggest_cards(
     session: Session,
     provider: Any,
     deck_id: int,
     intent: str,
+    count: int | None = None,
     conversation_id: int | None = None,
     message_id: int | None = None,
 ) -> dict:
@@ -251,9 +257,15 @@ def _suggest_cards(
     proposal streaming needs no special case."""
     from app.pipeline.service import build_suggestions
 
+    try:
+        picks = int(count) if count is not None else _DEFAULT_SUGGEST_COUNT
+    except (TypeError, ValueError):
+        picks = _DEFAULT_SUGGEST_COUNT
+    picks = max(1, min(picks, 10))
     result = build_suggestions(
         session, deck_id, intent, provider,
         conversation_id=conversation_id, message_id=message_id,
+        max_picks=picks,
     )
     return {"ok": True, "summary": result.summary, "proposals": result.proposals}
 

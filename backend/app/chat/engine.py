@@ -270,10 +270,18 @@ def run_chat_turn(
             restrict = proposals_emitted and not pipeline_followup_allowed
             tools_for_turn = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
             pipeline_followup_allowed = False
+            # The send after a batch lands is where the model decides which
+            # picks to stand behind and writes the reply the player reads.
+            # That is the one place judgment shows, so it gets thinking; the
+            # tool-dispatch iterations before it stay fast.
+            think_now = restrict
             send_started = time.perf_counter()
             turn: AssistantTurn | None = None
             streamed_this_send = False
-            for item in _send(provider, system_prompt, bound_history(history), tools_for_turn):
+            for item in _send(
+                provider, system_prompt, bound_history(history), tools_for_turn,
+                thinking=think_now,
+            ):
                 if isinstance(item, AssistantTurn):
                     turn = item
                     continue
@@ -399,11 +407,14 @@ def run_chat_turn(
             appended = new_history[len(history) :]
             assistant_native, tool_result_natives = appended[0], appended[1:]
 
+            # Text written alongside a tool call streamed to the player; keep
+            # it so a reload shows the same transcript the live turn did.
             repo.add_message(
                 session,
                 conversation_id,
                 role="assistant",
                 sequence=sequence,
+                text_content=turn.text or None,
                 tool_calls=tool_calls_log,
                 provider_native=[assistant_native],
             )
@@ -508,19 +519,21 @@ def _send(
     system_prompt: str,
     history: list[dict[str, Any]],
     tools: list[Any],
+    *,
+    thinking: bool = False,
 ) -> Iterator[str | AssistantTurn]:
     """One provider call, streaming when the provider supports it.
 
     Yields text chunks as they arrive and the AssistantTurn last. A provider
     without ``send_stream`` (the test fakes, a future backend) is called
     through ``send`` and yields only the turn, so the engine treats both the
-    same way. The chat loop always runs with thinking off (see the loop).
+    same way.
     """
     stream = getattr(provider, "send_stream", None)
     if stream is None:
-        yield provider.send(system_prompt, history, tools, thinking=False)
+        yield provider.send(system_prompt, history, tools, thinking=thinking)
         return
-    yield from stream(system_prompt, history, tools, thinking=False)
+    yield from stream(system_prompt, history, tools, thinking=thinking)
 
 
 def _finalize_turn(
@@ -759,10 +772,15 @@ def _generate_deck_name(
     user_prompt = "\n".join(lines)
 
     try:
+        # A six-word name does not need the Pro model reasoning about it.
+        from app.llm.factory import get_fast_model
+
         turn = provider.send(
             system_prompt=_NAME_SYSTEM_PROMPT,
             history=[{"role": "user", "content": user_prompt}],
             tools=[],
+            thinking=False,
+            model=get_fast_model(),
         )
         name = (turn.text or "").strip().strip('"').strip("'")
         for prefix in ("Name: ", "Deck Name: ", "name: "):
