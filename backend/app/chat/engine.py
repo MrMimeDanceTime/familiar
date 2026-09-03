@@ -228,6 +228,11 @@ class _TurnState:
     # Text streamed so far, so a stopped turn can persist what it had and a
     # later send starts a new paragraph rather than running into the last.
     streamed_parts: list[str] = field(default_factory=list)
+    # A thinking send that returns nothing (its reasoning spent the budget)
+    # is retried once without thinking; the flags make that retry fast and
+    # single.
+    force_fast: bool = False
+    retried_empty: bool = False
 
     @property
     def streamed_text(self) -> str:
@@ -245,6 +250,9 @@ class _TurnState:
         self.pipeline_followup_allowed = False
         first_send = not self.history_has_tool_round
         thinking = restrict or (first_send and settings.chat_plan_thinking)
+        if self.force_fast:
+            thinking = False
+            self.force_fast = False
         return (WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS), thinking
 
     @property
@@ -484,13 +492,28 @@ def run_chat_turn(
                 return
 
             if not turn.tool_calls:
+                text = turn.text
+                if not (text or "").strip():
+                    # Nothing came back. A thinking send can spend its whole
+                    # output budget on reasoning; one fast retry usually
+                    # gets the reply. Never persist the empty message: one
+                    # in the transcript fails every later call.
+                    if thinking and not state.retried_empty:
+                        logger.warning(
+                            "chat: empty reply from a thinking send (stop=%s); retrying "
+                            "without thinking", turn.stop_reason,
+                        )
+                        state.retried_empty = True
+                        state.force_fast = True
+                        continue
+                    text = _EMPTY_REPLY_TEXT
                 logger.info(
                     "chat: turn complete in %.2fs over %d LLM call(s)",
                     time.perf_counter() - turn_started, iteration + 1,
                 )
                 yield from _finalize_turn(
-                    state, turn.text, turn.raw_assistant_message,
-                    already_streamed=bool(state.streamed_parts),
+                    state, text, turn.raw_assistant_message,
+                    already_streamed=bool(state.streamed_parts) and text == turn.text,
                 )
                 return
 
@@ -592,6 +615,11 @@ def _supersede_stale_batches(
         logger.info("chat: superseded %d stale pending proposal(s)", count)
 
 
+_EMPTY_REPLY_TEXT = (
+    "I didn't manage to write a reply that time. Ask again and I'll pick up "
+    "from here."
+)
+
 _MAX_ITER_FALLBACK_TEXT = (
     "I ran out of research steps before wrapping up. Here's where I got to — "
     "ask me to continue and I'll pick up from here."
@@ -633,9 +661,14 @@ def _finalize_turn(
     generated and must not be sent a second time."""
     if text and not already_streamed:
         yield token_event(text)
+    raw = raw_assistant_message or {"role": "assistant"}
+    if not raw.get("content") and not raw.get("tool_calls"):
+        # A bare assistant message is rejected by DeepSeek on every later
+        # call, so the persisted record always carries the text shown.
+        raw = {**raw, "content": text or _EMPTY_REPLY_TEXT}
     message = repo.add_message(
         state.session, state.conversation_id, role="assistant", sequence=state.sequence,
-        text_content=text, provider_native=[raw_assistant_message],
+        text_content=text, provider_native=[raw],
     )
     repo.anchor_proposals_to_message(state.session, state.proposal_ids, message.id)
     # Now that trims are final, reveal the settled batch: only this turn's

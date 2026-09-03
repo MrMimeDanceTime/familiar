@@ -226,8 +226,14 @@ rulings under the name, proposals carry their ids and scores.
 
 Thinking policy in the chat loop: the first send of a turn (what is this
 turn for, what to hand the pipeline) and the send after a batch (which
-picks to stand behind) think, capped at `CHAT_REASONING_EFFORT`; the
-tool-dispatch sends between them do not. `CHAT_PLAN_THINKING=false` makes
+picks to stand behind) think, capped at `CHAT_REASONING_EFFORT` and with
+their own output budget (`CHAT_THINKING_MAX_TOKENS`, since reasoning counts
+against `max_tokens`); the tool-dispatch sends between them do not. A
+thinking send that returns nothing is retried once without thinking, and an
+empty reply is never persisted: DeepSeek rejects a transcript holding an
+assistant message with neither content nor tool calls, and the provider
+repairs any such message at send time for conversations that already have
+one. `CHAT_PLAN_THINKING=false` makes
 the first send fast too. The selection stage sees the player's own message
 beside the intent the chat model distilled from it.
 

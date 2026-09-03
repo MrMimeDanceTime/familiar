@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     # for the same picks; the chat sends are a smaller decision still.
     chat_reasoning_effort: str = "low"
 
+    # Output cap for the chat sends that think. DeepSeek counts reasoning
+    # against max_tokens in thinking mode, so the 1000-token reply cap below
+    # starved the planning send: the reasoning spent the whole budget, the
+    # reply came back empty, and the empty assistant message poisoned every
+    # later call ("content or tool_calls must be set").
+    chat_thinking_max_tokens: int = 8000
+
     # Cap on the chat model's response length. DeepSeek generates at ~40 tok/s,
     # so an unbounded final answer of 2000+ tokens takes ~50s purely to write —
     # measured as the dominant cause of slow turns. Bounding output both caps

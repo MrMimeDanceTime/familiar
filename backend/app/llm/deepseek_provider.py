@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Iterator
 
 from openai import OpenAI
@@ -8,6 +9,8 @@ from openai import OpenAI
 from app.llm.base import AssistantTurn, ToolCallRequest, ToolResult, ToolSpec
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+logger = logging.getLogger("app.llm.deepseek")
 
 
 def _usage_dict(usage: Any) -> dict[str, int]:
@@ -28,6 +31,30 @@ def _parse_arguments(raw: str) -> dict[str, Any]:
         return json.loads(raw) if raw else {}
     except json.JSONDecodeError:
         return {"_parse_error": True, "_raw": raw}
+
+
+EMPTY_REPLY_CONTENT = "[empty reply]"
+
+
+def _repair_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give every assistant message content or tool calls.
+
+    DeepSeek rejects a request whose history holds an assistant message with
+    neither ("Invalid assistant message: content or tool_calls must be set"),
+    and one such message, once persisted, fails every later call in the
+    conversation. The engine no longer persists them, but a transcript that
+    already carries one has to keep working.
+    """
+    repaired: list[dict[str, Any]] = []
+    for message in messages:
+        if (
+            message.get("role") == "assistant"
+            and not message.get("content")
+            and not message.get("tool_calls")
+        ):
+            message = {**message, "content": EMPTY_REPLY_CONTENT}
+        repaired.append(message)
+    return repaired
 
 
 def _require_reasoning_content(
@@ -65,6 +92,7 @@ class DeepSeekProvider:
     def __init__(
         self, api_key: str, model: str, timeout: float | None = None,
         max_tokens: int | None = None, reasoning_effort: str | None = None,
+        thinking_max_tokens: int | None = None,
     ) -> None:
         # Cap the per-request timeout: the SDK default (600s) reads as a total
         # UI freeze when a call stalls. With a timeout the SDK raises instead,
@@ -81,6 +109,9 @@ class DeepSeekProvider:
         # None means no cap. Only send() applies it; complete_json (pipeline)
         # sets its own limits.
         self._max_tokens = max_tokens
+        # Thinking sends need room for the reasoning as well as the reply;
+        # see Settings.chat_thinking_max_tokens. Falls back to max_tokens.
+        self._thinking_max_tokens = thinking_max_tokens or max_tokens
         # Applied to send()/send_stream() calls that think. complete_json takes
         # its own per-call value because the pipeline stages differ.
         self._reasoning_effort = reasoning_effort or None
@@ -125,9 +156,10 @@ class DeepSeekProvider:
         # calls send() toolless too.
         tool_kwargs: dict[str, Any] = {"tools": openai_tools} if openai_tools else {}
 
-        max_kwargs: dict[str, Any] = (
-            {"max_tokens": self._max_tokens} if self._max_tokens else {}
-        )
+        cap = self._thinking_max_tokens if thinking else self._max_tokens
+        max_kwargs: dict[str, Any] = {"max_tokens": cap} if cap else {}
+
+        messages = _repair_history(messages)
 
         if thinking:
             messages = _require_reasoning_content(messages)
@@ -221,6 +253,12 @@ class DeepSeekProvider:
 
         text = "".join(text_parts)
         ordered = [calls[i] for i in sorted(calls)]
+        if not text and not ordered:
+            logger.warning(
+                "DeepSeek stream ended with no text and no tool calls (finish_reason=%s, "
+                "thinking=%s, reasoning chars=%d)", finish_reason, thinking,
+                sum(len(r) for r in reasoning_parts),
+            )
         tool_calls = [
             ToolCallRequest(
                 id=c["id"], name=c["name"], arguments=_parse_arguments(c["arguments"]),
