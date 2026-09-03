@@ -1,4 +1,3 @@
-import json
 from unittest.mock import patch
 
 import pytest
@@ -62,8 +61,8 @@ def test_immediate_final_response_no_tools(session):
         run_chat_turn(session, provider, convo.id, "hi there", deck_id=None)
     )
 
-    assert any(e.startswith("event: token") for e in events)
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "token" for e in events)
+    assert any(e.event == "done" for e in events)
 
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant"]
@@ -120,9 +119,9 @@ def test_tool_call_then_final_response(session):
         run_chat_turn(session, provider, convo.id, "what's in my deck?", deck_id=deck.id)
     )
 
-    assert any(e.startswith("event: tool_call") for e in events)
-    assert any("deck_get_current" in e for e in events)
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "tool_call" for e in events)
+    assert any(e.event == "tool_call" and e.data["name"] == "deck_get_current" for e in events)
+    assert any(e.event == "done" for e in events)
 
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
@@ -170,9 +169,9 @@ def test_max_iterations_forces_a_final_text_response(session):
     )
 
     # The player gets a real answer and a clean close, not an error.
-    assert not any(e.startswith("event: error") for e in events)
-    assert any(e.startswith("event: done") for e in events)
-    assert any("summary of what I found" in e for e in events)
+    assert not any(e.event == "error" for e in events)
+    assert any(e.event == "done" for e in events)
+    assert any(e.event == "token" and "summary of what I found" in e.data["text"] for e in events)
     # Exactly one forced wrap-up, and it ran with thinking on (synthesis turn).
     assert provider.toolless_sends == 1
     # Thinking must stay OFF here. Turning it on broke the turn outright:
@@ -311,9 +310,9 @@ def test_deck_mutation_emits_deck_updated_event(mock_get_client, session):
         run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id)
     )
 
-    deck_updated_events = [e for e in events if e.startswith("event: deck_updated")]
+    deck_updated_events = [e for e in events if e.event == "deck_updated"]
     assert len(deck_updated_events) == 1
-    payload = json.loads(deck_updated_events[0].split("data: ", 1)[1])
+    payload = deck_updated_events[0].data
     assert payload["cards"][0]["name"] == "Sol Ring"
 
 
@@ -460,16 +459,15 @@ def test_proposals_revealed_only_after_trims_settle(mock_get_client, session):
         run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id)
     )
 
-    proposal_events = [e for e in events if e.startswith("event: deck_proposal")]
+    proposal_events = [e for e in events if e.event == "deck_proposal"]
     # Exactly one reveal, at the end.
     assert len(proposal_events) == 1
     # It carries only the survivor, not the trimmed Mind Stone.
-    payload = proposal_events[0]
-    assert "Sol Ring" in payload
-    assert "Mind Stone" not in payload
+    names = [p["card_name"] for p in proposal_events[0].data["proposals"]]
+    assert names == ["Sol Ring"]
     # The reveal comes before done.
-    done_idx = next(i for i, e in enumerate(events) if e.startswith("event: done"))
-    reveal_idx = next(i for i, e in enumerate(events) if e.startswith("event: deck_proposal"))
+    done_idx = next(i for i, e in enumerate(events) if e.event == "done")
+    reveal_idx = next(i for i, e in enumerate(events) if e.event == "deck_proposal")
     assert reveal_idx < done_idx
 
 
@@ -494,7 +492,7 @@ def test_tool_failure_does_not_crash_loop_and_model_sees_error(session):
             run_chat_turn(session, provider, convo.id, "look up a card", deck_id=None)
         )
 
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "done" for e in events)
     messages = repo.list_messages(session, convo.id)
     tool_message = [m for m in messages if m.role == "tool"][0]
     assert "failed" in tool_message.tool_results[0]["content"].lower()
@@ -520,9 +518,9 @@ def test_max_iterations_safety_valve_wraps_up_instead_of_erroring(session):
         run_chat_turn(session, provider, convo.id, "loop forever", deck_id=deck.id)
     )
 
-    assert not any(e.startswith("event: error") for e in events)
-    assert any(e.startswith("event: done") for e in events)
-    assert any("Here's where I got to." in e for e in events)
+    assert not any(e.event == "error" for e in events)
+    assert any(e.event == "done" for e in events)
+    assert any(e.event == "token" and "Here's where I got to." in e.data["text"] for e in events)
 
 
 def test_derive_title_truncates_long_text():
@@ -810,7 +808,7 @@ def test_failed_turn_still_reveals_its_proposals(session):
         run_chat_turn(session, provider, convo.id, "build me a deck", deck_id=deck.id)
     )
 
-    assert any(e.startswith("event: error") for e in events)
+    assert any(e.event == "error" for e in events)
     # The proposal is pending in the database...
     assert repo.get_proposal(session, provider.created_id).status == "pending"
 
@@ -1118,7 +1116,7 @@ def test_streaming_provider_text_reaches_the_client_once(session):
 
     events = _collect(run_chat_turn(session, provider, convo.id, "hi", deck_id=None))
 
-    tokens = [json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")]
+    tokens = [e.data["text"] for e in events if e.event == "token"]
     assert "".join(tokens) == "Sure, let's talk."
     assert len(tokens) > 1, "text should arrive in pieces, not one block"
     assert repo.list_messages(session, convo.id)[-1].text_content == "Sure, let's talk."
@@ -1140,7 +1138,7 @@ def test_text_alongside_a_tool_call_streams_with_a_break_before_the_reply(sessio
     events = _collect(run_chat_turn(session, provider, convo.id, "what's in it?", deck_id=deck.id))
 
     text = "".join(
-        json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")
+        e.data["text"] for e in events if e.event == "token"
     )
     assert text == "Checking the deck.\n\nIt is empty."
 
@@ -1227,8 +1225,8 @@ def test_stop_before_the_first_send_persists_a_stopped_reply(session):
     ))
 
     assert provider.thinking_flags == []  # no provider call was made
-    assert any(e.startswith("event: done") for e in events)
-    assert any("stopped here by the player" in e for e in events)
+    assert any(e.event == "done" for e in events)
+    assert any(e.event == "token" and "stopped here by the player" in e.data["text"] for e in events)
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant"]
     assert "stopped" in messages[1].text_content
@@ -1257,7 +1255,7 @@ def test_stop_between_iterations_keeps_the_tool_exchange(session):
     ))
 
     assert len(provider.thinking_flags) == 1
-    assert any(e.startswith("event: done") for e in events)
+    assert any(e.event == "done" for e in events)
     messages = repo.list_messages(session, convo.id)
     assert [m.role for m in messages] == ["user", "assistant", "tool", "assistant"]
     assert messages[1].text_content == "Let me check."
@@ -1285,7 +1283,7 @@ def test_stop_mid_stream_keeps_the_partial_text(session):
     ))
 
     streamed = "".join(
-        json.loads(e.split("data: ", 1)[1])["text"] for e in events if e.startswith("event: token")
+        e.data["text"] for e in events if e.event == "token"
     )
     assert streamed.startswith("one two three four five six seven eight ")
     assert "ten" not in streamed

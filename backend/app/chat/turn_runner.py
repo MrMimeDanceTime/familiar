@@ -13,12 +13,11 @@ job is to read the event log at whatever pace it can manage.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from typing import Callable
 
 from sqlmodel import Session
 
@@ -41,29 +40,6 @@ _TERMINAL_EVENTS = {"done", "error"}
 
 def new_turn_id() -> str:
     return uuid.uuid4().hex
-
-
-def _parse_sse(chunk: str) -> tuple[str, dict[str, Any]] | None:
-    """Recover (event, data) from the SSE string the engine yields.
-
-    The engine formats SSE directly, and rewriting it to emit structured events
-    would touch every yield site in the agentic loop. Parsing here keeps this
-    change contained to the transport, which is the actual bug.
-    """
-    event = ""
-    data = ""
-    for line in chunk.split("\n"):
-        if line.startswith("event: "):
-            event = line[len("event: ") :]
-        elif line.startswith("data: "):
-            data = line[len("data: ") :]
-    if not event or not data:
-        return None
-    try:
-        return event, json.loads(data)
-    except json.JSONDecodeError:
-        logger.warning("Un-parseable SSE data in turn stream: %r", data[:200])
-        return None
 
 
 class _TokenBuffer:
@@ -122,13 +98,9 @@ def execute_turn(turn_id: str, conversation_id: int, message: str, deck_id: int 
         should_stop = _cancel_check(turn_id)
         try:
             provider = get_provider()
-            for chunk in run_chat_turn(
+            for event, data in run_chat_turn(
                 session, provider, conversation_id, message, deck_id, should_stop=should_stop,
             ):
-                parsed = _parse_sse(chunk)
-                if parsed is None:
-                    continue
-                event, data = parsed
                 if event == "token":
                     buffer.add(data.get("text", ""))
                     continue

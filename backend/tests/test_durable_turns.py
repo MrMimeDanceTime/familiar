@@ -11,6 +11,7 @@ turn with nothing consuming it and asserts completion. That fails against the ol
 design by construction.
 """
 
+import json
 import time
 
 import pytest
@@ -152,10 +153,10 @@ def test_turn_completes_with_no_client_attached(session, monkeypatch):
     repo.create_turn(session, turn_id, conversation.id)
 
     def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id, should_stop=None):
-        yield 'event: token\ndata: {"text": "Considering "}\n\n'
-        yield 'event: tool_call\ndata: {"name": "scryfall_search", "arguments": {}}\n\n'
-        yield 'event: token\ndata: {"text": "your deck."}\n\n'
-        yield 'event: done\ndata: {"message_id": 7, "conversation_id": %d}\n\n' % conversation_id
+        yield ('token', json.loads('{"text": "Considering "}'))
+        yield ('tool_call', json.loads('{"name": "scryfall_search", "arguments": {}}'))
+        yield ('token', json.loads('{"text": "your deck."}'))
+        yield ('done', json.loads('{"message_id": 7, "conversation_id": %d}' % conversation_id))
 
     monkeypatch.setattr(turn_runner, "run_chat_turn", fake_run_chat_turn)
     monkeypatch.setattr(turn_runner, "get_provider", lambda: object())
@@ -181,11 +182,11 @@ def test_tokens_are_batched_but_ordered_against_other_events(session, monkeypatc
 
     def fake_run_chat_turn(*args, **kwargs):
         for i in range(10):
-            yield 'event: token\ndata: {"text": "%d"}\n\n' % i
-        yield 'event: deck_updated\ndata: {"id": 1}\n\n'
+            yield ('token', json.loads('{"text": "%d"}' % i))
+        yield ('deck_updated', json.loads('{"id": 1}'))
         for i in range(10, 20):
-            yield 'event: token\ndata: {"text": "%d"}\n\n' % i
-        yield 'event: done\ndata: {"message_id": 1, "conversation_id": 1}\n\n'
+            yield ('token', json.loads('{"text": "%d"}' % i))
+        yield ('done', json.loads('{"message_id": 1, "conversation_id": 1}'))
 
     monkeypatch.setattr(turn_runner, "run_chat_turn", fake_run_chat_turn)
     monkeypatch.setattr(turn_runner, "get_provider", lambda: object())
@@ -212,7 +213,7 @@ def test_engine_failure_marks_the_turn_errored(session, monkeypatch):
     repo.create_turn(session, turn_id, conversation.id)
 
     def exploding(*args, **kwargs):
-        yield 'event: token\ndata: {"text": "partial"}\n\n'
+        yield ('token', json.loads('{"text": "partial"}'))
         raise RuntimeError("provider exploded")
 
     monkeypatch.setattr(turn_runner, "run_chat_turn", exploding)
@@ -337,7 +338,7 @@ def test_provider_usage_is_recorded_on_the_turn(session, monkeypatch):
         provider.usage["llm_calls"] += 2
         provider.usage["prompt_tokens"] += 300
         provider.usage["completion_tokens"] += 40
-        yield 'event: done\ndata: {"message_id": 1, "conversation_id": %d}\n\n' % conversation_id
+        yield ('done', json.loads('{"message_id": 1, "conversation_id": %d}' % conversation_id))
 
     class Provider:
         usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0}
@@ -362,8 +363,8 @@ def test_cancel_request_marks_the_turn_cancelled(session, monkeypatch):
 
     def fake_run_chat_turn(session_, provider, conversation_id, message, deck_id, should_stop=None):
         seen["stop"] = should_stop()
-        yield 'event: token\ndata: {"text": "(stopped)"}\n\n'
-        yield 'event: done\ndata: {"message_id": 1, "conversation_id": %d}\n\n' % conversation_id
+        yield ('token', json.loads('{"text": "(stopped)"}'))
+        yield ('done', json.loads('{"message_id": 1, "conversation_id": %d}' % conversation_id))
 
     monkeypatch.setattr(turn_runner, "run_chat_turn", fake_run_chat_turn)
     monkeypatch.setattr(turn_runner, "get_provider", lambda: object())

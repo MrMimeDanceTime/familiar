@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from app.chat.streaming import error_event, format_sse
+from app.chat.streaming import format_sse
 from app.chat.turn_bus import HEARTBEAT, get_event_bus
 from app.chat.turn_runner import new_turn_id, submit_turn
 from app.db import repository as repo
@@ -132,7 +132,7 @@ def get_turn_events(turn_id: str, request: Request, after: int = 0):
         with Session(get_engine()) as session:
             final = repo.get_turn(session, turn_id, owner_id=owner_id)
         if final is not None and final.status != TURN_RUNNING and final.error:
-            yield error_event(final.error)
+            yield format_sse("error", {"message": final.error})
 
     # no-transform stops a proxy from buffering the stream and defeating SSE.
     return StreamingResponse(
