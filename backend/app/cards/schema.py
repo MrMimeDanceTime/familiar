@@ -82,7 +82,7 @@ _CARDS_ADDITIVE: tuple[tuple[str, str], ...] = (
 # Bump when the extracted columns change meaning or a new one needs a
 # re-import to populate. `is_stale` treats a mismatch as stale, so the next
 # startup refresh fills the column instead of waiting for the daily cycle.
-INDEX_VERSION = "2"
+INDEX_VERSION = "3"
 
 
 _INDEXES = (
@@ -93,6 +93,7 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_cards_cmc ON cards (cmc)",
     "CREATE INDEX IF NOT EXISTS idx_card_tags_slug ON card_tags (slug)",
     "CREATE INDEX IF NOT EXISTS idx_cooc_slug ON tag_cooccurrence (slug, lift DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_rulings_oracle ON card_rulings (oracle_id)",
 )
 
 _CARD_TAGS_DDL = """
@@ -100,6 +101,17 @@ CREATE TABLE IF NOT EXISTS card_tags (
     oracle_id TEXT NOT NULL,
     slug      TEXT NOT NULL,
     PRIMARY KEY (oracle_id, slug)
+)
+"""
+
+# Scryfall's per-card rulings, keyed by oracle id. The bulk file is small
+# (~50k rulings) and answers "does X work with Y" from the source instead of
+# from the model's memory of it.
+_RULINGS_DDL = """
+CREATE TABLE IF NOT EXISTS card_rulings (
+    oracle_id    TEXT NOT NULL,
+    published_at TEXT,
+    comment      TEXT NOT NULL
 )
 """
 
@@ -164,6 +176,7 @@ def ensure_schema() -> None:
         conn.execute(text(_META_DDL))
         conn.execute(text(_TAG_COOC_DDL))
         conn.execute(text(_TAG_TRAITS_DDL))
+        conn.execute(text(_RULINGS_DDL))
         conn.execute(text(_FTS_DDL))
         for stmt in _INDEXES:
             conn.execute(text(stmt))

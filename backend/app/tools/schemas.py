@@ -62,7 +62,9 @@ TOOL_SPECS: list[ToolSpec] = [
         description=(
             "Look up a single Magic card by name (fuzzy match by default). Use this "
             "whenever you need to confirm a specific card's mana cost, oracle text, "
-            "or legality before mentioning it to the user."
+            "or legality before mentioning it to the user. Returns the card's "
+            "rulings too; cite them for timing and interaction questions rather "
+            "than reasoning from memory."
         ),
         parameters={
             "type": "object",

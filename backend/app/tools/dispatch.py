@@ -65,9 +65,30 @@ def _scryfall_search(query: str, limit: int = 10) -> list[dict]:
     return get_scryfall_client().search(query, limit=limit)
 
 
+def _attach_rulings(cards: list[dict]) -> None:
+    """Add each card's rulings from the local index, in place.
+
+    Rulings are the grounding for "does X work with Y", which the model
+    otherwise answers from memory. Absent when the index has none.
+    """
+    try:
+        from app.cards import store as card_store
+
+        by_id = card_store.rulings_for_many(
+            [c.get("oracle_id") for c in cards if c.get("oracle_id")]
+        )
+    except Exception:  # noqa: BLE001 - the index is optional
+        by_id = {}
+    for c in cards:
+        rulings = by_id.get(c.get("oracle_id"))
+        if rulings:
+            c["rulings"] = rulings
+
+
 def _scryfall_card_by_name(name: str, fuzzy: bool = True) -> dict:
     result = get_scryfall_client().named(name, fuzzy=fuzzy)
     result["tags"] = get_tags_for_card(result.get("oracle_id"))
+    _attach_rulings([result])
     return result
 
 
@@ -75,6 +96,7 @@ def _scryfall_card_collection(names: list[str]) -> dict:
     result = get_scryfall_client().collection(names)
     for c in result.get("found", []):
         c["tags"] = get_tags_for_card(c.get("oracle_id"))
+    _attach_rulings(result.get("found", []))
     return result
 
 
@@ -206,8 +228,14 @@ def _search_card_index(
     cards = []
     for hit in hits:
         card = {k: hit.get(k) for k in _SEARCH_FIELDS}
+        card["oracle_id"] = hit.get("oracle_id")
         card["tags"] = sorted(tags.get(hit.get("oracle_id"), set()))
         cards.append(card)
+    # Rulings on the top few only: a wide search is browsing, not a ruling
+    # question, and fifty cards' rulings would swamp the result.
+    _attach_rulings(cards[:5])
+    for card in cards:
+        card.pop("oracle_id", None)
     return {"cards": cards, "count": len(cards)}
 
 

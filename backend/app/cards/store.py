@@ -161,6 +161,37 @@ def raw_card(oracle_id: str) -> dict[str, Any] | None:
         return None
 
 
+def rulings_for_many(
+    oracle_ids: list[str], *, per_card: int = 8
+) -> dict[str, list[dict[str, Any]]]:
+    """Rulings per oracle id, newest first, capped per card.
+
+    Empty for a card without rulings or when the table is absent, so a
+    lookup never fails because the rulings import has not run yet.
+    """
+    if not oracle_ids:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    try:
+        for i in range(0, len(oracle_ids), 400):
+            chunk = oracle_ids[i : i + 400]
+            placeholders = ", ".join(f":o{j}" for j in range(len(chunk)))
+            params = {f"o{j}": v for j, v in enumerate(chunk)}
+            sql = f"""
+                SELECT oracle_id, published_at, comment FROM card_rulings
+                WHERE oracle_id IN ({placeholders})
+                ORDER BY published_at DESC
+            """
+            with get_engine().begin() as conn:
+                for oid, published_at, comment in conn.execute(text(sql), params):
+                    bucket = out.setdefault(oid, [])
+                    if len(bucket) < per_card:
+                        bucket.append({"published_at": published_at, "comment": comment})
+    except Exception:  # noqa: BLE001 - rulings are optional
+        return {}
+    return out
+
+
 def game_changer_names() -> list[str]:
     """Every card Scryfall flags as a Commander Game Changer."""
     with get_engine().begin() as conn:

@@ -157,6 +157,16 @@ TAG_RECORDS = [
 ]
 
 
+RULING_RECORDS = [
+    {"object": "ruling", "oracle_id": "oid-sol-ring", "source": "wotc",
+     "published_at": "2004-10-04", "comment": "Sol Ring's ability adds two colorless mana."},
+    {"object": "ruling", "oracle_id": "oid-sol-ring", "source": "scryfall",
+     "published_at": "2021-01-01", "comment": "A newer ruling."},
+    # Malformed: no comment. Skipped, not fatal.
+    {"object": "ruling", "oracle_id": "oid-sol-ring", "published_at": "2022-01-01"},
+]
+
+
 def _gzipped_jsonl(records) -> bytes:
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
@@ -202,9 +212,19 @@ def imported(card_db):
         respx.get("https://data.scryfall.io/tags.jsonl.gz").mock(
             return_value=httpx.Response(200, content=_gzipped_jsonl(TAG_RECORDS))
         )
+        respx.get("https://api.scryfall.com/bulk-data/rulings").mock(
+            return_value=httpx.Response(200, json={
+                "jsonl_download_uri": "https://data.scryfall.io/rulings.jsonl.gz",
+                "updated_at": "2026-08-15T09:00:00.000+00:00",
+            })
+        )
+        respx.get("https://data.scryfall.io/rulings.jsonl.gz").mock(
+            return_value=httpx.Response(200, content=_gzipped_jsonl(RULING_RECORDS))
+        )
         client = httpx.Client()
         importer.import_cards(client)
         importer.import_tags(client)
+        importer.import_rulings(client)
         client.close()
     yield
 
@@ -505,3 +525,27 @@ def test_cards_matching_slug_rules_uses_exact_and_prefix(imported):
     hits = store.cards_matching_slug_rules(frozenset(), ("sacrifice-outlet",), (), legal_only=False)
     assert [c["name"] for c in hits] == ["Black Lotus"]
     assert store.cards_matching_slug_rules(frozenset(), (), ()) == []
+
+
+def test_rulings_import_and_lookup(imported):
+    rulings = store.rulings_for_many(["oid-sol-ring", "oid-gigantosaurus"])
+    assert [r["comment"] for r in rulings["oid-sol-ring"]] == [
+        "A newer ruling.", "Sol Ring's ability adds two colorless mana.",
+    ]
+    assert "oid-gigantosaurus" not in rulings
+
+
+def test_card_lookup_tools_carry_rulings(imported):
+    from unittest.mock import patch
+
+    from app.tools import dispatch as dispatch_mod
+
+    with patch("app.tools.dispatch.get_scryfall_client") as client:
+        client.return_value.named.return_value = {"name": "Sol Ring", "oracle_id": "oid-sol-ring"}
+        card = dispatch_mod._scryfall_card_by_name("Sol Ring")
+    assert card["rulings"][0]["comment"] == "A newer ruling."
+
+    result = dispatch_mod._search_card_index("sol ring")
+    sol = next(c for c in result["cards"] if c["name"] == "Sol Ring")
+    assert len(sol["rulings"]) == 2
+    assert "oracle_id" not in sol
