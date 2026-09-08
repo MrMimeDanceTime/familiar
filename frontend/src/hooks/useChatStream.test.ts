@@ -359,3 +359,27 @@ describe('stopping a turn', () => {
     expect(stream.cancelled).toEqual([])
   })
 })
+
+describe('withdrawn drafts', () => {
+  it('clears the bubble when the server resets the message', async () => {
+    const { result } = renderHook(() => useChatStream())
+    await startTurn(result)
+
+    act(() => {
+      stream.send('token', { text: 'Krosan Grip counters a spell.', seq: 1 })
+    })
+    await waitFor(() =>
+      expect(result.current.messages.find((m) => m.role === 'assistant')?.text).toContain('counters'),
+    )
+
+    act(() => {
+      stream.send('message_reset', { seq: 2 })
+      stream.send('token', { text: 'Krosan Grip destroys an artifact.', seq: 3 })
+    })
+
+    await waitFor(() => {
+      const assistant = result.current.messages.find((m) => m.role === 'assistant')
+      expect(assistant?.text).toBe('Krosan Grip destroys an artifact.')
+    })
+  })
+})

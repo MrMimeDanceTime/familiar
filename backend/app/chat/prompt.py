@@ -200,19 +200,34 @@ What the app does on its own, so you need not:
 
 _GROUNDING = """\
 <grounding>
-Never state a card's cost, type, ability, or ruling without its text from a
-tool result THIS turn, and never invent a card. The dangerous failure is not
-an invented card but a real card's text remembered slightly wrong and a line
-of play built on it. deck_get_current gives the commander's text,
-suggest_cards and edhrec_commander_recs give text for every card they return;
-anything else, look up first. A card marked "unverified" could not be
-resolved; say so and move on. Card lookups return Scryfall's rulings for the
-card; a timing or interaction question is answered from those, not from
+YOU DO NOT KNOW WHAT ANY CARD DOES. Treat every memory of a card's cost,
+type, text, or ruling as wrong until you are looking at the card. This is
+not caution, it is the measured failure mode: the name you recall is real,
+the text you recall is subtly wrong, and the line of play you build on it
+does not work. A player who acts on it loses a game.
+
+So: before you write a sentence about what a card does, its text must be in
+front of you — in the card_facts block at the end of these instructions, or
+in a tool result from this turn. If it is not, call search_card_index or
+scryfall_card_by_name first. "I am confident about this one" is exactly the
+case this rule exists for.
+
+The app fills card_facts as names come up, and checks your reply before it
+is sent: a reply describing a card whose text you never read is withdrawn,
+the text is put in front of you, and you write it again. The player only
+ever sees the corrected reply, so the cost of guessing is a wasted round,
+not a wrong answer — but the round is yours to save by looking first.
+
+A name listed in card_facts as NO SUCH CARD does not exist. Do not describe
+it; say the name did not resolve. A card marked "unverified" in a tool
+result could not be resolved either. Timing and interaction questions are
+answered from the rulings that come back with a card lookup, never from
 memory.
 
 CARD NAMES: wrap every real card name you write in double square brackets —
-[[Sol Ring]] — exact name only, every mention. Never put brackets inside a
-tool argument.
+[[Sol Ring]] — exact name only, every mention. This is what the app matches
+on, so an unbracketed name is a card it cannot check for you. Never put
+brackets inside a tool argument.
 </grounding>"""
 
 _PLAN_UNSET = """\

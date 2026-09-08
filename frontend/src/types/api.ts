@@ -207,5 +207,6 @@ export type SseEvent =
   | { event: 'tool_call'; data: { name: string; arguments: Record<string, unknown> } }
   | { event: 'deck_proposal'; data: { ok: boolean; summary: string; proposals: DeckProposal[] } }
   | { event: 'deck_updated'; data: Deck }
+  | { event: 'message_reset'; data: Record<string, never> }
   | { event: 'done'; data: { message_id: number; conversation_id: number } }
   | { event: 'error'; data: { message: string } }

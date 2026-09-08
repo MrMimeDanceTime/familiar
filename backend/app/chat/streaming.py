@@ -34,6 +34,16 @@ def tool_call_event(name: str, arguments: dict[str, Any]) -> ChatEvent:
     return ChatEvent("tool_call", {"name": name, "arguments": arguments})
 
 
+def message_reset_event() -> ChatEvent:
+    """Discard the assistant text streamed so far for this turn.
+
+    Emitted when a draft reply is withdrawn before the player can act on it —
+    today, when it described a card whose text the model never read. What
+    follows on the stream replaces it.
+    """
+    return ChatEvent("message_reset", {})
+
+
 def deck_proposal_event(data: dict[str, Any]) -> ChatEvent:
     return ChatEvent("deck_proposal", data)
 

@@ -145,6 +145,14 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
         }
         return [...prev, { id: assistantId, role: 'assistant', text }]
       })
+    } else if (evt.event === 'message_reset') {
+      // The server withdrew the draft it was streaming (it described a card
+      // it had not read) and is about to send the corrected reply in its
+      // place. Clear the bubble so the player never reads the wrong one.
+      assistantText.current = ''
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? { ...m, text: '' } : m)),
+      )
     } else if (evt.event === 'deck_proposal') {
       if (evt.data.ok) {
         optionsRef.current.onDeckProposal?.({

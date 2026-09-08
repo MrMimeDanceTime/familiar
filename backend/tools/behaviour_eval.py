@@ -91,6 +91,16 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
         if first_batch is not None:
             plan_set_before_batch = "deck_set_plan" in names[:first_batch]
 
+    # Card names the reply described without their text in any tool result
+    # this turn. The engine grounds and re-writes such a reply, so this
+    # counts how often the model still reached for memory first — the round
+    # the correction costs is the thing to drive down.
+    results_blob = " ".join(str(c.get("result") or "") for c in calls).lower()
+    ungrounded = sorted(
+        n for n in {m.strip().lower() for m in _BRACKETED.findall(final)}
+        if n and n not in results_blob
+    )
+
     known = {n.lower() for n in (record.get("deck_card_names") or [])}
     known |= {n.lower() for n in (record.get("proposed_names") or [])}
     bracketed = {m.lower() for m in _BRACKETED.findall(final)}
@@ -108,6 +118,7 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
         "role_batch_via_pipeline": role_batch_via_pipeline,
         "plan_set_before_batch": plan_set_before_batch,
         "reply_words": len(final.split()),
+        "ungrounded_card_mentions": ungrounded,
         "unbracketed_card_names": unbracketed,
         "usage": record.get("usage") or {},
     }
@@ -129,6 +140,9 @@ def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
         "plan_set_before_batch_rate": rate("plan_set_before_batch"),
         "mean_reply_words": round(sum(s["reply_words"] for s in scores) / n, 1),
         "turns_with_unbracketed_names": sum(1 for s in scores if s["unbracketed_card_names"]),
+        "ungrounded_mentions_per_turn": round(
+            sum(len(s.get("ungrounded_card_mentions") or []) for s in scores) / n, 2
+        ),
         "prompt_tokens": sum((s.get("usage") or {}).get("prompt_tokens") or 0 for s in scores),
         "completion_tokens": sum((s.get("usage") or {}).get("completion_tokens") or 0 for s in scores),
     }

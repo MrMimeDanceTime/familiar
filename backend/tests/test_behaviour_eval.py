@@ -63,3 +63,16 @@ def test_aggregate_rates_skip_not_applicable_turns():
     assert summary["turns"] == 2
     assert summary["role_batch_via_pipeline_rate"] == 1.0
     assert summary["prompt_tokens"] == 200
+
+
+def test_ungrounded_mentions_count_cards_absent_from_every_tool_result():
+    score = score_turn({
+        "user_text": "what should I add?",
+        "final_text": "[[Krosan Grip]] handles it; [[Sol Ring]] is already in.",
+        "tool_calls": [
+            {"name": "search_card_index", "ok": True,
+             "result": "Sol Ring · {1} · Artifact\n  text: {T}: Add {C}{C}."},
+        ],
+    })
+    assert score["ungrounded_card_mentions"] == ["krosan grip"]
+    assert aggregate([score])["ungrounded_mentions_per_turn"] == 1.0

@@ -410,6 +410,15 @@ def render_proposals(content: Any) -> str:
         if p.get("reasoning"):
             line += f" — {_one_line(p['reasoning'])}"
         lines.append(line)
+        # The card's real text, because the very next thing the model does is
+        # describe this batch to the player. Without it that description came
+        # from memory, which is where the wrong rules text came from.
+        if p.get("type_line") or p.get("oracle_text"):
+            head = " · ".join(
+                str(p[k]) for k in ("mana_cost", "type_line") if p.get(k)
+            )
+            text = _one_line(p.get("oracle_text"))
+            lines.append(f"  {head}" + (f" — {text}" if text else ""))
     return "\n".join(lines)
 
 
@@ -444,6 +453,40 @@ _RENDERERS: dict[str, Callable[[Any], str]] = {
     "suggest_cards": render_proposals,
     "withdraw_pending_proposals": render_withdraw,
 }
+
+
+# How deep to walk a tool result looking for card objects. Every payload
+# shape in the toolkit nests cards at most three levels down (recs ->
+# categories -> cards -> card), so this is generous.
+_GROUNDING_MAX_DEPTH = 6
+
+
+def grounded_card_names(content: Any) -> set[str]:
+    """Lowercased names of every card whose real text is in this result.
+
+    Walks the payload rather than switching on the tool, so a tool added
+    later grounds its cards without being registered anywhere. A card counts
+    as grounded when it carries an ``oracle_text`` key at all: a vanilla
+    creature's empty text is still the truth about that card.
+    """
+    found: set[str] = set()
+
+    def walk(node: Any, depth: int) -> None:
+        if depth > _GROUNDING_MAX_DEPTH:
+            return
+        if isinstance(node, dict):
+            name = node.get("name")
+            if isinstance(name, str) and name.strip() and "oracle_text" in node:
+                found.add(name.strip().lower())
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+
+    walk(content, 0)
+    return found
 
 
 def render_result(tool_name: str, content: Any) -> str:
