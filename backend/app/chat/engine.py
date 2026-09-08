@@ -12,16 +12,17 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from sqlmodel import Session
 
-from app.chat import context
+from app.chat import card_facts, context
 from app.config import settings
 from app.chat.prompt import build_system_prompt
 from app.chat.streaming import (
     ChatEvent,
     deck_proposal_event,
+    message_reset_event,
     deck_updated_event,
     done_event,
     error_event,
@@ -31,6 +32,7 @@ from app.chat.streaming import (
 from app.db import repository as repo
 from app.llm.base import AssistantTurn, ChatProvider, ToolResult
 from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
+from app.tools import render
 from app.tools.render import render_result
 from app.tools.schemas import TOOL_SPECS
 
@@ -233,10 +235,63 @@ class _TurnState:
     # single.
     force_fast: bool = False
     retried_empty: bool = False
+    # Card grounding. `base_prompt` is everything but the card facts, so the
+    # facts block can be rebuilt as names appear without disturbing the rest.
+    # `grounded` is every card name whose real text is in the model's context
+    # right now, from the facts block or from a tool result.
+    base_prompt: str = ""
+    grounded: set[str] = field(default_factory=set)
+    unknown_names: set[str] = field(default_factory=set)
+    corrected_once: bool = False
 
     @property
     def streamed_text(self) -> str:
         return "".join(self.streamed_parts)
+
+    def ground_names(self, names: Iterable[str]) -> None:
+        """Put the real text of these cards in front of the model.
+
+        Called with every card name that turns up anywhere in the turn. The
+        lookup is a local index read, so this is cheap enough to run on each
+        iteration rather than only when the model asks.
+        """
+        fresh = [
+            n for n in names
+            if n.lower() not in self.grounded and n.lower() not in self.unknown_names
+        ]
+        if not fresh or not card_facts.is_available():
+            return
+        found, unknown = card_facts.resolve(fresh)
+        if not found and not unknown:
+            return
+        self._facts.update(found)
+        self.grounded.update(found)
+        self.unknown_names.update(n.lower() for n in unknown)
+        self._unknown_display.extend(
+            n for n in unknown if n not in self._unknown_display
+        )
+        block = card_facts.render_block(self._facts, self._unknown_display)
+        self.system_prompt = f"{self.base_prompt}\n\n{block}" if block else self.base_prompt
+
+    def ground_tool_result(self, content: Any) -> None:
+        """A tool that returned card text has grounded those cards itself."""
+        self.grounded.update(render.grounded_card_names(content))
+
+    def ungrounded_in(self, text: str | None) -> list[str]:
+        """Card names in *text* whose real text the model never saw.
+
+        Includes names the index does not know: a card that does not exist is
+        the worst version of the same failure.
+        """
+        if not card_facts.is_available():
+            return []
+        return [
+            n for n in card_facts.names_in_text(text)
+            if n.lower() not in self.grounded
+        ]
+
+    _facts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _unknown_display: list[str] = field(default_factory=list)
 
     def tools_for_send(self) -> tuple[list[Any], bool]:
         """The tool list for the next send and whether it should think.
@@ -358,11 +413,35 @@ def _prepare_turn(
         if block:
             system_prompt = f"{system_prompt}\n\n{block}"
 
-    return _TurnState(
+    state = _TurnState(
         session=session, provider=provider, conversation_id=conversation_id,
         deck_id=deck_id, user_text=user_text, system_prompt=system_prompt,
         history=history, sequence=sequence, should_stop=should_stop,
+        base_prompt=system_prompt,
     )
+    # Everything already on the table gets its text before the first send:
+    # the cards the player named, the commander, and whatever is awaiting
+    # their decision. The model should never have to ask for these.
+    state.ground_names([*card_facts.names_in_text(user_text), *_deck_card_names(session, deck_id)])
+    return state
+
+
+def _deck_card_names(session: Session, deck_id: int | None) -> list[str]:
+    """The commander(s) and any card in a pending proposal — the cards a
+    turn is most likely to be about."""
+    if deck_id is None:
+        return []
+    try:
+        deck = repo.get_deck(session, deck_id)
+        names = [n for n in ((deck.commander, deck.partner_commander) if deck else ()) if n]
+        pending = repo.deck_snapshot(session, deck_id).get("pending_proposals") or {}
+        for p in pending.get("proposals", []):
+            name = p.get("card_name") or p.get("commander_name")
+            if name:
+                names.append(name)
+        return names
+    except Exception:  # noqa: BLE001 - grounding is a bonus, never a precondition
+        return []
 
 
 def _stream_send(
@@ -443,6 +522,8 @@ def _run_tool(state: _TurnState, call: Any) -> tuple[ToolResult, ChatEvent | Non
 
     result = dispatch(call.name, args, state.session, provider=state.provider)
     content = str(result.content) if not result.ok else render_result(call.name, result.content)
+    if result.ok:
+        state.ground_tool_result(result.content)
     event: ChatEvent | None = None
     if result.ok and call.name in PROPOSAL_TOOLS:
         # No deck_proposal event here: the batch is revealed once, settled, at
@@ -493,6 +574,26 @@ def run_chat_turn(
 
             if not turn.tool_calls:
                 text = turn.text
+                ungrounded = state.ungrounded_in(text)
+                if ungrounded and not state.corrected_once:
+                    # The reply talks about cards the model never looked up,
+                    # which is where wrong rules text comes from. Withdraw the
+                    # draft, put the real text in front of it, and have it
+                    # write again. The player sees one reply, the correct one.
+                    logger.info(
+                        "chat: withdrawing a draft that described %d unlooked-up card(s): %s",
+                        len(ungrounded), ", ".join(ungrounded[:6]),
+                    )
+                    state.corrected_once = True
+                    state.ground_names(ungrounded)
+                    state.history = state.provider.append_user_message(
+                        state.history, _correction_request(text, ungrounded),
+                    )
+                    if state.streamed_parts:
+                        yield message_reset_event()
+                        state.streamed_parts.clear()
+                    state.force_fast = True
+                    continue
                 if not (text or "").strip():
                     # Nothing came back. A thinking send can spend its whole
                     # output budget on reasoning; one fast retry usually
@@ -516,6 +617,10 @@ def run_chat_turn(
                     already_streamed=bool(state.streamed_parts) and text == turn.text,
                 )
                 return
+
+            # Cards the model named alongside its tool calls are cards it is
+            # about to write about; ground them before the next send.
+            state.ground_names(card_facts.names_in_text(turn.text))
 
             results: list[ToolResult] = []
             calls_log: list[dict[str, Any]] = []
@@ -613,6 +718,29 @@ def _supersede_stale_batches(
         return
     if count:
         logger.info("chat: superseded %d stale pending proposal(s)", count)
+
+
+# How much of the withdrawn draft to quote back. Enough that the model can
+# keep the parts that were right; not so much that a long reply doubles the
+# send it is about to make.
+_DRAFT_ECHO_CHARS = 2000
+
+
+def _correction_request(draft: str | None, ungrounded: list[str]) -> str:
+    """The message that turns a withdrawn draft into a corrected one."""
+    named = ", ".join(ungrounded[:12])
+    echo = " ".join((draft or "").split())[:_DRAFT_ECHO_CHARS]
+    return (
+        "HOLD — that reply was not sent to the player. It described these "
+        f"cards without their text in front of you: {named}. Their real text "
+        "is now in the card_facts block of your instructions; a name listed "
+        "there as NO SUCH CARD does not exist and must not be described.\n\n"
+        f"Your draft was:\n---\n{echo}\n---\n\n"
+        "Write the reply again from the real text. Keep what was right, fix "
+        "whatever the card text contradicts, and drop any card that does not "
+        "exist. Do not mention this correction — the player never saw the "
+        "draft."
+    )
 
 
 _EMPTY_REPLY_TEXT = (

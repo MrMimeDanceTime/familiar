@@ -53,6 +53,11 @@ def propose_deck_changes(
     # pending_proposals on every deck read and resurfacing as a stray batch on
     # reload. A batch either lands whole or not at all.
     rows: list[DeckProposal] = []
+    # lower(name) -> the card's real text, kept from the resolution each add
+    # already does. It rides back on the returned batch (not the stored row)
+    # so the model describes what it just proposed from the card, not from
+    # memory. See app/chat/card_facts.py.
+    facts: dict[str, dict[str, Any]] = {}
     for change in changes:
         action = change.get("action", "add")
         card_name = change.get("card_name", "")
@@ -74,6 +79,11 @@ def propose_deck_changes(
             try:
                 card = scryfall.named(card_name, fuzzy=True)
                 canonical_name = card["name"]
+                facts[canonical_name.lower()] = {
+                    "mana_cost": card.get("mana_cost"),
+                    "type_line": card.get("type_line"),
+                    "oracle_text": card.get("oracle_text") or "",
+                }
             except ScryfallNotFoundError:
                 raise ValueError(f"No Scryfall card found matching '{card_name}'")
             # Commander is a banned-list format — refuse to propose an
@@ -140,6 +150,7 @@ def propose_deck_changes(
             "reasoning": proposal.reasoning,
             "scores": proposal.scores,
             "price_usd": proposal.price_usd,
+            **facts.get((proposal.card_name or "").lower(), {}),
         })
 
     return {"ok": True, "summary": summary, "proposals": proposals}

@@ -222,7 +222,36 @@ The engine builds three blocks from the database before the first send
 
 Tool results reach the model as compact text (`app/tools/render.py`), not
 JSON: a deck read is one line per card, a card lookup carries its text and
-rulings under the name, proposals carry their ids and scores.
+rulings under the name, proposals carry their ids, scores, and the card's
+real text.
+
+### Card grounding (`app/chat/card_facts.py`)
+
+The model's memory of what a card does is wrong often enough to be
+dangerous: the name is real, the text is subtly off, and a line of play gets
+built on it. Asking it to look cards up first only worked when it thought it
+needed to. So the app does not ask.
+
+- Every card name in play — from the player's message, the commander, a
+  pending proposal, the model's own interim text — is resolved against the
+  local card index and its real text is injected as a `<card_facts>` block at
+  the end of the system prompt. The index is offline and complete, so this
+  costs a millisecond.
+- A name the index cannot match is reported in the block as `NO SUCH CARD`,
+  which is how an invented card gets caught.
+- Before a reply is finalised, the engine extracts every `[[Card Name]]` in
+  it and checks it against what the model has actually read (the facts block
+  plus every card carrying `oracle_text` in a tool result this turn, found by
+  `render.grounded_card_names`). A reply describing an unread card is
+  withdrawn: the text is injected, the draft is quoted back, and the model
+  writes again. Streamed text is retracted with a `message_reset` event, so
+  the player only ever sees the corrected reply. At most one correction per
+  turn.
+- Without a card index there is no ground truth, so the whole mechanism
+  disables itself rather than calling real cards invented.
+
+The behaviour eval reports `ungrounded_mentions_per_turn`: how often the
+model reached for memory and cost itself the correction round.
 
 Thinking policy in the chat loop: the first send of a turn (what is this
 turn for, what to hand the pipeline) and the send after a batch (which
@@ -255,7 +284,8 @@ composer shows Stop while a turn runs.
 
 ## SSE event vocabulary
 
-`token`, `tool_call`, `deck_proposal`, `deck_updated`, `done`, `error` —
+`token`, `tool_call`, `message_reset`, `deck_proposal`, `deck_updated`,
+`done`, `error` —
 yielded by the engine as `ChatEvent` tuples (`app/chat/streaming.py`),
 written to the turn log by the runner, formatted as SSE by the API, and
 consumed by `frontend/src/hooks/useChatStream.ts`. A proposal tool
