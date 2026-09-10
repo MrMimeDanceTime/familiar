@@ -17,7 +17,7 @@ failed turn.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import text
@@ -55,6 +55,11 @@ class DeckState:
     block: str = ""
     plan_is_set: bool | None = None
     total_cards: int | None = None
+    # Every card this block names (staples it says are missing, combo pieces,
+    # pending proposals, the commander). The engine grounds them: a card the
+    # app puts in front of the model is one the model will write about, and
+    # it should not have to look up a name we handed it.
+    card_names: list[str] = field(default_factory=list)
 
 
 def _identity_letters(snapshot: dict[str, Any]) -> str:
@@ -95,6 +100,7 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
     snapshot = repo.deck_snapshot(session, deck_id)
     plan = deckplan.build_plan(snapshot)
     total = int(snapshot.get("total_cards") or 0)
+    named: list[str] = []
     fmt = snapshot.get("format") or "commander"
     size = _FORMAT_SIZE.get(fmt)
     lines: list[str] = []
@@ -105,6 +111,7 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
     commander = snapshot.get("commander")
     partner = snapshot.get("partner_commander")
     pending_commander = repo.pending_commander_for_deck(session, deck_id)
+    named.extend(n for n in (commander, partner, pending_commander) if n)
     if commander:
         who = f"{commander} / {partner}" if partner else commander
         identity = _identity_letters(snapshot)
@@ -170,10 +177,12 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
             lines.append(
                 "Combos in the deck: " + "; ".join(" + ".join(c["cards"]) for c in combos[:4]) + "."
             )
+            named.extend(n for c in combos[:4] for n in c["cards"])
 
     staples = deckplan_missing_staples(snapshot)
     if staples:
         lines.append("Missing format staples: " + ", ".join(staples[:6]) + ".")
+        named.extend(staples[:6])
 
     pending = snapshot.get("pending_proposals") or {}
     cards_pending = [p for p in pending.get("proposals", []) if p.get("action") != "set_commander"]
@@ -182,6 +191,7 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
             f"Awaiting the player's decision: {len(cards_pending)} proposal(s) "
             f"({_names(cards_pending, 'card_name', 8)})."
         )
+        named.extend(str(p["card_name"]) for p in cards_pending if p.get("card_name"))
     else:
         lines.append("No card proposals are awaiting the player's decision.")
 
@@ -195,7 +205,10 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
         + (f"\n{guidance}" if guidance else "")
         + "\n</deck_state>"
     )
-    return DeckState(block=block, plan_is_set=plan.has_plan(), total_cards=total)
+    return DeckState(
+        block=block, plan_is_set=plan.has_plan(), total_cards=total,
+        card_names=list(dict.fromkeys(named)),
+    )
 
 
 def deckplan_missing_staples(snapshot: dict[str, Any]) -> list[str]:

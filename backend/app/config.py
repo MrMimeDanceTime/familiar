@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # for the same picks; the chat sends are a smaller decision still.
     chat_reasoning_effort: str = "low"
 
+    # Whether a reply that describes a card the model never read is withdrawn
+    # and rewritten. The card facts are injected either way; this is only the
+    # repair round, which costs a send and visibly replaces the draft. Off
+    # leaves the reply as written and logs the miss.
+    chat_correct_ungrounded_replies: bool = True
+
     # Output cap for the chat sends that think. DeepSeek counts reasoning
     # against max_tokens in thinking mode, so the 1000-token reply cap below
     # starved the planning send: the reasoning spent the whole budget, the

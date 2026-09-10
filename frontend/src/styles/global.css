@@ -2672,6 +2672,13 @@ body.has-pinned-tray .deck-detail {
   letter-spacing: 0.04em;
 }
 
+.message__note {
+  font-size: 11.5px;
+  color: var(--label);
+  font-style: italic;
+  margin-bottom: 6px;
+}
+
 /* ── Combos ──────────────────────────────────────────────────────────── */
 .combo-row {
   align-items: flex-start;

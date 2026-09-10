@@ -228,3 +228,94 @@ def test_a_streamed_draft_is_reset_on_the_client(card_index, session):
     after = "".join(e.data["text"] for e in events[reset_at:] if e.event == "token")
     assert "counters a spell" in before
     assert "destroys an artifact" in after and "counters" not in after
+
+
+# ── the deck is grounded, so discussing it costs no correction ─────────────
+
+def test_deck_cards_are_grounded_without_a_lookup(card_index, session):
+    deck, convo = _deck(session)
+    repo.add_deck_card(
+        session, deck_id=deck.id, card_name="Krosan Grip", quantity=1,
+        type_line="Instant", oracle_text="Split second\nDestroy target artifact or enchantment.",
+        oracle_id="kro",
+    )
+    repo.add_deck_card(session, deck_id=deck.id, card_name="Forest", quantity=30,
+                       type_line="Basic Land — Forest", oracle_text="")
+    provider = FakeProvider([
+        AssistantTurn(text="[[Krosan Grip]] is your uncounterable answer.", tool_calls=[]),
+    ])
+
+    _collect(run_chat_turn(session, provider, convo.id, "how do I handle artifacts?", deck.id))
+
+    prompt = provider.sent_system_prompts[0]
+    assert "In the deck (1 cards, basics omitted):" in prompt
+    assert "Destroy target artifact or enchantment" in prompt
+    assert "Forest" not in prompt.split("<card_facts>")[1]
+    # One send: the reply was never withdrawn.
+    assert len(provider.thinking_flags) == 1
+    assert repo.list_messages(session, convo.id)[-1].text_content.startswith("[[Krosan Grip]]")
+
+
+def test_a_staple_the_app_says_is_missing_is_grounded(card_index, session, monkeypatch):
+    deck, convo = _deck(session)
+    repo.add_deck_card(session, deck_id=deck.id, card_name="Cultivate", quantity=1,
+                       type_line="Sorcery", oracle_text="Search your library...", oracle_id="cul")
+    monkeypatch.setattr(
+        "app.tools.deck_tools._missing_auto_includes",
+        lambda snapshot: [{"name": "Sol Ring"}],
+    )
+    provider = FakeProvider([AssistantTurn(text="Add [[Sol Ring]] first.", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "what am I missing?", deck.id))
+
+    assert "{T}: Add {C}{C}." in provider.sent_system_prompts[0]
+    assert len(provider.thinking_flags) == 1
+
+
+def test_a_card_from_the_last_reply_is_still_grounded_next_turn(card_index, session):
+    deck, convo = _deck(session)
+    _collect(run_chat_turn(
+        session, FakeProvider([AssistantTurn(text="[[Krosan Grip]] handles it.", tool_calls=[])]),
+        convo.id, "is [[Krosan Grip]] any good?", deck.id,
+    ))
+    provider = FakeProvider([AssistantTurn(text="Yes, [[Krosan Grip]] beats a counterspell.", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "is that uncounterable?", deck.id))
+
+    assert "Split second" in provider.sent_system_prompts[0]
+    assert len(provider.thinking_flags) == 1
+
+
+def test_the_reset_says_why_the_text_vanished(card_index, session):
+    deck, convo = _deck(session)
+
+    class StreamingProvider(FakeProvider):
+        def send_stream(self, system_prompt, history, tools, *, thinking=False):
+            self.sent_system_prompts.append(system_prompt)
+            self.sent_history_snapshots.append(list(history))
+            self.thinking_flags.append(thinking)
+            turn = self._turns.pop(0)
+            yield turn.text or ""
+            yield turn
+
+    provider = StreamingProvider([
+        AssistantTurn(text="[[Krosan Grip]] counters a spell.", tool_calls=[]),
+        AssistantTurn(text="[[Krosan Grip]] destroys an artifact.", tool_calls=[]),
+    ])
+    events = _collect(run_chat_turn(session, provider, convo.id, "removal?", deck.id))
+
+    reset = next(e for e in events if e.event == "message_reset")
+    assert reset.data["note"] == "Rewritten after checking the real card text."
+
+
+def test_correction_can_be_switched_off(card_index, session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_correct_ungrounded_replies", False)
+    deck, convo = _deck(session)
+    provider = FakeProvider([AssistantTurn(text="[[Krosan Grip]] counters a spell.", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "removal?", deck.id))
+
+    assert len(provider.thinking_flags) == 1
+    assert repo.list_messages(session, convo.id)[-1].text_content == "[[Krosan Grip]] counters a spell."

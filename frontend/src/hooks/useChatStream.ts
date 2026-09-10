@@ -7,6 +7,9 @@ export interface DisplayMessage {
   role: 'user' | 'assistant'
   text: string
   serverId?: number
+  // Set when the server withdrew a draft of this reply and wrote it again,
+  // so the rewrite reads as a deliberate check rather than a glitch.
+  note?: string
 }
 
 export interface ProposalBatch {
@@ -148,10 +151,12 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
     } else if (evt.event === 'message_reset') {
       // The server withdrew the draft it was streaming (it described a card
       // it had not read) and is about to send the corrected reply in its
-      // place. Clear the bubble so the player never reads the wrong one.
+      // place. Clear the bubble so the player never reads the wrong one, and
+      // keep the reason: text vanishing with no explanation reads as a bug.
       assistantText.current = ''
+      const note = typeof evt.data.note === 'string' ? evt.data.note : undefined
       setMessages((prev) =>
-        prev.map((m) => (m.id === assistantId ? { ...m, text: '' } : m)),
+        prev.map((m) => (m.id === assistantId ? { ...m, text: '', note } : m)),
       )
     } else if (evt.event === 'deck_proposal') {
       if (evt.data.ok) {

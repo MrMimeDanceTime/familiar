@@ -42,9 +42,10 @@ _BASICS = frozenset({
     "snow-covered mountain", "snow-covered forest",
 })
 
-# A guard on the block's size: a long conversation accumulates names, and the
-# facts for the cards under discussion are what matter, not every card ever
-# mentioned. Newest first, so the cards in play survive the cut.
+# A guard on the block's size for cards named in conversation: a long thread
+# accumulates names, and the cards under discussion are what matter. Newest
+# first, so the cards in play survive the cut. The deck's own cards are not
+# capped — a deck the model cannot see the text of is the whole problem.
 MAX_FACTS = 40
 
 
@@ -100,6 +101,27 @@ def resolve(names: Iterable[str]) -> tuple[dict[str, dict[str, Any]], list[str]]
     return found, unknown
 
 
+def from_deck_cards(rows: Iterable[Any]) -> dict[str, dict[str, Any]]:
+    """Facts for the deck's own cards, from what the deck already stores.
+
+    The deck is what most replies are about, so its text is injected every
+    turn rather than waited for. Each row carries the oracle text captured
+    when the card was added, so this needs neither the index nor the network.
+    Basic lands are skipped: thirty copies of "Add {G}" is not grounding.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = getattr(row, "card_name", None)
+        if not name or name.lower() in _BASICS:
+            continue
+        out[name.lower()] = {
+            "name": name,
+            "type_line": getattr(row, "type_line", None),
+            "oracle_text": getattr(row, "oracle_text", None) or "",
+        }
+    return out
+
+
 def _fact_line(card: dict[str, Any]) -> str:
     bits = [str(card.get("name"))]
     if card.get("mana_cost"):
@@ -118,21 +140,40 @@ def _fact_line(card: dict[str, Any]) -> str:
     return f"- {head} — {text}" if text else f"- {head} — (no rules text)"
 
 
-def render_block(found: dict[str, dict[str, Any]], unknown: Iterable[str]) -> str:
-    """The <card_facts> block, or empty when there is nothing to say."""
-    cards = list(found.values())[-MAX_FACTS:]
-    unknown = [n for n in unknown]
-    if not cards and not unknown:
+def _by_name(cards: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(cards.values(), key=lambda c: str(c.get("name", "")))
+
+
+def render_block(
+    found: dict[str, dict[str, Any]],
+    unknown: Iterable[str],
+    deck: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    """The <card_facts> block, or empty when there is nothing to say.
+
+    Two sections, because they answer different questions: the deck's cards
+    are what the model reasons over, and the cards named this turn are what
+    it is about to write about.
+    """
+    deck = {k: v for k, v in (deck or {}).items() if k not in found}
+    in_play = list(found.values())[-MAX_FACTS:]
+    unknown = list(unknown)
+    if not in_play and not deck and not unknown:
         return ""
     lines = [
         "<card_facts>",
-        "Every card named so far this turn, with its real text from the local "
-        "card index. This is what these cards do. Your memory of them is not, "
-        "and it is wrong often enough that using it costs the player a bad "
-        "line of play. Quote from here, and look up anything not listed "
-        "before you write about it.",
+        "The real text of every card in front of you, from the app\'s own card "
+        "data. This is what these cards do. Your memory of them is not, and it "
+        "is wrong often enough that using it costs the player a bad line of "
+        "play. Quote from here, and look up anything not listed before you "
+        "write about it.",
     ]
-    lines.extend(_fact_line(c) for c in sorted(cards, key=lambda c: str(c.get("name", ""))))
+    if deck:
+        lines.append(f"In the deck ({len(deck)} cards, basics omitted):")
+        lines.extend(_fact_line(c) for c in _by_name(deck))
+    if in_play:
+        lines.append("Named this turn:")
+        lines.extend(_fact_line(c) for c in _by_name({c["name"].lower(): c for c in in_play}))
     for name in unknown:
         lines.append(
             f"NO SUCH CARD: \"{name}\" is not in the card index. Either you "

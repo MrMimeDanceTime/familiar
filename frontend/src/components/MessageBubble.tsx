@@ -150,6 +150,7 @@ export function MessageBubble({ message, cardNames, mascotState = 'breathing', m
       <FamiliarMark size={28} state={mascotState} flourishKey={mascotFlourishKey} />
       <div className="message__body">
         <div className="message__author">Familiar</div>
+        {message.note && <div className="message__note">{message.note}</div>}
         <div className="message__text">
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins} components={{ a: CardLink }}>
             {message.text}

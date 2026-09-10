@@ -270,7 +270,25 @@ class _TurnState:
         self._unknown_display.extend(
             n for n in unknown if n not in self._unknown_display
         )
-        block = card_facts.render_block(self._facts, self._unknown_display)
+        self._rebuild_prompt()
+
+    def ground_deck(self, rows: Iterable[Any]) -> None:
+        """Put the deck's own cards in front of the model, every turn.
+
+        Most replies are about the deck, and its cards were the largest
+        source of text the model had to recall rather than read. The rows
+        carry the oracle text captured when each card was added, so this
+        needs neither the index nor the network.
+        """
+        facts = card_facts.from_deck_cards(rows)
+        if not facts:
+            return
+        self._deck_facts.update(facts)
+        self.grounded.update(facts)
+        self._rebuild_prompt()
+
+    def _rebuild_prompt(self) -> None:
+        block = card_facts.render_block(self._facts, self._unknown_display, self._deck_facts)
         self.system_prompt = f"{self.base_prompt}\n\n{block}" if block else self.base_prompt
 
     def ground_tool_result(self, content: Any) -> None:
@@ -291,6 +309,7 @@ class _TurnState:
         ]
 
     _facts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _deck_facts: dict[str, dict[str, Any]] = field(default_factory=dict)
     _unknown_display: list[str] = field(default_factory=list)
 
     def tools_for_send(self) -> tuple[list[Any], bool]:
@@ -396,7 +415,8 @@ def _prepare_turn(
             format_key = deck.format
 
     prefs = repo.get_or_create_preferences(session)
-    state = context.deck_state(session, deck_id)
+    deck_state = context.deck_state(session, deck_id)
+    state_card_names = deck_state.card_names
     system_prompt = build_system_prompt(
         format_key,
         preferred_bracket=prefs.preferred_bracket,
@@ -404,12 +424,12 @@ def _prepare_turn(
         budget=prefs.budget,
         rule0_notes=prefs.rule0_notes,
         build_preferences=prefs.build_preferences,
-        plan_is_set=state.plan_is_set,
-        total_cards=state.total_cards,
+        plan_is_set=deck_state.plan_is_set,
+        total_cards=deck_state.total_cards,
     )
     # The variable blocks go last so the stable part of the prompt stays a
     # cacheable prefix across turns.
-    for block in (context.player_history(session), state.block):
+    for block in (context.player_history(session), deck_state.block):
         if block:
             system_prompt = f"{system_prompt}\n\n{block}"
 
@@ -419,29 +439,39 @@ def _prepare_turn(
         history=history, sequence=sequence, should_stop=should_stop,
         base_prompt=system_prompt,
     )
-    # Everything already on the table gets its text before the first send:
-    # the cards the player named, the commander, and whatever is awaiting
-    # their decision. The model should never have to ask for these.
-    state.ground_names([*card_facts.names_in_text(user_text), *_deck_card_names(session, deck_id)])
+    # Everything already on the table gets its text before the first send.
+    # A correction round is for a card the model reached for on its own; it
+    # must never be the cost of discussing the deck, a staple the app said
+    # was missing, or a card the player just named.
+    if deck_id is not None:
+        try:
+            state.ground_deck(repo.list_deck_cards(session, deck_id))
+        except Exception:  # noqa: BLE001 - grounding is a bonus, never a precondition
+            logger.exception("could not ground the deck's own cards")
+    state.ground_names([
+        *card_facts.names_in_text(user_text),
+        *state_card_names,
+        *_recent_reply_names(session, conversation_id),
+    ])
     return state
 
 
-def _deck_card_names(session: Session, deck_id: int | None) -> list[str]:
-    """The commander(s) and any card in a pending proposal — the cards a
-    turn is most likely to be about."""
-    if deck_id is None:
-        return []
+# How far back to look for cards the conversation is still about. A follow-up
+# question ("is that better than the other one?") lands a turn later, and the
+# text that answered it has since been elided from the replayed context.
+_RECENT_REPLY_MESSAGES = 4
+
+
+def _recent_reply_names(session: Session, conversation_id: int) -> list[str]:
+    """Cards named in the last few replies, which a follow-up is about."""
     try:
-        deck = repo.get_deck(session, deck_id)
-        names = [n for n in ((deck.commander, deck.partner_commander) if deck else ()) if n]
-        pending = repo.deck_snapshot(session, deck_id).get("pending_proposals") or {}
-        for p in pending.get("proposals", []):
-            name = p.get("card_name") or p.get("commander_name")
-            if name:
-                names.append(name)
-        return names
-    except Exception:  # noqa: BLE001 - grounding is a bonus, never a precondition
+        messages = repo.list_messages(session, conversation_id)
+    except Exception:  # noqa: BLE001
         return []
+    names: list[str] = []
+    for message in messages[-_RECENT_REPLY_MESSAGES:]:
+        names.extend(card_facts.names_in_text(message.text_content))
+    return names
 
 
 def _stream_send(
@@ -575,7 +605,12 @@ def run_chat_turn(
             if not turn.tool_calls:
                 text = turn.text
                 ungrounded = state.ungrounded_in(text)
-                if ungrounded and not state.corrected_once:
+                if ungrounded and not settings.chat_correct_ungrounded_replies:
+                    logger.warning(
+                        "chat: reply describes %d unlooked-up card(s) and correction "
+                        "is off: %s", len(ungrounded), ", ".join(ungrounded[:6]),
+                    )
+                elif ungrounded and not state.corrected_once:
                     # The reply talks about cards the model never looked up,
                     # which is where wrong rules text comes from. Withdraw the
                     # draft, put the real text in front of it, and have it
@@ -590,7 +625,7 @@ def run_chat_turn(
                         state.history, _correction_request(text, ungrounded),
                     )
                     if state.streamed_parts:
-                        yield message_reset_event()
+                        yield message_reset_event(_RESET_NOTE)
                         state.streamed_parts.clear()
                     state.force_fast = True
                     continue
@@ -719,6 +754,8 @@ def _supersede_stale_batches(
     if count:
         logger.info("chat: superseded %d stale pending proposal(s)", count)
 
+
+_RESET_NOTE = "Rewritten after checking the real card text."
 
 # How much of the withdrawn draft to quote back. Enough that the model can
 # keep the parts that were right; not so much that a long reply doubles the
