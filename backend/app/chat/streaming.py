@@ -34,14 +34,15 @@ def tool_call_event(name: str, arguments: dict[str, Any]) -> ChatEvent:
     return ChatEvent("tool_call", {"name": name, "arguments": arguments})
 
 
-def message_reset_event() -> ChatEvent:
+def message_reset_event(note: str = "") -> ChatEvent:
     """Discard the assistant text streamed so far for this turn.
 
     Emitted when a draft reply is withdrawn before the player can act on it —
     today, when it described a card whose text the model never read. What
-    follows on the stream replaces it.
+    follows on the stream replaces it. ``note`` says why, because text that
+    disappears without explanation reads as a bug rather than a check.
     """
-    return ChatEvent("message_reset", {})
+    return ChatEvent("message_reset", {"note": note} if note else {})
 
 
 def deck_proposal_event(data: dict[str, Any]) -> ChatEvent:
