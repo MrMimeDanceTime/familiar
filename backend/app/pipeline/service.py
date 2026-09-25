@@ -288,60 +288,41 @@ def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     return {oid: lookup.get(oid, set()) for oid in oracle_ids}
 
 
-def build_suggestions(
+@dataclass
+class PreparedPool:
+    """Stages 1-3 done: everything stage 4 needs, so two selection backends can
+    be run against the identical pool (see tools/jev_compare.py)."""
+
+    snapshot: dict[str, Any]
+    spec: spec_stage.QuerySpec
+    gathered: Any
+    local_pool: list[dict[str, Any]]
+    stage1_skipped: bool
+    pool: list[dict[str, Any]]
+    shaped: list[Any]
+    deck_context: str
+    timings: dict[str, float]
+
+
+def prepare_pool(
     session: Session,
     deck_id: int,
     user_intent: str,
     provider: Any,
     *,
-    conversation_id: int | None = None,
-    message_id: int | None = None,
-    model: str | None = None,
-    spec_thinking: bool | None = None,
-    select_thinking: bool | None = None,
+    model: str,
+    spec_thinking: bool = False,
     max_queries: int = 6,
     pool_cap: int = 60,
-    max_picks: int = 10,
     scryfall: Any | None = None,
     edhrec: Any | None = None,
     off_meta: float | None = None,
     local_store: Any | None = None,
     local_pool_min: int = 25,
-    player_message: str | None = None,
-) -> SuggestionResult:
-    """Run the full retrieval pipeline for a deck and intent.
-
-    When ``conversation_id`` is given, the selection is turned into pending
-    proposals (stage 5); without it, the result carries the raw selection for
-    preview and ``proposals`` stays empty. ``scryfall``/``edhrec`` are injectable
-    for testing.
-
-    Model/thinking policy — the two LLM stages are NOT symmetric:
-      * Stage 1 (query planning) is a mechanical intent->Scryfall-query mapping;
-        the harness enforces legality regardless of what it writes. So it runs
-        FAST model, thinking OFF.
-      * Stage 4 (selection) is where deck-aware FIT judgment happens — the one
-        thing Python can't do. It gets the commander + current deck as context
-        (see _render_deck_context) and runs with thinking ON so it can actually
-        reason about combos/synergy, still on the FAST model to stay responsive.
-    Defaults trigger this policy; pass ``model``/``spec_thinking``/
-    ``select_thinking`` to override (e.g. tests pin a fake provider).
-    """
-    if model is None:
-        from app.llm.factory import get_fast_model
-        model = get_fast_model()
-    if spec_thinking is None:
-        spec_thinking = False
-    if select_thinking is None:
-        select_thinking = True
-
-    timings: dict[str, float] = {}
-    overall_start = time.monotonic()
-    logger.info(
-        "pipeline: build_suggestions deck=%s intent=%r model=%s",
-        deck_id, user_intent[:80], model,
-    )
-
+    timings: dict[str, float] | None = None,
+) -> PreparedPool:
+    """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
+    timings = {} if timings is None else timings
     snapshot = repo.deck_snapshot(session, deck_id)
     # The prompt has the model batch set_commander with the opening cards, and
     # the hand-pick guard sends those cards here. At that moment the commander
@@ -414,15 +395,125 @@ def build_suggestions(
         ctx = _with_combo_partners(ctx, snapshot, pool)
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
-    with _timed("stage4_select", timings):
-        from app.config import settings
+    return PreparedPool(
+        snapshot=snapshot, spec=spec, gathered=gathered, local_pool=local_pool,
+        stage1_skipped=stage1_skipped, pool=pool, shaped=shaped,
+        deck_context=_render_deck_context(snapshot), timings=timings,
+    )
 
-        selection = selection_stage.select(
-            provider, shaped, user_intent,
-            model=model, max_picks=max_picks, thinking=select_thinking,
-            deck_context=_render_deck_context(snapshot),
-            reasoning_effort=settings.select_reasoning_effort or None,
-            player_message=player_message,
+
+def run_selection(
+    prepared: PreparedPool,
+    user_intent: str,
+    provider: Any,
+    *,
+    backend: str,
+    model: str,
+    select_thinking: bool = True,
+    max_picks: int = 10,
+    player_message: str | None = None,
+    jev_client: Any | None = None,
+) -> tuple[selection_stage.Selection, str]:
+    """Run stage 4 on the requested backend. Returns (selection, backend used):
+    a failed Jev call logs and falls back to the LLM rather than failing the
+    suggestion, and the second value says which one actually answered."""
+    from app.config import settings
+
+    if backend == "jev":
+        from app.pipeline import jev
+
+        try:
+            client = jev_client or jev.get_client()
+            return jev.select_jev(
+                client, prepared.shaped, user_intent,
+                max_picks=max_picks, deck_context=prepared.deck_context,
+                player_message=player_message,
+            ), "jev"
+        except Exception as exc:  # noqa: BLE001 - the LLM path is the fallback
+            logger.warning("jev selection failed, falling back to llm: %s", exc)
+
+    return selection_stage.select(
+        provider, prepared.shaped, user_intent,
+        model=model, max_picks=max_picks, thinking=select_thinking,
+        deck_context=prepared.deck_context,
+        reasoning_effort=settings.select_reasoning_effort or None,
+        player_message=player_message,
+    ), "llm"
+
+
+def build_suggestions(
+    session: Session,
+    deck_id: int,
+    user_intent: str,
+    provider: Any,
+    *,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
+    model: str | None = None,
+    spec_thinking: bool | None = None,
+    select_thinking: bool | None = None,
+    max_queries: int = 6,
+    pool_cap: int = 60,
+    max_picks: int = 10,
+    scryfall: Any | None = None,
+    edhrec: Any | None = None,
+    off_meta: float | None = None,
+    local_store: Any | None = None,
+    local_pool_min: int = 25,
+    player_message: str | None = None,
+    select_backend: str | None = None,
+    jev_client: Any | None = None,
+) -> SuggestionResult:
+    """Run the full retrieval pipeline for a deck and intent.
+
+    When ``conversation_id`` is given, the selection is turned into pending
+    proposals (stage 5); without it, the result carries the raw selection for
+    preview and ``proposals`` stays empty. ``scryfall``/``edhrec`` are injectable
+    for testing.
+
+    Model/thinking policy — the two LLM stages are NOT symmetric:
+      * Stage 1 (query planning) is a mechanical intent->Scryfall-query mapping;
+        the harness enforces legality regardless of what it writes. So it runs
+        FAST model, thinking OFF.
+      * Stage 4 (selection) is where deck-aware FIT judgment happens — the one
+        thing Python can't do. It gets the commander + current deck as context
+        (see _render_deck_context) and runs with thinking ON so it can actually
+        reason about combos/synergy, still on the FAST model to stay responsive.
+    Defaults trigger this policy; pass ``model``/``spec_thinking``/
+    ``select_thinking`` to override (e.g. tests pin a fake provider).
+    """
+    if model is None:
+        from app.llm.factory import get_fast_model
+        model = get_fast_model()
+    if spec_thinking is None:
+        spec_thinking = False
+    if select_thinking is None:
+        select_thinking = True
+    if select_backend is None:
+        from app.config import settings
+        select_backend = settings.select_backend or "llm"
+
+    timings: dict[str, float] = {}
+    overall_start = time.monotonic()
+    logger.info(
+        "pipeline: build_suggestions deck=%s intent=%r model=%s",
+        deck_id, user_intent[:80], model,
+    )
+
+    prepared = prepare_pool(
+        session, deck_id, user_intent, provider,
+        model=model, spec_thinking=spec_thinking, max_queries=max_queries,
+        pool_cap=pool_cap, scryfall=scryfall, edhrec=edhrec, off_meta=off_meta,
+        local_store=local_store, local_pool_min=local_pool_min, timings=timings,
+    )
+    spec, gathered, shaped = prepared.spec, prepared.gathered, prepared.shaped
+    local_pool, pool = prepared.local_pool, prepared.pool
+
+    with _timed("stage4_select", timings):
+        selection, backend_used = run_selection(
+            prepared, user_intent, provider,
+            backend=select_backend, model=model, select_thinking=select_thinking,
+            max_picks=max_picks, player_message=player_message, jev_client=jev_client,
         )
 
     debug = {
@@ -430,7 +521,8 @@ def build_suggestions(
         "intent_summary": spec.intent_summary,
         "broadened": gathered.broadened,
         "local_pool": len(local_pool),
-        "stage1_skipped": stage1_skipped,
+        "stage1_skipped": prepared.stage1_skipped,
+        "select_backend": backend_used,
         "pool_size": len(pool),
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),

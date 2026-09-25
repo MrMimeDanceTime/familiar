@@ -265,3 +265,33 @@ Colour identity is applied there. When that pool reaches `local_pool_min`
 entirely; EDHREC's recommendations still lead the pool. A thin local pool
 falls back to stage 1 as before. `debug.local_pool` and `debug.stage1_skipped`
 say which path a suggestion took.
+
+## Stage 4 on Jev (proof of concept, September 2026)
+
+`SELECT_BACKEND=jev` swaps the thinking selection call for
+[TypeSafe's Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+a System One model: it takes a state plus typed questions and returns
+calibrated answers (scores, yes/no probabilities, choices) in one parallel pass
+of 70-500ms. It cannot write text. Code is in `pipeline/jev.py`.
+
+| | LLM backend | Jev backend |
+|---|---|---|
+| What judges fit | one thinking call over the rendered pool | two questions per legal card: a 0-4 fit `score` against the deck, and a `noul` for "answers what the player asked" |
+| Ranking | the model's own ordering | Python: `fit/4 × (0.3 + 0.7 × asked)`, blended 75/25 with the brain map total |
+| Reasons | the model's sentence | built from facts: the fit level, combo partners, EDHREC play rate |
+| Cuts, summary | yes | none |
+| Latency | ~40s at `low` effort | sub-second |
+| Cost per suggestion | ~10k output tokens | ~15k input tokens, ~$0.0006 |
+
+Jev is shown each card's rules text and combo fact but **not** the EDHREC
+numbers or brain map score, so its judgment stays an independent signal that
+the blend and the comparison tool can measure against the other two.
+
+Any Jev failure (no key, HTTP error, a missing answer) logs a warning and falls
+back to the LLM; `debug.select_backend` records which one answered. Illegal
+cards are never sent, so they cannot be picked.
+
+`tools/jev_compare.py` runs stages 1-3 once per case and both backends on the
+identical pool, printing both pick lists, their overlap, and where the LLM's
+picks land in Jev's full ranking. That comparison decides whether this
+graduates from a proof of concept.

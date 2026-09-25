@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # 93s for output that graded the same. Set empty to restore provider default.
     select_reasoning_effort: str = "low"
 
+    # Which backend runs stage 4: "llm" (the thinking selection call above) or
+    # "jev" (TypeSafe's System One model scores every candidate in under a
+    # second; see app/pipeline/jev.py). "jev" falls back to "llm" on any error,
+    # including a missing key, so switching it on cannot break suggestions.
+    select_backend: str = "llm"
+    typesafe_api_key: str = ""
+    typesafe_model: str = "jev-latest"
+
     # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
     # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a
     # slow thinking-mode pipeline call). Cap it so a stalled request fails fast
