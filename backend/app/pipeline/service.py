@@ -414,6 +414,7 @@ def run_selection(
     player_message: str | None = None,
     jev_client: Any | None = None,
     jev_mode: str | None = None,
+    jev_samples: int | None = None,
 ) -> tuple[selection_stage.Selection, str]:
     """Run stage 4 on the requested backend. Returns (selection, backend used):
     a failed Jev call logs and falls back to the LLM rather than failing the
@@ -429,7 +430,8 @@ def run_selection(
                 client, prepared.shaped, user_intent,
                 max_picks=max_picks, deck_context=prepared.deck_context,
                 player_message=player_message,
-                mode=jev_mode or settings.jev_mode or "informed",
+                mode=jev_mode or settings.jev_mode or "verdict",
+                samples=jev_samples or settings.jev_samples or 1,
             ), "jev"
         except Exception as exc:  # noqa: BLE001 - the LLM path is the fallback
             logger.warning("jev selection failed, falling back to llm: %s", exc)

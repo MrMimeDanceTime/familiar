@@ -272,52 +272,75 @@ say which path a suggestion took.
 [TypeSafe's Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
 a System One model: it takes a state plus typed questions and returns
 calibrated answers (scores, yes/no probabilities, choices) in one parallel pass.
-It cannot write text. Code is in `pipeline/jev.py`. Any Jev failure (no key,
-HTTP error, a missing answer) logs a warning and falls back to the LLM;
-`debug.select_backend` records which one answered. Illegal cards are never
-sent, so they cannot be picked.
+It cannot write text, so Jev ranks the legal pool and Python takes the top N
+and writes each reason from facts (Jev's verdict, combo partners, EDHREC play
+rate). There are no cuts and no summary. Code is in `pipeline/jev.py`.
 
-Per legal card, Jev answers a 0-4 `score`, a `noul` for "is an answer to the
-request" (the request is written into the question, since left in the state
-alone Burnished Hart scored 0.49 for "more ramp"), and in informed mode a
-diagnostic `noul` for "repeats a job the deck already covers". Reasons are
-built from facts, never generated. There are no cuts and no summary.
+Any Jev failure (no key, a 5xx or 429 that survives three retries, a missing
+answer) logs a warning and falls back to the LLM; `debug.select_backend`
+records which one answered. Illegal cards are never sent, so they cannot be
+picked.
 
-`JEV_MODE` picks what Jev sees:
+### Modes
 
-| Mode | Jev sees | Rank key |
+| `JEV_MODE` | What Jev is asked, per suggestion | Rank key |
 |---|---|---|
-| `blind` | rules text, combo fact | fit, gated by the ask, blended 75/25 with the brain map |
-| `informed` (default) | the above plus role tags, EDHREC play rate and synergy, brain map layer scores | Jev's add verdict, gated by the ask, no blend |
+| `blind` | per card, a 0-4 fit score from rules text only | fit gated by "answers the request", blended 75/25 with the brain map |
+| `informed` | per card, a 0-4 add verdict over rules text plus evidence | the verdict gated by the ask |
+| `verdict` (default) | per card, one yes/no: "should be added in answer to this request", over rules text plus evidence | the probability |
+| `choice` | one question across the whole pool: "the single best addition" | each card's probability |
+| `ensemble` | verdict and choice | mean rank position in the two |
 
-### Measured, 2026-09-25
+"Evidence" is the card's role tags, EDHREC play rate and synergy, and the
+brain map's layer scores. The request is written into each question: left in
+the state alone, Burnished Hart scored 0.49 for "more ramp".
 
-`tools/jev_compare.py` on the five default cases (Korlash, Silverquill,
-Torbran, Massacre Girl, Azula), all selectors on identical pools:
+`JEV_SAMPLES` (default 3) averages repeated calls. Jev is not deterministic:
+identical requests swap about one card in ten. Verdict repeats the request;
+choice reorders the options, because a single ordering is position-biased.
+Samples run concurrently, so they cost tokens rather than time.
 
-| | LLM (`low` effort) | Jev blind | Jev informed |
-|---|---|---|---|
-| Stage-4 latency | 8-17s | median 0.53s | median 0.44s |
-| Mean overlap with LLM picks (of 10) | | 4.8 | 5.6 |
-| Input per suggestion | | 17-24k tokens, ~$0.001 | 30-41k tokens, ~$0.0017 |
+### How it was measured
 
-- **Informed Jev barely uses the evidence.** Its scores correlate 0.84-0.92
-  with its own blind scores on every deck, and its rank correlation with the
-  brain map rises only from about 0.0 to 0.13 on average. It is still mostly a
-  rules-text reader; the numbers nudge it rather than drive it.
-- **Confidence is low throughout** (mean 0.30-0.54 per deck on the 5-level
-  rubric), so single-card scores are spread across adjacent levels.
-- **Informed made better calls where the rules text alone misleads.** For
-  "cheap interaction" on Azula, blind picked Etali, Primal Storm and Ashling
-  (not interaction) where informed picked Mana Drain and Force of Negation.
-  For Torbran it found Sulfuric and Roiling Vortex, which the LLM also picked.
-  It also made misses a reader of rules text alone would not, such as Persist
-  for a wither deck.
-- On "more ramp" all three agree 9/10. Divergence is largest on synergy-shaped
-  requests (Silverquill tokens: 4/10), which is where per-card judgment in
-  isolation is weakest.
+`tools/jev_eval.py` scores selectors against ground truth from the player's
+own decks. For each deck and a role it fills (ramp, removal, draw), up to six
+of the deck's cards in that role are removed, along with this deck's proposal
+history for them so the brain map's personal layer cannot leak the answer, and
+the pipeline is asked for "more <role>". A selector is accurate to the degree
+it puts the player's own cards back on top. Consistency is top-10 overlap after
+shuffling the pool, and (Jev) after repeating the identical call.
 
-Open questions for the next round: a `choice` question across the pool, so Jev
-compares candidates against each other instead of rating each alone; a single
-calibrated `noul` ("should be added") instead of the 5-level rubric; and
-whether the chat model's endorse-or-drop pass catches misses like Persist.
+Results over 22 cases on 11 decks, 2026-09-25. Held-out cards that reached the
+pool at all: 58%. Chance recall@10 on these pools: 19%. The LLM row comes from
+a separate run over the same 22 cases, where Jev verdict also scored 73%.
+
+| Selector | Recall@10 | Mean rank percentile (0 = top) | Stable under shuffle (of 10) | Same call repeated (of 10) | Seconds | Win-tie-loss vs EDHREC order |
+|---|---|---|---|---|---|---|
+| Brain map order | 51% | 0.29 | | | | 2-14-6 |
+| EDHREC order | 56% | 0.28 | | | | |
+| LLM (`low` effort) | 72% | | 7.0 | | 10.0 | |
+| Jev blind | 60% | 0.17 | 9.4 | 9.3 | 0.3 | 5-13-4 |
+| Jev informed | 69% | 0.15 | 9.3 | 9.2 | 0.4 | 9-8-5 |
+| Jev verdict | 73% | 0.15 | 9.3 | 9.3 | 0.3 | 9-11-2 |
+| **Jev verdict ×3** | **73%** | **0.15** | **9.5** | **9.7** | **0.3** | **9-11-2** |
+| Jev choice ×3 | 72% | 0.17 | 7.2 | 9.2 | 0.2 | 7-15-0 |
+| Jev ensemble ×3 | 71% | 0.15 | 8.2 | 9.5 | 0.3 | 7-14-1 |
+
+What it says:
+
+- **Verdict ×3 matches the LLM on accuracy and beats it on consistency**, at
+  about a thirtieth of the latency. Verdict alone scored 73% in two
+  independent runs.
+- **Evidence helps when it is weighed in one calibrated answer.** Blind (rules
+  text only) 60%, informed (evidence, 5-level rubric) 69%, verdict (evidence,
+  one yes/no) 73%. The rubric spread its probability across adjacent levels;
+  the single yes/no did not.
+- **Comparing candidates head to head did not beat judging each alone.**
+  Choice stayed position-sensitive after averaging three orderings, and the
+  ensemble inherited that.
+- **Retrieval is now the ceiling, not selection.** 42% of the player's own
+  cards never reach the pool, so no selector can pick them.
+
+Not yet measured: whether the chat model's endorse-or-drop pass handles
+fact-built reasons as well as the LLM's prose ones. That needs a
+`behaviour_eval.py` replay with `SELECT_BACKEND=jev`.

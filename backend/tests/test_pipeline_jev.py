@@ -31,9 +31,19 @@ class FakeJev:
         self.calls.append({"state": state, "questions": questions})
         answers = {}
         for key, question in questions.items():
+            if question["type"] == "choice":
+                weights = {label: self.verdicts[facts["name"]][0]
+                           for label, facts in question["criteria"].items()}
+                total = sum(weights.values()) or 1.0
+                probs = {label: w / total for label, w in weights.items()}
+                answers[key] = {"type": "choice", "choice": max(probs, key=probs.get),
+                                "confidence": 0.5, "probabilities": probs}
+                continue
             name = question["instructions"]["candidate"]["name"]
             fit, asked = self.verdicts[name]
-            if key.startswith("fit_"):
+            if key.startswith("add_"):
+                answers[key] = {"type": "noul", "noul": fit / 4}
+            elif key.startswith("fit_"):
                 answers[key] = {"type": "score", "score": fit, "confidence": 0.9,
                                 "probabilities": {}}
             else:
@@ -157,3 +167,86 @@ def test_informed_verdict_is_not_blended_with_the_brain_map_again():
     selection = jev.select_jev(client, pool, "x", mode="informed")
     assert selection.picks[0].name == "High"
     assert selection.picks[0].reason.startswith("Reasonable add (Jev verdict 2.1/4")
+
+
+def test_verdict_mode_ranks_on_one_calibrated_probability():
+    pool = [_card("Maybe"), _card("Yes"), _card("No")]
+    client = FakeJev({"Maybe": (2.0, 0.9), "Yes": (3.6, 0.1), "No": (0.4, 0.9)})
+    selection = jev.select_jev(client, pool, "more ramp", mode="verdict")
+    assert [p.name for p in selection.picks] == ["Yes", "Maybe", "No"]
+    question = client.calls[0]["questions"]["add_0"]["instructions"]
+    assert "more ramp" in question["statement"]
+    assert selection.picks[0].reason.startswith("Jev: 90% that it belongs")
+
+
+def test_choice_mode_averages_the_pool_wide_question_over_orderings():
+    pool = [_card("A"), _card("B", legal=False), _card("C"), _card("D")]
+    client = FakeJev({"A": (1.0, 0), "C": (3.0, 0), "D": (2.0, 0)})
+    selection = jev.select_jev(client, pool, "x", mode="choice", max_picks=2, samples=3)
+    assert len(client.calls) == 3
+    orders = {tuple(f["name"] for f in call["questions"]["best"]["criteria"].values())
+              for call in client.calls}
+    assert all(len(order) == 3 for order in orders)
+    assert len(orders) > 1
+    assert [p.name for p in selection.picks] == ["C", "D"]
+    assert selection.picks[1].reason.startswith("Jev ranked it #2 of 3")
+
+
+def test_choice_mode_refuses_a_pool_it_cannot_ask_about_in_one_question():
+    pool = [_card(f"Card {i}") for i in range(300)]
+    with pytest.raises(jev.JevError):
+        jev.build_choice_question(pool, "x")
+
+
+def test_client_retries_transient_errors_then_succeeds(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(jev.time, "sleep", lambda s: None)
+    replies = iter([
+        httpx.Response(503, text="upstream connect error"),
+        httpx.Response(429, headers={"retry-after": "0"}),
+        httpx.Response(200, json={"answers": {"x": {"type": "noul", "noul": 0.5}}}),
+    ])
+    client = jev.JevClient("k", retries=3)
+    client._client = httpx.Client(
+        base_url="https://api.test", transport=httpx.MockTransport(lambda r: next(replies)),
+    )
+    assert client.system_one("s", {"x": {"type": "noul"}})["answers"]["x"]["noul"] == 0.5
+
+
+def test_client_gives_up_after_its_retries():
+    import httpx
+
+    client = jev.JevClient("k", retries=0)
+    client._client = httpx.Client(
+        base_url="https://api.test",
+        transport=httpx.MockTransport(lambda r: httpx.Response(503, text="down")),
+    )
+    with pytest.raises(jev.JevError, match="503"):
+        client.system_one("s", {"x": {"type": "noul"}})
+
+
+def test_verdict_samples_are_averaged():
+    class Wobbly(FakeJev):
+        def __init__(self):
+            super().__init__({"A": (2.0, 0.5), "B": (2.0, 0.5)})
+            self.flip = False
+
+        def system_one(self, state, questions):
+            self.flip = not self.flip
+            self.verdicts = {"A": (3.6, 0.5), "B": (2.0, 0.5)} if self.flip else {"A": (0.0, 0.5), "B": (2.4, 0.5)}
+            return super().system_one(state, questions)
+
+    client = Wobbly()
+    selection = jev.select_jev(client, [_card("A"), _card("B")], "x", mode="verdict", samples=2)
+    ranking = {j["name"]: j["score"] for j in selection.raw["judgments"]}
+    assert ranking["A"] == pytest.approx(0.45)
+    assert ranking["B"] == pytest.approx(0.55)
+
+
+def test_ensemble_averages_verdict_and_choice_rank_positions():
+    pool = [_card("A"), _card("B"), _card("C")]
+    client = FakeJev({"A": (3.0, 0.5), "B": (2.0, 0.5), "C": (1.0, 0.5)})
+    selection = jev.select_jev(client, pool, "x", mode="ensemble", samples=1)
+    assert [p.name for p in selection.picks] == ["A", "B", "C"]
+    assert selection.raw["usage"]["requests"] == 2

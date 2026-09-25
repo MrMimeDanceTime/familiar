@@ -123,7 +123,7 @@ def run_case(session, deck_id: int, intent: str, provider, jev_client, model: st
     for mode in MODES:
         (selection, used), secs = _timed(lambda: service.run_selection(
             prepared, intent, provider, backend="jev", model=model,
-            max_picks=max_picks, jev_client=jev_client, jev_mode=mode,
+            max_picks=max_picks, jev_client=jev_client, jev_mode=mode, jev_samples=1,
         ))
         if used != "jev":
             raise SystemExit(f"Jev {mode} call failed and fell back to the LLM; see the warning above.")

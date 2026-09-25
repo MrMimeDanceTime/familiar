@@ -49,10 +49,12 @@ class Settings(BaseSettings):
     select_backend: str = "llm"
     typesafe_api_key: str = ""
     typesafe_model: str = "jev-latest"
-    # "blind": Jev scores fit from rules text and Python blends in the brain
-    # map. "informed": Jev also sees tags, EDHREC, and the brain map and gives
-    # the final add verdict. See docs/PIPELINE.md.
-    jev_mode: str = "informed"
+    # How Jev judges (blind | informed | verdict | choice | ensemble) and how
+    # many samples it averages. verdict x3 measured best on held-out cards from
+    # the player's own decks: 73% recall@10 against the LLM's 72%, and 9.5 of
+    # its top 10 survive a pool shuffle against the LLM's 7.0. See PIPELINE.md.
+    jev_mode: str = "verdict"
+    jev_samples: int = 3
 
     # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
     # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a
