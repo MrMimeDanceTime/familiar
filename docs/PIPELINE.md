@@ -271,27 +271,53 @@ say which path a suggestion took.
 `SELECT_BACKEND=jev` swaps the thinking selection call for
 [TypeSafe's Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
 a System One model: it takes a state plus typed questions and returns
-calibrated answers (scores, yes/no probabilities, choices) in one parallel pass
-of 70-500ms. It cannot write text. Code is in `pipeline/jev.py`.
+calibrated answers (scores, yes/no probabilities, choices) in one parallel pass.
+It cannot write text. Code is in `pipeline/jev.py`. Any Jev failure (no key,
+HTTP error, a missing answer) logs a warning and falls back to the LLM;
+`debug.select_backend` records which one answered. Illegal cards are never
+sent, so they cannot be picked.
 
-| | LLM backend | Jev backend |
+Per legal card, Jev answers a 0-4 `score`, a `noul` for "is an answer to the
+request" (the request is written into the question, since left in the state
+alone Burnished Hart scored 0.49 for "more ramp"), and in informed mode a
+diagnostic `noul` for "repeats a job the deck already covers". Reasons are
+built from facts, never generated. There are no cuts and no summary.
+
+`JEV_MODE` picks what Jev sees:
+
+| Mode | Jev sees | Rank key |
 |---|---|---|
-| What judges fit | one thinking call over the rendered pool | two questions per legal card: a 0-4 fit `score` against the deck, and a `noul` for "answers what the player asked" |
-| Ranking | the model's own ordering | Python: `fit/4 × (0.3 + 0.7 × asked)`, blended 75/25 with the brain map total |
-| Reasons | the model's sentence | built from facts: the fit level, combo partners, EDHREC play rate |
-| Cuts, summary | yes | none |
-| Latency | ~40s at `low` effort | sub-second |
-| Cost per suggestion | ~10k output tokens | ~15k input tokens, ~$0.0006 |
+| `blind` | rules text, combo fact | fit, gated by the ask, blended 75/25 with the brain map |
+| `informed` (default) | the above plus role tags, EDHREC play rate and synergy, brain map layer scores | Jev's add verdict, gated by the ask, no blend |
 
-Jev is shown each card's rules text and combo fact but **not** the EDHREC
-numbers or brain map score, so its judgment stays an independent signal that
-the blend and the comparison tool can measure against the other two.
+### Measured, 2026-09-25
 
-Any Jev failure (no key, HTTP error, a missing answer) logs a warning and falls
-back to the LLM; `debug.select_backend` records which one answered. Illegal
-cards are never sent, so they cannot be picked.
+`tools/jev_compare.py` on the five default cases (Korlash, Silverquill,
+Torbran, Massacre Girl, Azula), all selectors on identical pools:
 
-`tools/jev_compare.py` runs stages 1-3 once per case and both backends on the
-identical pool, printing both pick lists, their overlap, and where the LLM's
-picks land in Jev's full ranking. That comparison decides whether this
-graduates from a proof of concept.
+| | LLM (`low` effort) | Jev blind | Jev informed |
+|---|---|---|---|
+| Stage-4 latency | 8-17s | median 0.53s | median 0.44s |
+| Mean overlap with LLM picks (of 10) | | 4.8 | 5.6 |
+| Input per suggestion | | 17-24k tokens, ~$0.001 | 30-41k tokens, ~$0.0017 |
+
+- **Informed Jev barely uses the evidence.** Its scores correlate 0.84-0.92
+  with its own blind scores on every deck, and its rank correlation with the
+  brain map rises only from about 0.0 to 0.13 on average. It is still mostly a
+  rules-text reader; the numbers nudge it rather than drive it.
+- **Confidence is low throughout** (mean 0.30-0.54 per deck on the 5-level
+  rubric), so single-card scores are spread across adjacent levels.
+- **Informed made better calls where the rules text alone misleads.** For
+  "cheap interaction" on Azula, blind picked Etali, Primal Storm and Ashling
+  (not interaction) where informed picked Mana Drain and Force of Negation.
+  For Torbran it found Sulfuric and Roiling Vortex, which the LLM also picked.
+  It also made misses a reader of rules text alone would not, such as Persist
+  for a wither deck.
+- On "more ramp" all three agree 9/10. Divergence is largest on synergy-shaped
+  requests (Silverquill tokens: 4/10), which is where per-card judgment in
+  isolation is weakest.
+
+Open questions for the next round: a `choice` question across the pool, so Jev
+compares candidates against each other instead of rating each alone; a single
+calibrated `noul` ("should be added") instead of the 5-level rubric; and
+whether the chat model's endorse-or-drop pass catches misses like Persist.

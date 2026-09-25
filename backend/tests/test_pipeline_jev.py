@@ -128,3 +128,32 @@ def test_run_selection_falls_back_to_the_llm_when_jev_fails():
     )
     assert used == "llm"
     assert selection.summary == "llm"
+
+
+def test_informed_mode_shows_the_evidence_to_the_verdict_only():
+    card = _card("Piece", rate=0.42, brainmap={"total": 0.7, "explain": "mechanical 0.70"})
+    card.fine_roles = {"ramp"}
+    questions = jev.build_questions([card], "more ramp", mode="informed")
+    verdict = questions["fit_0"]["instructions"]["candidate"]
+    assert verdict["role_tags"] == ["ramp"]
+    assert verdict["played_in_share_of_decks_with_this_commander"] == "42%"
+    assert verdict["brain_map_fit"]["total_0_to_1"] == 0.7
+    assert questions["fit_0"]["criteria"] == jev.VERDICT_LEVELS
+    for kind in ("ask_0", "dup_0"):
+        assert "brain_map_fit" not in questions[kind]["instructions"]["candidate"]
+    assert "more ramp" in questions["ask_0"]["instructions"]["statement"]
+
+
+def test_blind_mode_withholds_the_evidence():
+    card = _card("Piece", rate=0.42, brainmap={"total": 0.7})
+    questions = jev.build_questions([card], "x", mode="blind")
+    assert "brain_map_fit" not in questions["fit_0"]["instructions"]["candidate"]
+    assert "dup_0" not in questions
+
+
+def test_informed_verdict_is_not_blended_with_the_brain_map_again():
+    pool = [_card("Low", brainmap={"total": 1.0}), _card("High", brainmap={"total": 0.0})]
+    client = FakeJev({"Low": (2.0, 0.5), "High": (2.1, 0.5)})
+    selection = jev.select_jev(client, pool, "x", mode="informed")
+    assert selection.picks[0].name == "High"
+    assert selection.picks[0].reason.startswith("Reasonable add (Jev verdict 2.1/4")

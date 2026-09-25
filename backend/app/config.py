@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     select_backend: str = "llm"
     typesafe_api_key: str = ""
     typesafe_model: str = "jev-latest"
+    # "blind": Jev scores fit from rules text and Python blends in the brain
+    # map. "informed": Jev also sees tags, EDHREC, and the brain map and gives
+    # the final add verdict. See docs/PIPELINE.md.
+    jev_mode: str = "informed"
 
     # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
     # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a
