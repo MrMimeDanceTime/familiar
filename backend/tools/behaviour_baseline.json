@@ -1,0 +1,17 @@
+{
+  "saved_at": "2026-09-25T23:35:17+00:00",
+  "summary": {
+    "turns": 13,
+    "refusals_per_turn": 0.0,
+    "errors_per_turn": 0.077,
+    "calls_per_turn": 1.62,
+    "deck_reads_per_turn": 0.38,
+    "role_batch_via_pipeline_rate": 1.0,
+    "plan_set_before_batch_rate": 1.0,
+    "mean_reply_words": 298.4,
+    "turns_with_unbracketed_names": 6,
+    "ungrounded_mentions_per_turn": 6.08,
+    "prompt_tokens": 751204,
+    "completion_tokens": 62980
+  }
+}

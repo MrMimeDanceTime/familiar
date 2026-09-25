@@ -266,81 +266,121 @@ entirely; EDHREC's recommendations still lead the pool. A thin local pool
 falls back to stage 1 as before. `debug.local_pool` and `debug.stage1_skipped`
 say which path a suggestion took.
 
-## Stage 4 on Jev (proof of concept, September 2026)
+## Stage 4 on Jev (September 2026)
 
 `SELECT_BACKEND=jev` swaps the thinking selection call for
 [TypeSafe's Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
 a System One model: it takes a state plus typed questions and returns
 calibrated answers (scores, yes/no probabilities, choices) in one parallel pass.
-It cannot write text, so Jev ranks the legal pool and Python takes the top N
-and writes each reason from facts (Jev's verdict, combo partners, EDHREC play
-rate). There are no cuts and no summary. Code is in `pipeline/jev.py`.
+Code is in `pipeline/jev.py` (ranking) and `pipeline/explain.py` (prose).
+
+The split:
+
+1. **Jev ranks.** Per legal card, one yes/no: "should be one of the cards added
+   to this deck in answer to the request", over the card's rules text plus the
+   pipeline's evidence (role tags, EDHREC play rate and synergy, brain map
+   layer scores). The probability is the rank. Three samples are averaged,
+   because identical requests swap about one card in ten.
+2. **Python takes the top 10** and builds a fact reason for each.
+3. **DeepSeek explains.** One call with thinking off rewrites the reasons,
+   adds a summary and cuts from the current deck, with every card name in
+   `[[brackets]]`. It cannot add, drop, or reorder picks. It adds about 6.5s.
 
 Any Jev failure (no key, a 5xx or 429 that survives three retries, a missing
-answer) logs a warning and falls back to the LLM; `debug.select_backend`
-records which one answered. Illegal cards are never sent, so they cannot be
-picked.
+answer) falls back to the LLM selector; an explainer failure keeps the fact
+reasons. `debug.select_backend` records which selector answered. Illegal cards
+are never sent to Jev, so they cannot be picked.
 
-### Modes
-
-| `JEV_MODE` | What Jev is asked, per suggestion | Rank key |
-|---|---|---|
-| `blind` | per card, a 0-4 fit score from rules text only | fit gated by "answers the request", blended 75/25 with the brain map |
-| `informed` | per card, a 0-4 add verdict over rules text plus evidence | the verdict gated by the ask |
-| `verdict` (default) | per card, one yes/no: "should be added in answer to this request", over rules text plus evidence | the probability |
-| `choice` | one question across the whole pool: "the single best addition" | each card's probability |
-| `ensemble` | verdict and choice | mean rank position in the two |
-
-"Evidence" is the card's role tags, EDHREC play rate and synergy, and the
-brain map's layer scores. The request is written into each question: left in
-the state alone, Burnished Hart scored 0.49 for "more ramp".
-
-`JEV_SAMPLES` (default 3) averages repeated calls. Jev is not deterministic:
-identical requests swap about one card in ten. Verdict repeats the request;
-choice reorders the options, because a single ordering is position-biased.
-Samples run concurrently, so they cost tokens rather than time.
+Settings (`.env.example`): `JEV_MODE` (default `verdict`), `JEV_SAMPLES` (3),
+`JEV_EXPLAIN` (true), `JEV_MAX_SIMILAR` and `JEV_MIN_PROBABILITY` (both 0, off),
+and `TYPESAFE_MODEL` pinned to `jev-1.13.0`. `jev-latest` and `jev-preview`
+both resolved to 1.13.0 on 2026-09-25; the pin keeps a measured baseline from
+moving silently.
 
 ### How it was measured
 
 `tools/jev_eval.py` scores selectors against ground truth from the player's
-own decks. For each deck and a role it fills (ramp, removal, draw), up to six
-of the deck's cards in that role are removed, along with this deck's proposal
-history for them so the brain map's personal layer cannot leak the answer, and
-the pipeline is asked for "more <role>". A selector is accurate to the degree
-it puts the player's own cards back on top. Consistency is top-10 overlap after
-shuffling the pool, and (Jev) after repeating the identical call.
+own decks. For each deck, its two best-filled roles (ramp, removal, draw) and
+its theme cards (those filling no generic role) each become a case: up to six
+of those cards are removed, along with this deck's proposal history for them so
+the brain map's personal layer cannot leak the answer, and the pipeline is
+asked for "more <role>" or for cards that fit the commander and the deck's
+plan. 33 cases across 11 decks.
 
-Results over 22 cases on 11 decks, 2026-09-25. Held-out cards that reached the
-pool at all: 58%. Chance recall@10 on these pools: 19%. The LLM row comes from
-a separate run over the same 22 cases, where Jev verdict also scored 73%.
+- **End to end**: of every card held out, the share returned in the batch.
+  This is the number to trust.
+- **Recall@10**: the same, only over held-out cards that reached the pool.
+- **Stable**: batch overlap (of 10) after shuffling the pool.
 
-| Selector | Recall@10 | Mean rank percentile (0 = top) | Stable under shuffle (of 10) | Same call repeated (of 10) | Seconds | Win-tie-loss vs EDHREC order |
+The run is compared against `tools/jev_eval_baseline.json`; `--save` moves it.
+
+### Results, 2026-09-25
+
+Default depth (80 cards per role from the local index, pool cap 60):
+
+| Selector | Role end to end | Role recall@10 | Theme end to end | Theme recall@10 | Stable | Seconds |
 |---|---|---|---|---|---|---|
-| Brain map order | 51% | 0.29 | | | | 2-14-6 |
-| EDHREC order | 56% | 0.28 | | | | |
-| LLM (`low` effort) | 72% | | 7.0 | | 10.0 | |
-| Jev blind | 60% | 0.17 | 9.4 | 9.3 | 0.3 | 5-13-4 |
-| Jev informed | 69% | 0.15 | 9.3 | 9.2 | 0.4 | 9-8-5 |
-| Jev verdict | 73% | 0.15 | 9.3 | 9.3 | 0.3 | 9-11-2 |
-| **Jev verdict ×3** | **73%** | **0.15** | **9.5** | **9.7** | **0.3** | **9-11-2** |
-| Jev choice ×3 | 72% | 0.17 | 7.2 | 9.2 | 0.2 | 7-15-0 |
-| Jev ensemble ×3 | 71% | 0.15 | 8.2 | 9.5 | 0.3 | 7-14-1 |
+| Brain map order | 26% | 50% | 27% | 55% | | |
+| EDHREC order | 31% | 55% | 37% | 69% | | |
+| LLM (`low` effort) | 35% | 63% | 38% | 76% | 6.7 | 9.1 |
+| **Jev verdict ×3** | **42%** | **73%** | **35%** | **70%** | **9.5** | **0.4** |
 
-What it says:
+Across three runs on this code Jev verdict ×3 held 72-73% role recall@10 and 42% role end to
+end; the LLM ranged 63-72%. On theme requests Jev, the LLM, and plain EDHREC
+order are within noise of each other.
 
-- **Verdict ×3 matches the LLM on accuracy and beats it on consistency**, at
-  about a thirtieth of the latency. Verdict alone scored 73% in two
-  independent runs.
-- **Evidence helps when it is weighed in one calibrated answer.** Blind (rules
-  text only) 60%, informed (evidence, 5-level rubric) 69%, verdict (evidence,
-  one yes/no) 73%. The rubric spread its probability across adjacent levels;
-  the single yes/no did not.
-- **Comparing candidates head to head did not beat judging each alone.**
-  Choice stayed position-sensitive after averaging three orderings, and the
-  ensemble inherited that.
-- **Retrieval is now the ceiling, not selection.** 42% of the player's own
-  cards never reach the pool, so no selector can pick them.
+Earlier rounds, same harness, role cases:
 
-Not yet measured: whether the chat model's endorse-or-drop pass handles
-fact-built reasons as well as the LLM's prose ones. That needs a
-`behaviour_eval.py` replay with `SELECT_BACKEND=jev`.
+| Mode | Recall@10 | Stable |
+|---|---|---|
+| blind (0-4 fit, rules text only) | 60% | 9.4 |
+| informed (0-4 verdict, with evidence) | 69% | 9.3 |
+| verdict (one yes/no, with evidence) | 73% | 9.3 |
+| verdict ×3 | 73% | 9.5 |
+| choice ×3 (one question across the pool) | 72% | 7.2 |
+| ensemble of verdict and choice | 71% | 8.2 |
+
+Evidence helps when it is weighed into one calibrated answer; judging
+candidates head to head stayed position-sensitive even averaged over three
+orderings.
+
+### What did not help
+
+- **Batch shaping.** Capping interchangeable cards (same type and roles) at 2
+  or 3 per batch changed nothing measurable. A 0.5 probability floor halved
+  the batch and cut role recall to 54%. Both remain settings, off.
+- **A deeper pool.** 200 cards per role and a 150-card cap raised the share of
+  held-out cards reaching the pool (58% to 70%) but diluted the top 10: role
+  end to end fell from 42% to 36%.
+- **Filtering the role query by colour identity before its limit.**
+  `cards_matching_slug_rules` takes the top 80 cards across every colour and
+  `local_retrieval` filters identity afterwards, so a mono-black deck gets only
+  the black share of the 80. Filtering in SQL looks like the obvious fix and
+  measured worse: role end to end 38% against 42% (the unfixed code scored 42%
+  in two runs). An all-on-colour 80 crowds the capped pool with generic
+  staples that the off-colour share used to leave room for. Not applied.
+
+### Where the ceiling is
+
+About 40% of held-out role cards and half the theme cards never reach the
+pool. For role requests they rank past 80 by EDHREC popularity (a mono-black
+deck's Greed sits 91st among 637 black draw cards). Deeper retrieval brings
+them in but costs more in dilution than it gains. The next lever is ranking
+the deeper candidates before the cap, not retrieving more of them.
+
+### Behaviour eval
+
+`tools/behaviour_eval.py replay` over 13 stored turns, both selectors, run the
+same hour. Its records were fixed to score each turn on its own tool calls:
+they had been collecting the whole replay conversation, so one refusal in
+turn 1 counted again in turns 2 and 3.
+
+| Per turn | LLM | Jev |
+|---|---|---|
+| Hand-pick refusals | 0 | 0 |
+| Tool errors | 0.08 | 0 |
+| Role batches through the pipeline | 100% | 100% |
+| Turns with unbracketed card names | 6 | 2 |
+| Card mentions without card text shown | 6.1 | 7.0 |
+
+The LLM run is saved as `tools/behaviour_baseline.json`, the first baseline.

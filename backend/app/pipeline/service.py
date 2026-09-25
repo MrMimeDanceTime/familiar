@@ -319,6 +319,7 @@ def prepare_pool(
     off_meta: float | None = None,
     local_store: Any | None = None,
     local_pool_min: int = 25,
+    local_role_limit: int = 80,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -354,6 +355,7 @@ def prepare_pool(
         try:
             local_pool = local_retrieval.retrieve(
                 user_intent, identity, store=local_store or card_store,
+                per_role_limit=local_role_limit,
             )
         except Exception as exc:  # noqa: BLE001 - fall back to the model
             logger.warning("local retrieval failed, falling back to query planning: %s", exc)
@@ -415,6 +417,7 @@ def run_selection(
     jev_client: Any | None = None,
     jev_mode: str | None = None,
     jev_samples: int | None = None,
+    jev_explain: bool | None = None,
 ) -> tuple[selection_stage.Selection, str]:
     """Run stage 4 on the requested backend. Returns (selection, backend used):
     a failed Jev call logs and falls back to the LLM rather than failing the
@@ -424,17 +427,35 @@ def run_selection(
     if backend == "jev":
         from app.pipeline import jev
 
+        selection = None
         try:
             client = jev_client or jev.get_client()
-            return jev.select_jev(
+            selection = jev.select_jev(
                 client, prepared.shaped, user_intent,
                 max_picks=max_picks, deck_context=prepared.deck_context,
                 player_message=player_message,
                 mode=jev_mode or settings.jev_mode or "verdict",
                 samples=jev_samples or settings.jev_samples or 1,
-            ), "jev"
+                max_similar=settings.jev_max_similar or None,
+                min_probability=settings.jev_min_probability or None,
+            )
         except Exception as exc:  # noqa: BLE001 - the LLM path is the fallback
             logger.warning("jev selection failed, falling back to llm: %s", exc)
+        if selection is not None:
+            explain_picks = settings.jev_explain if jev_explain is None else jev_explain
+            if explain_picks:
+                from app.pipeline import explain
+
+                start = time.monotonic()
+                try:
+                    selection = explain.explain(
+                        provider, selection, prepared.shaped, user_intent, model=model,
+                        deck_context=prepared.deck_context, player_message=player_message,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fact-built reasons still stand
+                    logger.warning("explaining jev picks failed, keeping fact reasons: %s", exc)
+                selection.raw["explain_seconds"] = round(time.monotonic() - start, 2)
+            return selection, "jev"
 
     return selection_stage.select(
         provider, prepared.shaped, user_intent,

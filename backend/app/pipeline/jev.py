@@ -48,7 +48,7 @@ from app.pipeline.shaping import ShapedCard
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.typesafe.ai"
-DEFAULT_MODEL = "jev-latest"
+DEFAULT_MODEL = "jev-1.13.0"
 MODES = ("blind", "informed", "verdict", "choice", "ensemble")
 
 FIT_LEVELS = [
@@ -518,6 +518,8 @@ def select_jev(
     mode: str = "blind",
     brainmap_weight: float | None = None,
     samples: int = 1,
+    max_similar: int | None = None,
+    min_probability: float | None = None,
 ) -> Selection:
     """Stage 4 on Jev. Same contract as ``selection.select``: picks are legal
     pool cards only. Illegal cards are never sent, so they cannot be picked.
@@ -541,10 +543,16 @@ def select_jev(
         judgment.rank = _rank_key(judgment, card, mode, brainmap_weight)
 
     order = sorted(range(len(legal)), key=lambda i: judgments[i].rank, reverse=True)
+    chosen = shape_batch(
+        order, legal, judgments, max_picks,
+        max_similar=max_similar,
+        min_probability=min_probability if mode == "verdict" else None,
+    )
+    position_of = {index: position for position, index in enumerate(order)}
     picks = [
         Pick(name=legal[i].name,
-             reason=reason_for(judgments[i], legal[i], mode, position + 1, len(legal)))
-        for position, i in enumerate(order[:max_picks])
+             reason=reason_for(judgments[i], legal[i], mode, position_of[i] + 1, len(legal)))
+        for i in chosen
     ]
 
     def _round(value: float | None, places: int) -> float | None:
@@ -569,6 +577,44 @@ def select_jev(
             ],
         },
     )
+
+
+_TYPE_ORDER = ("Land", "Creature", "Planeswalker", "Battle", "Artifact",
+               "Enchantment", "Instant", "Sorcery")
+
+
+def signature(card: ShapedCard) -> tuple[str, frozenset[str]]:
+    """What makes two candidates interchangeable: the same primary card type
+    and the same functional roles. Four fetchlands share one; a fetchland and
+    Cultivate do not."""
+    type_line = card.type_line or ""
+    primary = next((t for t in _TYPE_ORDER if t in type_line), type_line)
+    return primary, frozenset(card.fine_roles)
+
+
+def shape_batch(
+    order: list[int], cards: list[ShapedCard], judgments: list[Judgment], max_picks: int,
+    *, max_similar: int | None = None, min_probability: float | None = None,
+) -> list[int]:
+    """Walk the ranking and take picks, skipping a card once ``max_similar``
+    interchangeable cards are already taken, and stopping at the first card
+    below ``min_probability``. Ranking judges cards one at a time and cannot
+    see that the batch is already four fetchlands; this is where the batch as
+    a whole gets a say. A batch shorter than ``max_picks`` is the correct
+    output when few candidates clear the bar."""
+    chosen: list[int] = []
+    counts: dict[tuple[str, frozenset[str]], int] = {}
+    for index in order:
+        if len(chosen) >= max_picks:
+            break
+        if min_probability is not None and judgments[index].score < min_probability:
+            break
+        sig = signature(cards[index])
+        if max_similar is not None and sig[1] and counts.get(sig, 0) >= max_similar:
+            continue
+        counts[sig] = counts.get(sig, 0) + 1
+        chosen.append(index)
+    return chosen
 
 
 def get_client() -> JevClient:

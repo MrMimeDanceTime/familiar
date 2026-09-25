@@ -250,3 +250,31 @@ def test_ensemble_averages_verdict_and_choice_rank_positions():
     selection = jev.select_jev(client, pool, "x", mode="ensemble", samples=1)
     assert [p.name for p in selection.picks] == ["A", "B", "C"]
     assert selection.raw["usage"]["requests"] == 2
+
+
+def _land(name, roles=("fixing",)):
+    card = _card(name)
+    card.type_line = "Land"
+    card.fine_roles = set(roles)
+    return card
+
+
+def test_batch_caps_interchangeable_cards():
+    pool = [_land("Fetch A"), _land("Fetch B"), _land("Fetch C"), _card("Rock")]
+    client = FakeJev({"Fetch A": (4.0, 1), "Fetch B": (3.9, 1), "Fetch C": (3.8, 1), "Rock": (1.0, 1)})
+    selection = jev.select_jev(client, pool, "ramp", mode="verdict", max_similar=2)
+    assert [p.name for p in selection.picks] == ["Fetch A", "Fetch B", "Rock"]
+
+
+def test_roleless_cards_are_never_capped_as_similar():
+    pool = [_card("A"), _card("B"), _card("C")]
+    client = FakeJev({"A": (3.0, 1), "B": (2.0, 1), "C": (1.0, 1)})
+    selection = jev.select_jev(client, pool, "x", mode="verdict", max_similar=1)
+    assert len(selection.picks) == 3
+
+
+def test_verdict_threshold_returns_a_short_batch():
+    pool = [_card("Sure"), _card("Maybe"), _card("Nope")]
+    client = FakeJev({"Sure": (3.6, 1), "Maybe": (2.4, 1), "Nope": (1.0, 1)})
+    selection = jev.select_jev(client, pool, "x", mode="verdict", min_probability=0.5)
+    assert [p.name for p in selection.picks] == ["Sure", "Maybe"]

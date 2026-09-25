@@ -4,12 +4,14 @@ from the player's own decks.
 Accuracy (leave-out recovery). For a deck and a role it fills (ramp, removal,
 draw...), up to six of the deck's cards in that role are removed, along with
 this deck's proposal history for them so the brain map's personal layer cannot
-leak the answer. The pipeline is then asked for "more <role>". A selector is
-accurate to the degree it puts the removed cards, the ones the player actually
-chose, back on top. Reported per selector:
+leak the answer. The pipeline is then asked for "more <role>". Synergy cases do
+the same with cards that fill no generic role (the theme pieces), asking for
+"cards that synergize with my commander and what the deck is doing". A
+selector is accurate to the degree it puts the removed cards, the ones the
+player actually chose, back in its batch. Reported per selector:
 
   * recall@10 - share of the removed cards that made the pool which the
-    selector put in its top 10;
+    selector returned in its batch (at most 10);
   * percentile - mean position of those cards in the selector's full ranking,
     0.0 top, 0.5 no better than chance (full-ranking selectors only).
 
@@ -18,11 +20,20 @@ counts as a miss. That is the point: it measures fit to THIS player's decks.
 
 Consistency. Every selector runs again on the same pool in shuffled order
 (stability), and Jev once more in the original order (determinism); reported
-as top-10 overlap between runs.
+as batch overlap between runs.
+
+Pool diagnosis. For held-out cards that miss the pool, whether retrieval never
+found them, the pool cap cut them, or they were marked illegal.
+
+Every run is compared against tools/jev_eval_baseline.json; ``--save`` moves
+the baseline, and belongs in a commit that says why.
 
     python tools/jev_eval.py                 # all decks, LLM included (costs money)
     python tools/jev_eval.py --no-llm        # Jev and the baselines only
     python tools/jev_eval.py --deck 1 --deck 9
+    python tools/jev_eval.py --pool-cap 150  # a wider pool for every selector
+    python tools/jev_eval.py --all-selectors # also the modes that lost earlier rounds
+    python tools/jev_eval.py --save          # move the baseline
 
 Runs against a scratch copy of the DB; nothing live is touched. A JSON trace
 lands in tools/traces/.
@@ -44,7 +55,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 TRACE_DIR = Path(__file__).resolve().parent / "traces"
+BASELINE_PATH = Path(__file__).resolve().parent / "jev_eval_baseline.json"
 
+SYNERGY_INTENT = "cards that synergize with my commander and what the deck is doing"
 ROLE_INTENTS = {
     "ramp": "more ramp",
     "card-draw": "more card draw",
@@ -55,14 +68,27 @@ ROLE_INTENTS = {
     "protection": "protection for my key pieces",
     "tutor": "tutors",
 }
-# name -> (mode, samples)
+# Roles any deck fills; a card with none of them is there for the theme.
+GENERIC_ROLES = frozenset({
+    "ramp", "fast-mana", "fixing", "card-draw", "card-selection", "wheel",
+    "spot-removal", "board-wipe", "counterspell", "land-destruction", "tutor",
+    "recursion", "graveyard-hate", "protection", "land",
+})
+
+# name -> select_jev keyword arguments
 JEV_SELECTORS = {
-    "blind": ("blind", 1),
-    "informed": ("informed", 1),
-    "verdict": ("verdict", 1),
-    "verdict3": ("verdict", 3),
-    "choice3": ("choice", 3),
-    "ensemble": ("ensemble", 3),
+    "verdict3": {"mode": "verdict", "samples": 3},
+    "similar2": {"mode": "verdict", "samples": 3, "max_similar": 2},
+    "similar3": {"mode": "verdict", "samples": 3, "max_similar": 3},
+    "p>=0.5": {"mode": "verdict", "samples": 3, "min_probability": 0.5},
+}
+ALL_SELECTORS = {
+    **JEV_SELECTORS,
+    "blind": {"mode": "blind", "samples": 1},
+    "informed": {"mode": "informed", "samples": 1},
+    "verdict": {"mode": "verdict", "samples": 1},
+    "choice3": {"mode": "choice", "samples": 3},
+    "ensemble": {"mode": "ensemble", "samples": 3},
 }
 BASELINES = ("brainmap", "edhrec")
 MAX_HELD = 6
@@ -71,8 +97,13 @@ ROLES_PER_DECK = 2
 TOP = 10
 
 
+def _intent(role: str) -> str:
+    return SYNERGY_INTENT if role == "synergy" else ROLE_INTENTS[role]
+
+
 def _held_out_cases(session, deck_ids: list[int] | None) -> list[tuple[int, str, list[str]]]:
-    """(deck, role, held-out names) for each deck's best-represented roles."""
+    """(deck, role, held-out names): each deck's two best-represented roles,
+    plus a synergy case from its roleless theme cards."""
     from app.db import repository as repo
     from app.pipeline import roles
 
@@ -82,13 +113,20 @@ def _held_out_cases(session, deck_ids: list[int] | None) -> list[tuple[int, str,
             continue
         commanders = {n.lower() for n in (deck.commander, deck.partner_commander) if n}
         by_role: dict[str, list[str]] = {}
+        theme: list[str] = []
         for card in repo.list_deck_cards(session, deck.id):
             if card.card_name.lower() in commanders or "Land" in (card.type_line or ""):
                 continue
-            for role in roles.fine_roles_for_tags(card.tags or [], card.type_line) & set(ROLE_INTENTS):
+            fine = roles.fine_roles_for_tags(card.tags or [], card.type_line)
+            for role in fine & set(ROLE_INTENTS):
                 by_role.setdefault(role, []).append(card.card_name)
+            if not fine & GENERIC_ROLES:
+                theme.append(card.card_name)
         ranked = sorted(by_role.items(), key=lambda kv: len(kv[1]), reverse=True)
-        for role, names in [kv for kv in ranked if len(kv[1]) >= MIN_HELD][:ROLES_PER_DECK]:
+        chosen = [kv for kv in ranked if len(kv[1]) >= MIN_HELD][:ROLES_PER_DECK]
+        if len(theme) >= MIN_HELD:
+            chosen.append(("synergy", theme))
+        for role, names in chosen:
             rng = random.Random(f"{deck.id}:{role}")
             cases.append((deck.id, role, sorted(rng.sample(sorted(names), min(MAX_HELD, len(names))))))
     return cases
@@ -147,36 +185,47 @@ def _overlap(a: list[str], b: list[str]) -> int:
     return len({x.lower() for x in a[:TOP]} & {x.lower() for x in b[:TOP]})
 
 
-def _score(order: list[str], held: set[str], full: bool) -> dict:
-    lowered = [n.lower() for n in order]
-    hits = sum(1 for n in lowered[:TOP] if n in held)
+def _score(picks: list[str], held: set[str], full_order: list[str] | None = None) -> dict:
+    hits = sum(1 for n in picks[:TOP] if n.lower() in held)
     result = {"hits": hits, "recall": round(hits / len(held), 3) if held else None}
-    if full and held and len(lowered) > 1:
+    if full_order and held and len(full_order) > 1:
+        lowered = [n.lower() for n in full_order]
         positions = [lowered.index(n) / (len(lowered) - 1) for n in held if n in lowered]
         result["percentile"] = round(sum(positions) / len(positions), 3) if positions else None
     return result
 
 
 def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_client,
-             model: str, with_llm: bool) -> dict:
-    from app.pipeline import jev, service
+             model: str, with_llm: bool, selectors: dict, pool_cap: int,
+             role_limit: int) -> dict:
+    from app.pipeline import explain, jev, service
 
-    intent = ROLE_INTENTS[role]
+    intent = _intent(role)
     with _HeldOut(session, deck_id, held):
         prepared, prep_s = _timed(lambda: service.prepare_pool(
-            session, deck_id, intent, provider, model=model,
+            session, deck_id, intent, provider, model=model, pool_cap=pool_cap,
+            local_role_limit=role_limit,
         ))
     legal = [c for c in prepared.shaped if c.legal_in_deck and c.name]
-    legal_names = {c.name.lower() for c in legal}
-    in_pool = {n.lower() for n in held} & legal_names
+    in_pool = {n.lower() for n in held} & {c.name.lower() for c in legal}
     shuffled = list(prepared.shaped)
     random.Random(f"shuffle:{deck_id}:{role}").shuffle(shuffled)
 
+    held_lower = {n.lower() for n in held}
+    raw_names = {(c.get("name") or "").lower() for c in prepared.pool}
+    shaped_by_name = {c.name.lower(): c for c in prepared.shaped if c.name}
     record = {
         "deck_id": deck_id, "commander": prepared.snapshot.get("commander"),
         "role": role, "intent": intent, "held_out": held,
         "held_in_pool": sorted(in_pool), "legal_pool": len(legal),
         "prepare_s": prep_s, "selectors": {},
+        "missed": {
+            "never_retrieved": sorted(held_lower - raw_names),
+            "cut_by_cap": sorted((held_lower & raw_names) - set(shaped_by_name)),
+            "illegal": {n: shaped_by_name[n].illegal_reasons
+                        for n in held_lower & set(shaped_by_name)
+                        if not shaped_by_name[n].legal_in_deck},
+        },
     }
 
     def total(c):
@@ -187,23 +236,35 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
 
     for name, key in (("brainmap", total), ("edhrec", rate)):
         order = [c.name for c in sorted(legal, key=key, reverse=True)]
-        record["selectors"][name] = {"order": order, **_score(order, in_pool, True)}
+        record["selectors"][name] = {"order": order, **_score(order, in_pool, order)}
 
-    def jev_order(pool, mode, samples):
+    def jev_run(pool, kwargs):
         selection = jev.select_jev(
             jev_client, pool, intent, max_picks=TOP,
-            deck_context=prepared.deck_context, mode=mode, samples=samples,
+            deck_context=prepared.deck_context, **kwargs,
         )
-        return [j["name"] for j in selection.raw["judgments"]]
+        order = [j["name"] for j in selection.raw["judgments"]]
+        return selection, [p.name for p in selection.picks], order
 
-    for name, (mode, samples) in JEV_SELECTORS.items():
-        order, secs = _timed(lambda: jev_order(prepared.shaped, mode, samples))
-        again = jev_order(prepared.shaped, mode, samples)
-        reshuffled = jev_order(shuffled, mode, samples)
+    for name, kwargs in selectors.items():
+        (selection, picks, order), secs = _timed(lambda: jev_run(prepared.shaped, kwargs))
+        _, again, _ = jev_run(prepared.shaped, kwargs)
+        _, reshuffled, _ = jev_run(shuffled, kwargs)
         record["selectors"][name] = {
-            "order": order, "seconds": secs, **_score(order, in_pool, True),
-            "stable": _overlap(order, reshuffled), "determinism": _overlap(order, again),
+            "picks": picks, "order": order, "seconds": secs, "batch": len(picks),
+            **_score(picks, in_pool, order),
+            "stable": _overlap(picks, reshuffled), "determinism": _overlap(picks, again),
         }
+        if name == "verdict3" and with_llm:
+            explained, explain_s = _timed(lambda: explain.explain(
+                provider, selection, prepared.shaped, intent, model=model,
+                deck_context=prepared.deck_context,
+            ))
+            record["explain"] = {
+                "seconds": explain_s, "summary": explained.summary,
+                "picks": [{"name": p.name, "reason": p.reason} for p in explained.picks],
+                "cuts": [{"name": c.name, "reason": c.reason} for c in explained.cuts],
+            }
 
     if with_llm:
         def llm_picks(pool):
@@ -216,7 +277,7 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
         picks, secs = _timed(lambda: llm_picks(prepared.shaped))
         reshuffled = llm_picks(shuffled)
         record["selectors"]["llm"] = {
-            "order": picks, "seconds": secs, **_score(picks, in_pool, False),
+            "picks": picks, "seconds": secs, "batch": len(picks), **_score(picks, in_pool),
             "stable": _overlap(picks, reshuffled),
         }
     return record
@@ -227,27 +288,47 @@ def _mean(values):
     return sum(values) / len(values) if values else None
 
 
-def summarize(records: list[dict]) -> dict:
+def summarize(records: list[dict], selectors: dict, kind: str | None = None) -> dict:
+    if kind == "synergy":
+        records = [r for r in records if r["role"] == "synergy"]
+    elif kind == "role":
+        records = [r for r in records if r["role"] != "synergy"]
     scored = [r for r in records if len(r["held_in_pool"]) >= 2]
-    names = [*BASELINES, *JEV_SELECTORS] + (["llm"] if any("llm" in r["selectors"] for r in records) else [])
-    summary = {"cases": len(records), "scored_cases": len(scored),
-               "pool_recall": _mean([len(r["held_in_pool"]) / len(r["held_out"]) for r in records]),
-               "chance_recall": _mean([TOP / r["legal_pool"] for r in scored]),
-               "selectors": {}}
+    names = [*BASELINES, *selectors]
+    if any("llm" in r["selectors"] for r in records):
+        names.append("llm")
+    held = sum(len(r["held_out"]) for r in records) or 1
+    summary = {
+        "cases": len(records), "scored_cases": len(scored),
+        "pool_recall": _mean([len(r["held_in_pool"]) / len(r["held_out"]) for r in records]),
+        "chance_recall": _mean([TOP / r["legal_pool"] for r in scored if r["legal_pool"]]),
+        "missed": {
+            key: sum(len(r["missed"][key]) for r in records) / held
+            for key in ("never_retrieved", "cut_by_cap", "illegal")
+        },
+        "explain_seconds": _mean([r["explain"]["seconds"] for r in records if "explain" in r]),
+        "selectors": {},
+    }
     for name in names:
         rows = [r["selectors"][name] for r in scored if name in r["selectors"]]
         # Paired against the stronger baseline, case by case: an average can
         # hide a selector that wins big on a few decks and loses on the rest.
         paired = [(r["selectors"][name]["hits"], r["selectors"]["edhrec"]["hits"])
                   for r in scored if name in r["selectors"]]
+        # End to end: of every card held out, the share that came back in the
+        # batch. recall@10 is conditional on reaching the pool, so a wider pool
+        # can raise pool recall while lowering this; this is the one to trust.
         summary["selectors"][name] = {
-            "vs_edhrec": [sum(a > b for a, b in paired), sum(a == b for a, b in paired),
-                          sum(a < b for a, b in paired)],
+            "end_to_end": sum(r["selectors"][name]["hits"] for r in records if name in r["selectors"])
+                          / held,
             "recall@10": _mean([s["recall"] for s in rows]),
             "percentile": _mean([s.get("percentile") for s in rows]),
             "stable": _mean([s.get("stable") for s in rows]),
             "determinism": _mean([s.get("determinism") for s in rows]),
+            "batch": _mean([s.get("batch") for s in rows]),
             "seconds": _mean([s.get("seconds") for s in rows]),
+            "vs_edhrec": [sum(a > b for a, b in paired), sum(a == b for a, b in paired),
+                          sum(a < b for a, b in paired)],
         }
     return summary
 
@@ -256,24 +337,40 @@ def _fmt(value, spec):
     return format(value, spec) if value is not None else "-"
 
 
-def print_summary(summary: dict) -> None:
-    print(f"\n== {summary['scored_cases']} scored cases of {summary['cases']} "
+def print_summary(summary: dict, title: str, baseline: dict | None) -> None:
+    print(f"\n== {title}: {summary['scored_cases']} scored cases of {summary['cases']} "
           f"(held-out cards reaching the pool: {_fmt(summary['pool_recall'], '.0%')}; "
           f"chance recall@10: {_fmt(summary['chance_recall'], '.0%')})")
-    print(f"   {'selector':<10}{'recall@10':>10}{'percentile':>12}{'stable':>9}{'determ.':>9}"
-          f"{'secs':>7}   W-T-L vs edhrec")
+    missed = summary["missed"]
+    print(f"   lost before selection: never retrieved {missed['never_retrieved']:.0%}, "
+          f"cut by the pool cap {missed['cut_by_cap']:.0%}, illegal {missed['illegal']:.0%}")
+    if summary.get("explain_seconds") is not None:
+        print(f"   explainer (DeepSeek, thinking off): mean {summary['explain_seconds']:.1f}s")
+    print(f"   {'selector':<10}{'end2end':>9}{'recall@10':>10}{'e2e vs base':>12}{'percentile':>12}{'stable':>9}"
+          f"{'determ.':>9}{'batch':>7}{'secs':>7}   W-T-L vs edhrec")
+    base = (baseline or {}).get("selectors", {})
     for name, s in summary["selectors"].items():
         wtl = "-".join(str(n) for n in s["vs_edhrec"])
-        print(f"   {name:<10}{_fmt(s['recall@10'], '.0%'):>10}{_fmt(s['percentile'], '.2f'):>12}"
-              f"{_fmt(s['stable'], '.1f'):>9}{_fmt(s['determinism'], '.1f'):>9}{_fmt(s['seconds'], '.1f'):>7}"
-              f"   {wtl}")
+        prior = (base.get(name) or {}).get("end_to_end")
+        delta = (f"{(s['end_to_end'] - prior) * 100:+.0f}pt"
+                 if prior is not None and s.get("end_to_end") is not None else "-")
+        print(f"   {name:<10}{_fmt(s.get('end_to_end'), '.0%'):>9}{_fmt(s['recall@10'], '.0%'):>10}{delta:>12}"
+              f"{_fmt(s['percentile'], '.2f'):>12}{_fmt(s['stable'], '.1f'):>9}"
+              f"{_fmt(s['determinism'], '.1f'):>9}{_fmt(s['batch'], '.1f'):>7}"
+              f"{_fmt(s['seconds'], '.1f'):>7}   {wtl}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--deck", type=int, action="append")
     parser.add_argument("--no-llm", action="store_true")
+    parser.add_argument("--pool-cap", type=int, default=60)
+    parser.add_argument("--role-limit", type=int, default=80,
+                        help="cards fetched per role from the local index")
+    parser.add_argument("--all-selectors", action="store_true")
+    parser.add_argument("--save", action="store_true", help="write this run as the baseline")
     args = parser.parse_args(argv)
+    selectors = ALL_SELECTORS if args.all_selectors else JEV_SELECTORS
 
     import logging
 
@@ -300,28 +397,38 @@ def main(argv: list[str] | None = None) -> int:
     records = []
     with Session(get_engine()) as session:
         cases = _held_out_cases(session, args.deck)
-        print(f"{len(cases)} case(s)")
+        print(f"{len(cases)} case(s), pool cap {args.pool_cap}, role limit {args.role_limit}, "
+              f"jev model {jev_client.model}")
         for deck_id, role, held in cases:
             try:
                 record = run_case(session, deck_id, role, held, provider, jev_client, model,
-                                  not args.no_llm)
+                                  not args.no_llm, selectors, args.pool_cap,
+                                  args.role_limit)
             except Exception as exc:  # noqa: BLE001 - one failed case must not sink the run
                 print(f"  deck {deck_id:>2} {role:<13} FAILED: {exc}")
                 continue
             sel = record["selectors"]
             line = " ".join(f"{n}={sel[n]['hits']}" for n in sel)
             print(f"  deck {deck_id:>2} {role:<13} held {len(held)} in pool "
-                  f"{len(record['held_in_pool'])}/{record['legal_pool']} | hits@10 {line}")
+                  f"{len(record['held_in_pool'])}/{record['legal_pool']} | hits {line}")
             records.append(record)
 
-    summary = summarize(records)
-    print_summary(summary)
+    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8")) if BASELINE_PATH.exists() else {}
+    summary = {"pool_cap": args.pool_cap, "role_limit": args.role_limit,
+               "jev_model": jev_client.model}
+    for kind in ("role", "synergy", "all"):
+        summary[kind] = summarize(records, selectors, None if kind == "all" else kind)
+        print_summary(summary[kind], kind, baseline.get(kind))
+
     TRACE_DIR.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = TRACE_DIR / f"jev_eval_{stamp}.json"
     out.write_text(json.dumps({"summary": summary, "records": records}, indent=2, default=str),
                    encoding="utf-8")
     print(f"\ntrace: {out}")
+    if args.save:
+        BASELINE_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(f"baseline saved: {BASELINE_PATH}")
     return 0
 
 
