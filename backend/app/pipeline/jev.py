@@ -710,6 +710,7 @@ def select_jev(
     cut_cards: list[dict[str, Any]] | None = None,
     cut_evidence_map: dict[str, dict[str, float | None]] | None = None,
     min_ask: float | None = None,
+    request_roles: set[str] | None = None,
     deck_total: int | None = None,
     deck_limit: int = 100,
 ) -> Selection:
@@ -743,6 +744,15 @@ def select_jev(
                                       brainmap_weight)
 
     order = sorted(range(len(legal)), key=lambda i: judgments[i].rank, reverse=True)
+    if request_roles:
+        # A land belongs in a non-land batch only when it fills the role
+        # asked for (Myriad Landscape for ramp); basics and utility lands
+        # (Command Tower, Mountain) reached a ramp batch and were withdrawn.
+        order = [
+            i for i in order
+            if "Land" not in (legal[i].type_line or "")
+            or ("Basic" not in (legal[i].type_line or "") and legal[i].fine_roles & request_roles)
+        ]
     if min_ask is not None:
         # A role request's batch must answer the request. The blend weighs
         # popularity, and in a new deck with no lands the most popular legal

@@ -235,14 +235,14 @@ _PLAN_UNSET = """\
 A deck is built in three beats: PLAN the direction with the player, BUILD it
 in purposeful batches, CLOSE with the reference notecard when it is complete.
 
-No plan is recorded yet. Once you and the player agree on a direction —
-normally the moment you propose the commander — call deck_set_plan with the
-themes, the power_level the player named, the budget ceiling if they named
-one, and off_meta if they want the build to feel distinctive (0 follows the
-popular list, 1 favours commander-specific picks; default 0.25). The plan
-aims every later suggestion: role targets derive from power_level with the
-same formula deck_get_stats scores by, and themes drive the mechanical fit
-search. A deck with no plan gets generic defaults.
+No plan is recorded yet. The app drafts the deck's themes and gameplan
+itself the moment you propose the commander; do not compose them. Call
+deck_set_plan only for what the player actually stated: the power_level they
+named, a budget ceiling, excluded types or cards, off_meta if they want the
+build to feel distinctive (0 follows the popular list, 1 favours
+commander-specific picks; default 0.25), or themes they spelled out. Role
+targets derive from power_level with the same formula deck_get_stats scores
+by.
 
 Set power_level whenever the player names a level or bracket, and
 max_card_price whenever they name a budget ("nothing over ten dollars" is

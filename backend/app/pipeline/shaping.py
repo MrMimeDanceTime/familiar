@@ -85,6 +85,14 @@ class DeckContext:
             for c in snapshot.get("cards", [])
             if c.get("name")
         }
+        # A card already proposed and awaiting the player's decision counts
+        # as in the deck: suggesting it again duplicated it (the format-staple
+        # batch and a ramp batch both proposed Arcane Signet in one turn).
+        pending = (snapshot.get("pending_proposals") or {}).get("proposals") or []
+        names |= {
+            (p.get("card_name") or "").lower()
+            for p in pending if p.get("action") == "add" and p.get("card_name")
+        }
         from app import deckplan
 
         return cls(

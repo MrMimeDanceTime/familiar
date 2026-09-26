@@ -110,10 +110,15 @@ def main(argv: list[str] | None = None) -> int:
             first_network = len(network)
             started = time.time()
             events: list[str] = []
+            tool_calls: list[str] = []
             first_token = None
             for event in run_chat_turn(session, get_provider(), convo.id, message, deck.id):
                 kind = getattr(event, "event", "")
                 events.append(kind)
+                if kind == "tool_call":
+                    data = getattr(event, "data", {}) or {}
+                    args = json.dumps(data.get("arguments") or {})[:160]
+                    tool_calls.append(f"{data.get('name')} {args}")
                 if kind == "token" and first_token is None:
                     first_token = time.time() - started
                 if kind == "deck_proposal":
@@ -142,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
             tail = started + total - cursor
             if tail > 0.3:
                 print(f"   {'':>6} {tail:5.1f}s  after the last send")
+            for call in tool_calls:
+                print(f"   tool: {call}")
             calls = network[first_network:]
             summary = {k: sum(1 for c in calls if c.startswith(k)) for k in ("scryfall", "edhrec", "jev")}
             paths = sorted({c for c in calls if c.startswith("scryfall")})

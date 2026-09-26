@@ -549,6 +549,12 @@ def run_selection(
                 max_similar=settings.jev_max_similar or None,
                 min_probability=settings.jev_min_probability or None,
                 min_ask=settings.jev_min_ask if local_retrieval.intent_roles(user_intent) else None,
+                # Land requests are the manabase fill's job; any other role
+                # request keeps lands out unless they fill that role.
+                request_roles=(
+                    local_retrieval.intent_roles(user_intent) - {"land"}
+                    if "land" not in local_retrieval.intent_roles(user_intent) else None
+                ) or None,
                 cut_cards=jev.cut_candidates(prepared.snapshot) if settings.jev_cuts else None,
                 cut_evidence_map=(jev.cut_evidence(prepared.snapshot.get("commander"))
                                   if settings.jev_cuts else None),

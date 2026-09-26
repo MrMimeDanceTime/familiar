@@ -73,6 +73,56 @@ def parse(raw_json: str) -> dict[str, Any]:
     return {"plan": plan.strip(), "themes": clean[:8]}
 
 
+def draft_in_background(deck_id: int, commander: str) -> None:
+    """Draft and store the plan for a deck whose commander was just proposed,
+    off the chat turn's thread, when the deck has no plan yet.
+
+    The chat model used to compose the plan's themes and notes itself in the
+    same thinking send that proposed the commander: 1,800-1,900 reasoning
+    tokens, 16-18s, on every setup turn. This is one non-thinking call nobody
+    waits for. A plan the player or the model already set is never replaced.
+    """
+    import threading
+
+    threading.Thread(
+        target=_draft_and_store, args=(deck_id, commander), daemon=True,
+        name=f"gameplan-{deck_id}",
+    ).start()
+
+
+def _draft_and_store(deck_id: int, commander: str) -> None:
+    import logging
+
+    from sqlmodel import Session
+
+    from app.db import repository as repo
+    from app.db.session import get_engine
+    from app.llm.factory import get_fast_model, get_provider
+    from app.tools import deck_tools
+
+    log = logging.getLogger(__name__)
+    try:
+        with Session(get_engine()) as session:
+            snapshot = repo.deck_snapshot(session, deck_id)
+            if snapshot.get("plan_notes") or snapshot.get("themes"):
+                return
+            if not snapshot.get("commander"):
+                # Proposed, not yet approved: draft against the proposed one.
+                card = deck_tools.lookup_card(deck_tools.get_scryfall_client(), commander)
+                snapshot["commander"] = card.get("name") or commander
+                snapshot["cards"] = [
+                    {"name": snapshot["commander"], "oracle_text": card.get("oracle_text")},
+                    *snapshot.get("cards", []),
+                ]
+            plan = draft(get_provider(), snapshot, model=get_fast_model())
+            fresh = repo.deck_snapshot(session, deck_id)
+            if fresh.get("plan_notes") or fresh.get("themes"):
+                return  # set meanwhile; theirs wins
+            repo.update_deck(session, deck_id, plan_notes=plan["plan"], themes=plan["themes"])
+    except Exception as exc:  # noqa: BLE001 - a missing plan only means generic defaults
+        log.warning("gameplan draft for deck %s failed: %s", deck_id, exc)
+
+
 def draft(provider: Any, snapshot: dict[str, Any], *, model: str | None = None) -> dict[str, Any]:
     """``{"plan": str, "themes": [str, ...]}`` for the deck as it stands."""
     system, user = build_prompt(snapshot)
