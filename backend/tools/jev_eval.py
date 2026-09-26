@@ -204,7 +204,8 @@ def _score(picks: list[str], held: set[str], full_order: list[str] | None = None
 
 def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_client,
              model: str, with_llm: bool, selectors: dict, pool_cap: int,
-             role_limit: int, fast: bool = False, edhrec_by_role: bool = True) -> dict:
+             role_limit: int, fast: bool = False, edhrec_by_role: bool = True,
+             theme_cap: int | None = None) -> dict:
     from app.pipeline import explain, jev, service
 
     intent = _intent(role)
@@ -212,6 +213,7 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
         prepared, prep_s = _timed(lambda: service.prepare_pool(
             session, deck_id, intent, provider, model=model, pool_cap=pool_cap,
             local_role_limit=role_limit, edhrec_by_role=edhrec_by_role,
+            theme_whole_page=bool(theme_cap), theme_pool_cap=theme_cap,
         ))
     legal = [c for c in prepared.shaped if c.legal_in_deck and c.name]
     in_pool = {n.lower() for n in held} & {c.name.lower() for c in legal}
@@ -533,6 +535,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=1,
                         help="held-out samples per (deck, role); more cases for fitting")
     parser.add_argument("--fast", action="store_true", help="skip the consistency reruns")
+    parser.add_argument("--theme-only", action="store_true", help="run only the theme cases")
+    parser.add_argument("--theme-cap", type=int, default=None,
+                        help="requests naming no role draw on the whole EDHREC page, capped here")
     parser.add_argument("--edhrec-blind", action="store_true",
                         help="the old intent-blind EDHREC source, for A/B")
     parser.add_argument("--save", action="store_true", help="write this run as the baseline")
@@ -584,13 +589,16 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     with Session(get_engine()) as session:
         cases = _held_out_cases(session, args.deck, args.roles_per_deck, args.repeats)
+        if args.theme_only:
+            cases = [c for c in cases if c[1] == "synergy"]
         print(f"{len(cases)} case(s), pool cap {args.pool_cap}, role limit {args.role_limit}, "
               f"jev model {jev_client.model}")
         for deck_id, role, held in cases:
             try:
                 record = run_case(session, deck_id, role, held, provider, jev_client, model,
                                   not args.no_llm, selectors, args.pool_cap,
-                                  args.role_limit, args.fast, not args.edhrec_blind)
+                                  args.role_limit, args.fast, not args.edhrec_blind,
+                                  args.theme_cap)
             except Exception as exc:  # noqa: BLE001 - one failed case must not sink the run
                 print(f"  deck {deck_id:>2} {role:<13} FAILED: {exc}")
                 failures += 1

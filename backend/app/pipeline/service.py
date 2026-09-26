@@ -321,6 +321,8 @@ def prepare_pool(
     local_pool_min: int = 25,
     local_role_limit: int = 80,
     edhrec_by_role: bool = True,
+    theme_whole_page: bool = False,
+    theme_pool_cap: int | None = None,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -367,18 +369,33 @@ def prepare_pool(
         spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
     else:
         with _timed("stage1_spec", timings):
-            spec = spec_stage.generate_query_spec(
-                provider, user_intent, identity,
-                model=model, max_queries=max_queries, thinking=spec_thinking,
-            )
+            try:
+                spec = spec_stage.generate_query_spec(
+                    provider, user_intent, identity,
+                    model=model, max_queries=max_queries, thinking=spec_thinking,
+                )
+            except ValueError as exc:
+                # Unusable query planning used to fail the whole suggestion.
+                # EDHREC's page and the local pool still stand without it.
+                logger.warning("stage 1 failed, continuing without planned queries: %s", exc)
+                spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
 
+    intent_roles = local_retrieval.intent_roles(user_intent)
+    whole_page = theme_whole_page and not intent_roles
+    if theme_pool_cap and not intent_roles:
+        pool_cap = theme_pool_cap
     with _timed("stage2_candidates", timings):
         gathered = candidates_stage.gather_candidates_detailed(
             spec, snapshot.get("commander"),
             scryfall=scryfall, edhrec=edhrec,
             identity=identity,
             off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
-            edhrec_roles=(local_retrieval.intent_roles(user_intent) or None) if edhrec_by_role else None,
+            edhrec_roles=intent_roles or None if edhrec_by_role else None,
+            edhrec_whole_page=whole_page,
+            # The raw cap was 120, and most of a page's top cards are already
+            # in the deck (so illegal to suggest): a whole page capped at 120
+            # left ~50 legal cards, fewer than the top-40 source it replaced.
+            **({"cap": 500} if whole_page else {}),
         )
         # EDHREC's commander-specific picks lead, then the local hits, then
         # whatever the fallback queries added; dedupe keeps the first seen.

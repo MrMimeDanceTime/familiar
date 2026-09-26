@@ -441,6 +441,55 @@ weights lean on Jev's verdict and its "answers the request" answer, then
 EDHREC play rate and brain map consensus; brain map mechanical fit gets a
 negative weight once the others are in.
 
+### What each signal is worth
+
+Per-case AUC over 100 cases (the chance that one of the player's own cards
+outscores another candidate; 0.5 is a coin flip), 2026-09-26:
+
+| Signal | Role | Theme |
+|---|---|---|
+| Jev "should be added" | 0.85 | 0.85 |
+| Jev "answers the request" | 0.72 | 0.83 |
+| EDHREC play rate (on the page at all: 52% role, 28% theme) | 0.81 | 0.84 |
+| Brain map total | 0.68 | 0.77 |
+| Brain map consensus | 0.66 | 0.83 |
+| Brain map mechanical | 0.50 | 0.55 |
+| Brain map personal | 0.55 | 0.44 |
+
+The mechanical layer is a coin flip on these decks. It scores a card by its
+single strongest tag relationship to the commander's tags, and the result is
+bimodal: 23% of candidates score exactly 1.0 and 40% exactly 0, so on a full
+deck it cannot rank. A replacement scoring each candidate's IDF-weighted tag
+overlap with the current deck reached 0.58 role and 0.66 theme, too weak to
+build. The personal layer reads cross-deck history only here, because the eval
+deletes this deck's proposal history to keep the answer from leaking; this
+deck's own denials are its strongest input and this eval cannot credit them.
+
+The blend already gives mechanical a negative weight and personal little, so
+the brain map's weak layers do not reach the ranking. They still order the
+pool before the cap, which cuts 7% of held-out role cards at 60; a cap of 80
+measured no better.
+
+### Theme requests: the whole EDHREC page did not help
+
+A request that names no role draws the commander's top 40 EDHREC cards, and 46
+of the 72 held-out theme cards that never reached the pool were on the page
+past that cut. Drawing the whole page (`theme_whole_page`, off) raised the share
+reaching the pool from 53% to 81% but the batch barely moved:
+
+| Theme, 30-33 cases | Reach | Blend end to end |
+|---|---|---|
+| Top 40 (current) | 53% | 43% |
+| Whole page, cap 60 | 57% | 40% |
+| Whole page, cap 120 | 70% | 44% |
+| Whole page, cap 250 | 81% | 45% |
+
+Refitting the blend on the whole-page pools scored 43% leave-one-deck-out. With
+~180 candidates the rankers cannot pick the player's cards out, and EDHREC
+synergy alone gets 42%, so theme requests sit near 43-45% whatever the pool.
+The whole page costs about three times the Jev tokens for a gain inside the
+noise; it stays off.
+
 ### Behaviour eval
 
 `tools/behaviour_eval.py replay` over 13 stored turns. Its records were fixed

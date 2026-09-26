@@ -38,6 +38,7 @@ def _edhrec_recommendations(
     cap: int,
     roles_wanted: set[str] | None = None,
     role_cap: int = 60,
+    whole_page: bool = False,
 ) -> list[dict[str, Any]]:
     """Pull the commander's EDHREC page in as candidates, hydrated locally.
 
@@ -67,6 +68,16 @@ def _edhrec_recommendations(
     try:
         collected = edhrec_source.collect(recs)
         ranked = edhrec_source.rank(collected, off_meta=off_meta)
+        if whole_page:
+            # A request that names no role ("what fits my commander") is a
+            # request for the page itself: 46 of 72 held-out theme cards that
+            # never reached the pool were on it, past the top-``cap`` cut.
+            return edhrec_source.hydrate(
+                edhrec_source.rank(
+                    edhrec_source.collect(recs, per_list_cap=10_000), off_meta=off_meta,
+                ),
+                card_store, identity,
+            )
         general = edhrec_source.hydrate(ranked[:cap], card_store, identity)
         if not roles_wanted:
             return general
@@ -168,6 +179,7 @@ def gather_candidates_detailed(
     off_meta: float = 0.0,
     edhrec_cap: int = 40,
     edhrec_roles: set[str] | None = None,
+    edhrec_whole_page: bool = False,
 ) -> CandidateResult:
     """Run the spec's queries, merge/dedupe/annotate/cap into a raw candidate pool.
 
@@ -195,7 +207,7 @@ def gather_candidates_detailed(
     synergy = _edhrec_synergy_map(commander_name, edhrec)
     recommendations = _edhrec_recommendations(
         commander_name, edhrec, identity, off_meta=off_meta, cap=edhrec_cap,
-        roles_wanted=edhrec_roles,
+        roles_wanted=edhrec_roles, whole_page=edhrec_whole_page,
     )
     edhrec_dt = time.monotonic() - edhrec_start
     if edhrec_dt > 5:

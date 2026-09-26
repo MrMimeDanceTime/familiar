@@ -124,7 +124,9 @@ def main(argv: list[str] | None = None) -> int:
           f"{sum(row['label'] for r in records for row in r['features'])} positives")
 
     def show(label: str, result: dict) -> None:
-        print(f"   {label:<34} role {result['role']:.0%}   theme {result['synergy']:.0%}")
+        def pct(v):
+            return f"{v:.0%}" if v is not None else "-"
+        print(f"   {label:<34} role {pct(result['role']):>4}   theme {pct(result['synergy']):>4}")
 
     print("single signals (end to end: held-out cards in the top 10 / all held out)")
     for key in ("jev", "bm_total", "bm_personal", "bm_mechanical", "edhrec_rate", "edhrec_synergy"):

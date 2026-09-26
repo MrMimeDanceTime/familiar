@@ -115,3 +115,18 @@ def test_generate_query_spec_end_to_end_offline():
     # the identity token made it into the prompt, and the model override passed through
     assert "id<=rakdos" in provider.calls[0]["system"]
     assert provider.calls[0]["model"] == "deepseek-v4-flash"
+
+
+def test_parse_spec_repairs_an_unescaped_backslash_in_a_query():
+    """Seen live: the model left a regex backslash unescaped and the whole
+    suggestion failed on 'Invalid \escape'."""
+    raw = '{"queries": ["o:/deals \d+ damage/"], "intent_summary": "burn"}'
+    spec = parse_spec(raw, frozenset("R"))
+    assert "\d+" in spec.queries[0]
+
+
+def test_parse_spec_still_rejects_json_it_cannot_repair():
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse_spec('{"queries": [', frozenset("R"))

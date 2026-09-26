@@ -135,7 +135,15 @@ def parse_spec(raw_json: str, identity: frozenset[str], *, max_queries: int = 6)
     try:
         data = json.loads(raw_json)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"stage-1 output was not valid JSON: {exc}") from exc
+        # The model writes Scryfall regex into JSON strings and sometimes
+        # leaves a backslash unescaped ("o:/\d+/"), which json rejects as an
+        # invalid escape. Double every backslash that does not start a valid
+        # escape and try once more.
+        repaired = re.sub(r'\\(?![\\"/bfnrtu])', r"\\\\", raw_json)
+        try:
+            data = json.loads(repaired)
+        except json.JSONDecodeError:
+            raise ValueError(f"stage-1 output was not valid JSON: {exc}") from exc
 
     if not isinstance(data, dict):
         raise ValueError("stage-1 output was not a JSON object")
