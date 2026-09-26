@@ -477,6 +477,28 @@ TOOL_SPECS: list[ToolSpec] = [
                         "mid-range = $25, unlimited = none)."
                     ),
                 },
+                "exclude_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Card types or creature types the player ruled out for this "
+                        "deck, singular: 'no dragons or demons' = [\"Dragon\", "
+                        "\"Demon\"]; 'no planeswalkers' = [\"Planeswalker\"]. SET "
+                        "THIS the moment the player states one: it is enforced on "
+                        "every later suggestion and proposal, so it holds after the "
+                        "message that said it has scrolled away. Pass the full list; "
+                        "[] clears it."
+                    ),
+                },
+                "exclude_cards": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Specific cards the player never wants in this deck, by "
+                        "exact name. Enforced like exclude_types. Pass the full "
+                        "list; [] clears it."
+                    ),
+                },
                 "off_meta": {
                     "type": "number",
                     "description": (

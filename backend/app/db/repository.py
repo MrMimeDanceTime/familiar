@@ -190,6 +190,7 @@ def update_deck(
     plan_notes: str | None = None,
     off_meta: float | None = None,
     max_card_price: float | None = None,
+    restrictions: dict | None = None,
 ) -> Deck:
     deck = session.get(Deck, deck_id)
     if not deck:
@@ -214,6 +215,8 @@ def update_deck(
         deck.plan_notes = plan_notes
     if off_meta is not None:
         deck.off_meta = off_meta
+    if restrictions is not None:
+        deck.restrictions = restrictions
     if max_card_price is not None:
         # 0 clears the ceiling: "no budget" has to be expressible too.
         deck.max_card_price = max_card_price if max_card_price > 0 else None
@@ -442,6 +445,7 @@ def deck_snapshot(session: Session, deck_id: int) -> dict:
         "plan_notes": deck.plan_notes,
         "off_meta": deck.off_meta,
         "max_card_price": deck.max_card_price,
+        "restrictions": deck.restrictions or {},
         "conversation_id": linked.id if linked else None,
         "total_cards": total_cards,
         "cards": [
