@@ -84,7 +84,6 @@ def hits(ranked_labels: list[int]) -> int:
 def evaluate(records: list[dict], names: tuple[str, ...]) -> dict:
     decks = sorted({r["deck_id"] for r in records})
     per_kind = {"role": [0, 0], "synergy": [0, 0]}
-    single = {}
     for deck in decks:
         train = [r for r in records if r["deck_id"] != deck]
         xs = [features(row, names) for r in train for row in r["features"]]
