@@ -80,8 +80,10 @@ Examples (substitute the deck's identity for id<=rakdos):
 
 _SYSTEM_PROMPT = """\
 You are the query-planning stage of a Magic: The Gathering Commander deckbuilding
-assistant. Given the player's intent and their deck's colour identity, output a
-small set of Scryfall search queries that will surface good candidate cards.
+assistant. Given the player's intent, their deck's colour identity, and (when
+given) the deck's commander and gameplan, output a small set of Scryfall search
+queries that will surface good candidate cards FOR THAT DECK: cards whose rules
+text advances its plan and works with its commander, not generic staples.
 
 You do NOT pick cards or write prose. Output ONLY a JSON object of this shape:
 {{
@@ -97,13 +99,19 @@ Emit between 1 and {max_queries} queries. Nothing outside the JSON object.\
 """
 
 
-def build_prompt(user_intent: str, identity: frozenset[str], *, max_queries: int = 6) -> tuple[str, str]:
-    """Return (system_prompt, user_prompt) for the stage-1 call."""
+def build_prompt(
+    user_intent: str, identity: frozenset[str], *, max_queries: int = 6, deck_brief: str = "",
+) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the stage-1 call. ``deck_brief``
+    (commander rules text, gameplan, themes) is what lets a request like "what
+    fits my deck" become queries for the deck's actual mechanics: without it
+    this stage saw only the request's words and the colour identity."""
     token = identity_token(identity)
     system = _SYSTEM_PROMPT.format(
         few_shot=FEW_SHOT_BLOCK, identity=token, max_queries=max_queries
     )
-    user = f"Player intent: {user_intent}\nDeck colour identity: id<={token}"
+    brief = f"{deck_brief.strip()}\n" if deck_brief.strip() else ""
+    user = f"{brief}Player intent: {user_intent}\nDeck colour identity: id<={token}"
     return system, user
 
 
@@ -183,6 +191,7 @@ def generate_query_spec(
     provider: Any,
     user_intent: str,
     identity: frozenset[str],
+    deck_brief: str = "",
     *,
     model: str | None = None,
     max_queries: int = 6,
@@ -193,6 +202,6 @@ def generate_query_spec(
     Turning intent into a few Scryfall queries is a mechanical mapping, not deep
     reasoning, so callers can pass ``thinking=False`` (with Flash) for speed —
     see build_suggestions."""
-    system, user = build_prompt(user_intent, identity, max_queries=max_queries)
+    system, user = build_prompt(user_intent, identity, max_queries=max_queries, deck_brief=deck_brief)
     raw = provider.complete_json(system, user, model=model, thinking=thinking)
     return parse_spec(raw, identity, max_queries=max_queries)

@@ -170,11 +170,19 @@ def _held_out_cases(session, deck_ids: list[int] | None, roles_per_deck: int = R
 
 class _HeldOut:
     """Remove the held-out cards and this deck's proposals for them; put
-    everything back on exit so later cases see the deck intact."""
+    everything back on exit so later cases see the deck intact.
 
-    def __init__(self, session, deck_id: int, names: list[str]):
+    With ``gameplan`` (a provider), the deck's plan is drafted from the deck
+    WITHOUT the held-out cards and written for the case, then the deck's own
+    plan fields are restored: a plan drafted from the full list could name the
+    mechanics of exactly the cards being held out."""
+
+    def __init__(self, session, deck_id: int, names: list[str], gameplan=None, model=None):
         self.session, self.deck_id, self.names = session, deck_id, names
+        self.gameplan, self.model = gameplan, model
         self.saved: dict[str, list[dict]] = {}
+        self.saved_plan = None
+        self.drafted = None
 
     def _rows(self, table: str) -> list[dict]:
         from sqlalchemy import bindparam, text
@@ -196,6 +204,20 @@ class _HeldOut:
             ).bindparams(bindparam("names", expanding=True))
             conn.execute(stmt, {"d": self.deck_id, "names": self.names})
         self.session.commit()
+        if self.gameplan is not None:
+            from app.db import repository as repo
+            from app.pipeline import gameplan as gameplan_mod
+
+            row = self.session.connection().execute(
+                text("SELECT plan_notes, themes FROM deck WHERE id = :d"), {"d": self.deck_id},
+            ).fetchone()
+            self.saved_plan = (row[0], row[1]) if row else (None, None)
+            self.drafted = gameplan_mod.draft(
+                self.gameplan, repo.deck_snapshot(self.session, self.deck_id), model=self.model,
+            )
+            repo.update_deck(self.session, self.deck_id,
+                             plan_notes=self.drafted["plan"], themes=self.drafted["themes"])
+            self.session.commit()
         return self
 
     def __exit__(self, *exc):
@@ -203,6 +225,9 @@ class _HeldOut:
 
         self.session.rollback()
         conn = self.session.connection()
+        if self.saved_plan is not None:
+            conn.execute(text("UPDATE deck SET plan_notes = :p, themes = :t WHERE id = :d"),
+                         {"p": self.saved_plan[0], "t": self.saved_plan[1], "d": self.deck_id})
         for table, rows in self.saved.items():
             for row in rows:
                 cols = ", ".join(row)
@@ -232,6 +257,28 @@ def _engine_share(session, deck_id: int) -> float:
     return (row[1] or 0) / row[0] if row and row[0] else 0.0
 
 
+_PAGE_CACHE: dict[str, set[str]] = {}
+
+
+def _edhrec_page_names(commander: str | None) -> set[str]:
+    """Every card on the commander's EDHREC page. A pick off it is one the
+    consensus does not list: the novelty the player asked the engine to keep."""
+    if not commander:
+        return set()
+    if commander not in _PAGE_CACHE:
+        try:
+            from app.pipeline import edhrec_source
+            from app.tools.edhrec_client import get_edhrec_client
+
+            recs = get_edhrec_client().commander_recs(commander)
+            _PAGE_CACHE[commander] = {
+                c.name.lower() for c in edhrec_source.collect(recs, per_list_cap=10_000)
+            }
+        except Exception:  # noqa: BLE001
+            _PAGE_CACHE[commander] = set()
+    return _PAGE_CACHE[commander]
+
+
 def _timed(fn):
     start = time.monotonic()
     value = fn()
@@ -255,16 +302,19 @@ def _score(picks: list[str], held: set[str], full_order: list[str] | None = None
 def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_client,
              model: str, with_llm: bool, selectors: dict, pool_cap: int,
              role_limit: int, fast: bool = False, edhrec_by_role: bool = True,
-             theme_cap: int | None = None) -> dict:
+             theme_cap: int | None = None, gameplans: bool = False,
+             deck_aware: bool = True) -> dict:
     from app.pipeline import explain, jev, service
 
     intent = _intent(role, deck_id)
     engine_share = _engine_share(session, deck_id)
-    with _HeldOut(session, deck_id, held):
+    held_out = _HeldOut(session, deck_id, held, gameplan=provider if gameplans else None, model=model)
+    with held_out:
         prepared, prep_s = _timed(lambda: service.prepare_pool(
             session, deck_id, intent, provider, model=model, pool_cap=pool_cap,
             local_role_limit=role_limit, edhrec_by_role=edhrec_by_role,
             theme_whole_page=bool(theme_cap), theme_pool_cap=theme_cap,
+            deck_aware_search=deck_aware,
         ))
     legal = [c for c in prepared.shaped if c.legal_in_deck and c.name]
     in_pool = {n.lower() for n in held} & {c.name.lower() for c in legal}
@@ -278,6 +328,7 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
         "deck_id": deck_id, "commander": prepared.snapshot.get("commander"),
         "role": role, "intent": intent, "held_out": held,
         "engine_share": round(engine_share, 3),
+        "gameplan": held_out.drafted,
         "held_in_pool": sorted(in_pool), "legal_pool": len(legal),
         "prepare_s": prep_s, "selectors": {},
         "missed": {
@@ -288,6 +339,8 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
                         if not shaped_by_name[n].legal_in_deck},
         },
     }
+
+    page = _edhrec_page_names(prepared.snapshot.get("commander"))
 
     def total(c):
         return float((c.brainmap or {}).get("total") or 0.0)
@@ -316,6 +369,8 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
             _, reshuffled, _ = jev_run(shuffled, kwargs)
         record["selectors"][name] = {
             "picks": picks, "order": order, "seconds": secs, "batch": len(picks),
+            "off_page": (sum(1 for n in picks if n.lower() not in page) / len(picks)
+                         if picks and page else None),
             **_score(picks, in_pool, order),
             "stable": _overlap(picks, reshuffled) if reshuffled is not None else None,
             "determinism": _overlap(picks, again) if again is not None else None,
@@ -540,6 +595,7 @@ def summarize(records: list[dict], selectors: dict, kind: str | None = None) -> 
             "stable": _mean([s.get("stable") for s in rows]),
             "determinism": _mean([s.get("determinism") for s in rows]),
             "batch": _mean([s.get("batch") for s in rows]),
+            "off_page": _mean([s.get("off_page") for s in rows]),
             "seconds": _mean([s.get("seconds") for s in rows]),
             "vs_edhrec": [sum(a > b for a, b in paired), sum(a == b for a, b in paired),
                           sum(a < b for a, b in paired)],
@@ -561,7 +617,7 @@ def print_summary(summary: dict, title: str, baseline: dict | None) -> None:
     if summary.get("explain_seconds") is not None:
         print(f"   explainer (DeepSeek, thinking off): mean {summary['explain_seconds']:.1f}s")
     print(f"   {'selector':<10}{'end2end':>9}{'recall@10':>10}{'e2e vs base':>12}{'percentile':>12}{'stable':>9}"
-          f"{'determ.':>9}{'batch':>7}{'secs':>7}   W-T-L vs edhrec")
+          f"{'determ.':>9}{'batch':>7}{'secs':>7}{'novel':>7}   W-T-L vs edhrec")
     base = (baseline or {}).get("selectors", {})
     for name, s in summary["selectors"].items():
         wtl = "-".join(str(n) for n in s["vs_edhrec"])
@@ -571,7 +627,7 @@ def print_summary(summary: dict, title: str, baseline: dict | None) -> None:
         print(f"   {name:<10}{_fmt(s.get('end_to_end'), '.0%'):>9}{_fmt(s['recall@10'], '.0%'):>10}{delta:>12}"
               f"{_fmt(s['percentile'], '.2f'):>12}{_fmt(s['stable'], '.1f'):>9}"
               f"{_fmt(s['determinism'], '.1f'):>9}{_fmt(s['batch'], '.1f'):>7}"
-              f"{_fmt(s['seconds'], '.1f'):>7}   {wtl}")
+              f"{_fmt(s['seconds'], '.1f'):>7}{_fmt(s.get('off_page'), '.0%'):>7}   {wtl}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -588,6 +644,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="held-out samples per (deck, role); more cases for fitting")
     parser.add_argument("--fast", action="store_true", help="skip the consistency reruns")
     parser.add_argument("--theme-only", action="store_true", help="run only the theme cases")
+    parser.add_argument("--gameplans", action="store_true",
+                        help="draft each case's gameplan (DeepSeek) from the deck minus its held-out cards")
+    parser.add_argument("--search-blind", action="store_true",
+                        help="the old search: stage 1 and local retrieval without commander or plan")
     parser.add_argument("--named-themes", action="store_true",
                         help="theme cases ask for the deck's matched EDHREC theme by name")
     parser.add_argument("--theme-cap", type=int, default=None,
@@ -655,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
                 record = run_case(session, deck_id, role, held, provider, jev_client, model,
                                   not args.no_llm, selectors, args.pool_cap,
                                   args.role_limit, args.fast, not args.edhrec_blind,
-                                  args.theme_cap)
+                                  args.theme_cap, args.gameplans, not args.search_blind)
             except Exception as exc:  # noqa: BLE001 - one failed case must not sink the run
                 print(f"  deck {deck_id:>2} {role:<13} FAILED: {exc}")
                 failures += 1

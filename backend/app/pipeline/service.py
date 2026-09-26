@@ -185,6 +185,45 @@ def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
     return "\n".join(lines)
 
 
+def deck_brief(snapshot: dict[str, Any]) -> str:
+    """The commander's rules text, the gameplan, and its themes: what search
+    needs to know to look for cards that fit THIS deck."""
+    cards = {(c.get("name") or "").lower(): c for c in snapshot.get("cards", [])}
+    lines = []
+    for name in (snapshot.get("commander"), snapshot.get("partner_commander")):
+        if not name:
+            continue
+        text = " ".join(str((cards.get(name.lower()) or {}).get("oracle_text") or "").split())
+        lines.append(f"Commander: {name}" + (f" | {text}" if text else ""))
+    plan = (snapshot.get("plan_notes") or "").strip()
+    if plan:
+        lines.append(f"Gameplan: {' '.join(plan.split())}")
+    themes = [t for t in (snapshot.get("themes") or []) if t]
+    if themes:
+        lines.append(f"Themes: {', '.join(themes)}")
+    return "\n".join(lines)
+
+
+def _commander_mechanic_tags(snapshot: dict[str, Any]) -> set[str]:
+    """The commander's own functional tags (flavour and colour tags dropped):
+    what Tagger says the commander cares about."""
+    try:
+        from app.brainmap.mechanical import is_flavour_tag
+
+        name = snapshot.get("commander")
+        card = card_store.by_name(name) if name else None
+        if not card or not card.get("oracle_id"):
+            return set()
+        return {
+            t for t in card_store.tags_for(card["oracle_id"])
+            if not is_flavour_tag(t) and not t.startswith(("synergy-white", "synergy-blue",
+                "synergy-black", "synergy-red", "synergy-green", "color-", "colour-"))
+        }
+    except Exception as exc:  # noqa: BLE001 - a bonus source
+        logger.warning("commander tags unavailable: %s", exc)
+        return set()
+
+
 def _deck_off_meta(snapshot: dict[str, Any]) -> float:
     """How far off-consensus this deck wants to be, 0.0 to 1.0.
 
@@ -326,6 +365,7 @@ def prepare_pool(
     # Off: measured +1 point role, 0 theme over commander-wide EDHREC
     # (docs/PIPELINE.md), not worth a second set of page fetches per commander.
     theme_signal: bool = False,
+    deck_aware_search: bool = True,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -362,6 +402,8 @@ def prepare_pool(
             local_pool = local_retrieval.retrieve(
                 user_intent, identity, store=local_store or card_store,
                 per_role_limit=local_role_limit,
+                themes=(snapshot.get("themes") or []) if deck_aware_search else None,
+                commander_tags=_commander_mechanic_tags(snapshot) if deck_aware_search else None,
             )
         except Exception as exc:  # noqa: BLE001 - fall back to the model
             logger.warning("local retrieval failed, falling back to query planning: %s", exc)
@@ -375,6 +417,7 @@ def prepare_pool(
             try:
                 spec = spec_stage.generate_query_spec(
                     provider, user_intent, identity,
+                    deck_brief=deck_brief(snapshot) if deck_aware_search else "",
                     model=model, max_queries=max_queries, thinking=spec_thinking,
                 )
             except ValueError as exc:

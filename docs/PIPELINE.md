@@ -553,6 +553,45 @@ touched. `jev_eval.py` now prints this split on every run (a deck is
 engine-built when more than half its non-land cards were approved
 suggestions); trust the "built outside" row.
 
+### Deck gameplans and deck-aware search
+
+For a request that names no role ("what fits my deck"), search was blind to the
+deck: stage 1 saw only the request's words and the colour identity, local
+retrieval only the request's words, and EDHREC contributed the commander's top
+40 regardless. Jev saw the commander and deck when ranking, but can only rank
+what search found. And no deck had a gameplan: `plan_notes` and `themes` were
+empty on all eleven.
+
+- `pipeline/gameplan.py` drafts a plan (how the deck wins, its engine, early /
+  mid / late) and themes written as rules-text phrases ("-1/-1 counter",
+  "sacrifice another creature"), from the commander's text, the cards, and the
+  deck notes. `tools/draft_gameplans.py` stores one per deck through
+  `deck_set_plan`; all eleven now have one, editable in the app.
+- Stage 1 receives a deck brief (commander rules text, plan, themes) and is told
+  to plan queries for that deck, not generic staples.
+- Local retrieval, for a request naming no role, also searches each theme
+  phrase in rules text and pulls cards carrying the commander's own mechanic
+  tags. `prepare_pool(deck_aware_search=False)` restores the old search.
+- The plan already reached Jev and the chat through `render_plan`.
+
+`jev_eval.py --gameplans` drafts each case's plan from the deck WITHOUT its
+held-out cards, so the plan cannot point search at the answer. The eval also
+reports novelty: the share of each batch not on the commander's EDHREC page.
+
+Theme cases, 29-32 each, with per-case plans:
+
+| | Old search | Deck-aware, cap 60 | cap 100 | cap 150 |
+|---|---|---|---|---|
+| Held-out cards never found | 47% | 39% | 38% | 38% |
+| Found, then cut by the cap | 1% | 11% | 8% | 5% |
+| Blend end to end | 43% | 41% | 41% | 42% |
+| Batch off the EDHREC page | 3% | 7% | 6% | 6% |
+
+Search finds more of the player's cards and the batch reaches further past
+EDHREC's page, but end to end holds at 41-43% at every cap: the extra
+candidates are no easier to rank. On role requests the plans cost nothing
+(blend 55%, as before) and Jev alone rose from 44% to 48% with the plan to read.
+
 ### Behaviour eval
 
 `tools/behaviour_eval.py replay` over 13 stored turns. Its records were fixed

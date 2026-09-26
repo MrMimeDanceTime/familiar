@@ -103,6 +103,10 @@ def retrieve(
     store: Any,
     per_role_limit: int = 80,
     text_limit: int = 40,
+    themes: list[str] | None = None,
+    commander_tags: set[str] | None = None,
+    theme_limit: int = 25,
+    tag_limit: int = 150,
 ) -> list[dict[str, Any]]:
     """Candidates for an intent from the local index, deduped by oracle id.
 
@@ -133,6 +137,22 @@ def retrieve(
             ))
         except Exception as exc:  # noqa: BLE001 - the index is optional
             logger.warning("local retrieval: role %s failed: %s", role, exc)
+
+    # A request naming no role ("what fits my deck") used to search only its
+    # own words. The deck's gameplan themes (rules-text phrases) and the
+    # commander's own mechanic tags say what "fits" means for this deck.
+    if not intent_roles(intent):
+        allowed = "".join(sorted(identity)) or None
+        for theme in themes or []:
+            try:
+                take(store.search_text(theme, limit=theme_limit, identity=allowed))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("local retrieval: theme %r failed: %s", theme, exc)
+        if commander_tags:
+            try:
+                take(store.cards_with_any_tag(sorted(commander_tags), limit=tag_limit))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("local retrieval: commander tags failed: %s", exc)
 
     terms = intent_terms(intent)
     if terms:
