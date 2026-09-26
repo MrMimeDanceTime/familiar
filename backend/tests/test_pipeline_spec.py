@@ -118,11 +118,11 @@ def test_generate_query_spec_end_to_end_offline():
 
 
 def test_parse_spec_repairs_an_unescaped_backslash_in_a_query():
-    """Seen live: the model left a regex backslash unescaped and the whole
+    r"""Seen live: the model left a regex backslash unescaped and the whole
     suggestion failed on 'Invalid \escape'."""
-    raw = '{"queries": ["o:/deals \d+ damage/"], "intent_summary": "burn"}'
+    raw = r'{"queries": ["o:/deals \d+ damage/"], "intent_summary": "burn"}'
     spec = parse_spec(raw, frozenset("R"))
-    assert "\d+" in spec.queries[0]
+    assert r"\d+" in spec.queries[0]
 
 
 def test_parse_spec_still_rejects_json_it_cannot_repair():
