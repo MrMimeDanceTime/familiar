@@ -82,6 +82,7 @@ JEV_SELECTORS = {
     "similar2": {"mode": "verdict", "samples": 3, "max_similar": 2},
     "similar3": {"mode": "verdict", "samples": 3, "max_similar": 3},
     "p>=0.5": {"mode": "verdict", "samples": 3, "min_probability": 0.5},
+    "blend": {"mode": "blend", "samples": 3},
 }
 ALL_SELECTORS = {
     **JEV_SELECTORS,
@@ -102,7 +103,8 @@ def _intent(role: str) -> str:
     return SYNERGY_INTENT if role == "synergy" else ROLE_INTENTS[role]
 
 
-def _held_out_cases(session, deck_ids: list[int] | None) -> list[tuple[int, str, list[str]]]:
+def _held_out_cases(session, deck_ids: list[int] | None, roles_per_deck: int = ROLES_PER_DECK,
+                    repeats: int = 1) -> list[tuple[int, str, list[str]]]:
     """(deck, role, held-out names): each deck's two best-represented roles,
     plus a synergy case from its roleless theme cards."""
     from app.db import repository as repo
@@ -124,12 +126,16 @@ def _held_out_cases(session, deck_ids: list[int] | None) -> list[tuple[int, str,
             if not fine & GENERIC_ROLES:
                 theme.append(card.card_name)
         ranked = sorted(by_role.items(), key=lambda kv: len(kv[1]), reverse=True)
-        chosen = [kv for kv in ranked if len(kv[1]) >= MIN_HELD][:ROLES_PER_DECK]
+        chosen = [kv for kv in ranked if len(kv[1]) >= MIN_HELD][:roles_per_deck]
         if len(theme) >= MIN_HELD:
             chosen.append(("synergy", theme))
         for role, names in chosen:
-            rng = random.Random(f"{deck.id}:{role}")
-            cases.append((deck.id, role, sorted(rng.sample(sorted(names), min(MAX_HELD, len(names))))))
+            # Repeat 0 keeps the original seed so the default cases never move;
+            # a role with no more cards than one sample has nothing to repeat.
+            for rep in range(repeats if len(names) > MAX_HELD else 1):
+                seed = f"{deck.id}:{role}" + (f":{rep}" if rep else "")
+                rng = random.Random(seed)
+                cases.append((deck.id, role, sorted(rng.sample(sorted(names), min(MAX_HELD, len(names))))))
     return cases
 
 
@@ -198,14 +204,14 @@ def _score(picks: list[str], held: set[str], full_order: list[str] | None = None
 
 def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_client,
              model: str, with_llm: bool, selectors: dict, pool_cap: int,
-             role_limit: int) -> dict:
+             role_limit: int, fast: bool = False, edhrec_by_role: bool = True) -> dict:
     from app.pipeline import explain, jev, service
 
     intent = _intent(role)
     with _HeldOut(session, deck_id, held):
         prepared, prep_s = _timed(lambda: service.prepare_pool(
             session, deck_id, intent, provider, model=model, pool_cap=pool_cap,
-            local_role_limit=role_limit,
+            local_role_limit=role_limit, edhrec_by_role=edhrec_by_role,
         ))
     legal = [c for c in prepared.shaped if c.legal_in_deck and c.name]
     in_pool = {n.lower() for n in held} & {c.name.lower() for c in legal}
@@ -249,13 +255,32 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
 
     for name, kwargs in selectors.items():
         (selection, picks, order), secs = _timed(lambda: jev_run(prepared.shaped, kwargs))
-        _, again, _ = jev_run(prepared.shaped, kwargs)
-        _, reshuffled, _ = jev_run(shuffled, kwargs)
+        if fast:
+            again = reshuffled = None
+        else:
+            _, again, _ = jev_run(prepared.shaped, kwargs)
+            _, reshuffled, _ = jev_run(shuffled, kwargs)
         record["selectors"][name] = {
             "picks": picks, "order": order, "seconds": secs, "batch": len(picks),
             **_score(picks, in_pool, order),
-            "stable": _overlap(picks, reshuffled), "determinism": _overlap(picks, again),
+            "stable": _overlap(picks, reshuffled) if reshuffled is not None else None,
+            "determinism": _overlap(picks, again) if again is not None else None,
         }
+        if name == "verdict3":
+            # Every legal candidate with every signal and whether the player
+            # actually ran it: the training data for weighing the signals.
+            judged = {j["name"].lower(): j for j in selection.raw["judgments"]}
+            span = max(1, len(legal) - 1)
+            record["features"] = []
+            for position, card in enumerate(legal):
+                j = judged.get(card.name.lower()) or {}
+                judgment = jev.Judgment(name=card.name, score=j.get("score") or 0.0,
+                                        asked=j.get("asked"))
+                record["features"].append({
+                    "name": card.name, "label": int(card.name.lower() in in_pool),
+                    **jev.blend_features(judgment, card, position / span),
+                    "cmc": card.cmc, "roles": sorted(card.fine_roles),
+                })
         if name == "verdict3" and with_llm:
             explained, explain_s = _timed(lambda: explain.explain(
                 provider, selection, prepared.shaped, intent, model=model,
@@ -503,12 +528,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--role-limit", type=int, default=80,
                         help="cards fetched per role from the local index")
     parser.add_argument("--all-selectors", action="store_true")
+    parser.add_argument("--only", action="append", help="run just these Jev selectors")
+    parser.add_argument("--roles-per-deck", type=int, default=ROLES_PER_DECK)
+    parser.add_argument("--repeats", type=int, default=1,
+                        help="held-out samples per (deck, role); more cases for fitting")
+    parser.add_argument("--fast", action="store_true", help="skip the consistency reruns")
+    parser.add_argument("--edhrec-blind", action="store_true",
+                        help="the old intent-blind EDHREC source, for A/B")
     parser.add_argument("--save", action="store_true", help="write this run as the baseline")
     parser.add_argument("--cuts", action="store_true",
                         help="evaluate cut ranking against approved and denied removals")
     parser.add_argument("--samples", type=int, default=3, help="Jev samples for --cuts")
     args = parser.parse_args(argv)
     selectors = ALL_SELECTORS if args.all_selectors else JEV_SELECTORS
+    if args.only:
+        selectors = {k: v for k, v in ALL_SELECTORS.items() if k in args.only}
 
     import logging
 
@@ -547,17 +581,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     records = []
+    failures = 0
     with Session(get_engine()) as session:
-        cases = _held_out_cases(session, args.deck)
+        cases = _held_out_cases(session, args.deck, args.roles_per_deck, args.repeats)
         print(f"{len(cases)} case(s), pool cap {args.pool_cap}, role limit {args.role_limit}, "
               f"jev model {jev_client.model}")
         for deck_id, role, held in cases:
             try:
                 record = run_case(session, deck_id, role, held, provider, jev_client, model,
                                   not args.no_llm, selectors, args.pool_cap,
-                                  args.role_limit)
+                                  args.role_limit, args.fast, not args.edhrec_blind)
             except Exception as exc:  # noqa: BLE001 - one failed case must not sink the run
                 print(f"  deck {deck_id:>2} {role:<13} FAILED: {exc}")
+                failures += 1
                 continue
             sel = record["selectors"]
             line = " ".join(f"{n}={sel[n]['hits']}" for n in sel)
@@ -578,6 +614,11 @@ def main(argv: list[str] | None = None) -> int:
     out.write_text(json.dumps({"summary": summary, "records": records}, indent=2, default=str),
                    encoding="utf-8")
     print(f"\ntrace: {out}")
+    if args.save and (failures or not records):
+        # A run with failed cases scores a different case set; saving it once
+        # overwrote the baseline with zeros when the Jev account ran dry.
+        print(f"baseline NOT saved: {failures} case(s) failed")
+        return 1
     if args.save:
         BASELINE_PATH.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(f"baseline saved: {BASELINE_PATH}")

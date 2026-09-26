@@ -22,6 +22,9 @@ Modes, compared by tools/jev_compare.py and tools/jev_eval.py:
   * ``ensemble``: verdict and choice together, ranked on the mean of each
     card's rank position in the two. Different framings, partly independent
     errors.
+  * ``blend``: verdict's questions, ranked by a logistic model over Jev's two
+    answers plus the brain map layers and EDHREC numbers, with weights fitted
+    to the player's own decks by tools/fit_blend.py (``jev_blend.json``).
 
 ``samples`` repeats verdict (identical requests; Jev is not deterministic and
 swaps about one card in ten between runs) or reorders choice (to cancel
@@ -34,10 +37,12 @@ or drop each pick, carries the prose.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -49,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.typesafe.ai"
 DEFAULT_MODEL = "jev-1.13.0"
-MODES = ("blind", "informed", "verdict", "choice", "ensemble")
+MODES = ("blind", "informed", "verdict", "choice", "ensemble", "blend")
 
 FIT_LEVELS = [
     "Does not belong in this deck: off-plan, or actively works against it.",
@@ -451,6 +456,8 @@ def judge(
 ) -> tuple[list[Judgment], dict[str, Any]]:
     """Ask Jev about every card. Returns judgments in pool order plus usage."""
     samples = max(1, samples)
+    if mode == "blend":
+        mode = "verdict"
     if mode == "choice":
         return _judge_choice(client, cards, state, user_intent, samples)
     if mode == "ensemble":
@@ -473,6 +480,53 @@ def judge(
     return _average([r[0] for r in runs]), _merge_usage(*(r[1] for r in runs))
 
 
+BLEND_PATH = Path(__file__).with_name("jev_blend.json")
+# Signals that can be missing become 0 plus a "missing" flag, so the model can
+# learn what "the brain map had no opinion" means.
+BLEND_OPTIONAL = ("bm_total", "bm_consensus", "bm_mechanical", "bm_personal",
+                  "edhrec_rate", "edhrec_synergy")
+
+
+def blend_features(judgment: Judgment, card: ShapedCard, position: float) -> dict[str, Any]:
+    """One candidate's signals under the names the blend is fitted on. The
+    eval, the fitting tool, and ranking all build them here, so the weights
+    are always applied to the inputs they were fitted to."""
+    bm = card.brainmap or {}
+    ed = card.edhrec or {}
+    return {
+        "jev": judgment.score, "asked": judgment.asked,
+        "pool_position": position, "combo": int(bool(card.completes_combo_with)),
+        "bm_total": bm.get("total"), "bm_consensus": bm.get("consensus"),
+        "bm_mechanical": bm.get("mechanical"), "bm_personal": bm.get("personal"),
+        "edhrec_rate": ed.get("inclusion_rate"), "edhrec_synergy": ed.get("synergy"),
+    }
+
+
+def blend_vector(row: dict[str, Any], names: tuple[str, ...] | list[str]) -> list[float]:
+    out: list[float] = []
+    for name in names:
+        value = row.get(name)
+        present = isinstance(value, (int, float))
+        out.append(float(value) if present else 0.0)
+        if name in BLEND_OPTIONAL:
+            out.append(0.0 if present else 1.0)
+    return out
+
+
+def load_blend() -> dict[str, Any] | None:
+    try:
+        return json.loads(BLEND_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def blend_score(model: dict[str, Any], row: dict[str, Any]) -> float:
+    x = blend_vector(row, model["features"])
+    return model["bias"] + sum(
+        w * (v - m) / s for w, v, m, s in zip(model["weights"], x, model["mean"], model["std"])
+    )
+
+
 def _rank_key(judgment: Judgment, card: ShapedCard, mode: str, brainmap_weight: float) -> float:
     if mode in ("verdict", "choice", "ensemble"):
         jev = judgment.score
@@ -490,7 +544,7 @@ def reason_for(judgment: Judgment, card: ShapedCard, mode: str = "blind",
                position: int = 0, pool_size: int = 0) -> str:
     if mode in ("choice", "ensemble"):
         head = f"Jev ranked it #{position} of {pool_size} candidates for this request"
-    elif mode == "verdict":
+    elif mode in ("verdict", "blend"):
         return _verdict_reason(judgment, card)
     else:
         levels = VERDICT_LEVELS if mode == "informed" else FIT_LEVELS
@@ -675,14 +729,22 @@ def select_jev(
 
     state = build_state(deck_context, user_intent, player_message)
     judgments, usage = judge(client, legal, state, user_intent, mode, samples)
-    for judgment, card in zip(judgments, legal):
-        judgment.rank = _rank_key(judgment, card, mode, brainmap_weight)
+    blend = load_blend() if mode == "blend" else None
+    if mode == "blend" and blend is None:
+        logger.warning("jev blend weights missing at %s, ranking on the verdict alone", BLEND_PATH)
+    span = max(1, len(legal) - 1)
+    for index, (judgment, card) in enumerate(zip(judgments, legal)):
+        if blend is not None:
+            judgment.rank = blend_score(blend, blend_features(judgment, card, index / span))
+        else:
+            judgment.rank = _rank_key(judgment, card, "verdict" if mode == "blend" else mode,
+                                      brainmap_weight)
 
     order = sorted(range(len(legal)), key=lambda i: judgments[i].rank, reverse=True)
     chosen = shape_batch(
         order, legal, judgments, max_picks,
         max_similar=max_similar,
-        min_probability=min_probability if mode == "verdict" else None,
+        min_probability=min_probability if mode in ("verdict", "blend") else None,
     )
     position_of = {index: position for position, index in enumerate(order)}
     picks = [

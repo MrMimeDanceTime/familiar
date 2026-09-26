@@ -49,11 +49,13 @@ class Settings(BaseSettings):
     select_backend: str = "llm"
     typesafe_api_key: str = ""
     typesafe_model: str = "jev-1.13.0"
-    # How Jev judges (blind | informed | verdict | choice | ensemble) and how
-    # many samples it averages. verdict x3 measured best on held-out cards from
-    # the player's own decks: 73% recall@10 against the LLM's 72%, and 9.5 of
-    # its top 10 survive a pool shuffle against the LLM's 7.0. See PIPELINE.md.
-    jev_mode: str = "verdict"
+    # How Jev judges (blind | informed | verdict | choice | ensemble | blend)
+    # and how many samples it averages. blend ranks verdict's answers together
+    # with the brain map and EDHREC numbers, weighted by a model fitted to the
+    # player's own decks (app/pipeline/jev_blend.json, tools/fit_blend.py).
+    # It returned 56% of held-out role cards end to end against verdict's 52%.
+    # See PIPELINE.md.
+    jev_mode: str = "blend"
     jev_samples: int = 3
     # Batch shaping after ranking: at most this many interchangeable cards
     # (same primary type and roles; 0 disables), and stop below this verdict

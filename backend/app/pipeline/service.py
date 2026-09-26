@@ -320,6 +320,7 @@ def prepare_pool(
     local_store: Any | None = None,
     local_pool_min: int = 25,
     local_role_limit: int = 80,
+    edhrec_by_role: bool = True,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -377,6 +378,7 @@ def prepare_pool(
             scryfall=scryfall, edhrec=edhrec,
             identity=identity,
             off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
+            edhrec_roles=(local_retrieval.intent_roles(user_intent) or None) if edhrec_by_role else None,
         )
         # EDHREC's commander-specific picks lead, then the local hits, then
         # whatever the fallback queries added; dedupe keeps the first seen.

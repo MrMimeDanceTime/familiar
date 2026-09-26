@@ -269,3 +269,39 @@ def test_edhrec_failure_still_yields_query_results(monkeypatch):
         edhrec=FakeEdhrec(exc=EdhrecNotFoundError("no page")),
     )
     assert [c["name"] for c in result.cards] == ["A"]
+
+
+class TaggedCardStore(FakeCardStore):
+    def __init__(self, names, tags):
+        super().__init__(names)
+        self._tags = tags
+
+    def tags_for_many(self, oracle_ids):
+        return {oid: self._tags.get(oid, set()) for oid in oracle_ids}
+
+
+def test_edhrec_source_answers_the_requested_role(monkeypatch):
+    """The page's top cards are intent-blind; a ramp card past the per-list cut
+    only enters the pool when the request asks for ramp."""
+    from app.pipeline import candidates as candidates_module
+    from app.pipeline import roles
+
+    ramp_slug = sorted(roles.slug_rules_for(roles.RAMP)[0])[0]
+    filler = [f"Staple {i}" for i in range(30)]
+    names = set(filler) | {"Deep Ramp"}
+    monkeypatch.setattr(candidates_module, "card_store", TaggedCardStore(
+        names, {"oid-deep ramp": {ramp_slug}},
+    ))
+    page = _edhrec_page(highsynergycards=[_view(n, 0.3, 10000 - i) for i, n in enumerate(filler)]
+                        + [_view("Deep Ramp", 0.1, 50)])
+
+    blind = candidates_module._edhrec_recommendations(
+        "Cmd", FakeEdhrec(recs=page), frozenset("B"), off_meta=0.0, cap=40,
+    )
+    aware = candidates_module._edhrec_recommendations(
+        "Cmd", FakeEdhrec(recs=page), frozenset("B"), off_meta=0.0, cap=40,
+        roles_wanted={roles.RAMP},
+    )
+    assert "Deep Ramp" not in [c["name"] for c in blind]
+    assert [c["name"] for c in aware][0] == "Deep Ramp"
+    assert len({c["oracle_id"] for c in aware}) == len(aware)

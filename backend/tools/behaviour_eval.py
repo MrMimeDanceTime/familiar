@@ -25,8 +25,10 @@ overwrite the evidence.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -153,6 +155,20 @@ def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _scratch_copy(src: Path) -> Path:
     dest = Path(tempfile.mkdtemp(prefix="familiar-eval-")) / "familiar.db"
+
+    # The copy is the size of the live DB (~450MB) and was never removed: a day
+    # of eval runs left 14GB in temp. The engine is disposed first because
+    # Windows will not delete a file SQLite still has open.
+    def _cleanup() -> None:
+        try:
+            from app.db.session import get_engine
+
+            get_engine().dispose()
+        except Exception:  # noqa: BLE001 - best effort at interpreter exit
+            pass
+        shutil.rmtree(dest.parent, ignore_errors=True)
+
+    atexit.register(_cleanup)
     a = sqlite3.connect(str(src))
     b = sqlite3.connect(str(dest))
     try:

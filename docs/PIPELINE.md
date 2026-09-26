@@ -276,12 +276,15 @@ Code is in `pipeline/jev.py` (ranking) and `pipeline/explain.py` (prose).
 
 The split:
 
-1. **Jev ranks.** Per legal card, one yes/no: "should be one of the cards added
+1. **Jev judges.** Per legal card, one yes/no: "should be one of the cards added
    to this deck in answer to the request", over the card's rules text plus the
    pipeline's evidence (role tags, EDHREC play rate and synergy, brain map
-   layer scores). The probability is the rank. Three samples are averaged,
-   because identical requests swap about one card in ten.
-2. **Python takes the top 10** and writes each reason from facts it holds:
+   layer scores), plus one for "answers the request". Three samples are
+   averaged, because identical requests swap about one card in ten.
+2. **The blend ranks.** A logistic model fitted to the player's own decks
+   weighs Jev's two answers with the brain map layers and EDHREC numbers (see
+   "Learned blend" below).
+3. **Python takes the top 10** and writes each reason from facts it holds:
    the card's roles, any combo it completes, and the brain map's
    plain-language line, e.g. "Ramp; 54% of decks, synergy +0.47; works with
    the commander via synergy-swamp; you have taken this before; Jev 87%."
@@ -394,13 +397,49 @@ orderings.
   in two runs). An all-on-colour 80 crowds the capped pool with generic
   staples that the off-colour share used to leave room for. Not applied.
 
-### Where the ceiling is
+### Where the ceiling was, and the two fixes
 
-About 40% of held-out role cards and half the theme cards never reach the
-pool. For role requests they rank past 80 by EDHREC popularity (a mono-black
-deck's Greed sits 91st among 637 black draw cards). Deeper retrieval brings
-them in but costs more in dilution than it gains. The next lever is ranking
-the deeper candidates before the cap, not retrieving more of them.
+About 40% of held-out role cards never reached the pool. Two causes:
+
+- **The EDHREC source ignored the request.** It added the commander's top 40
+  cards by play rate and specificity whatever was asked, so for "more ramp"
+  the commander's own ramp further down the page never became a candidate, and
+  local retrieval's role query ranks by global popularity (a mono-black deck's
+  Greed sits 91st of 637 black draw cards, past its 80). Of 84 held-out cards
+  that never reached the pool, 54 were on the commander's EDHREC page. Now,
+  when the request names roles, every card on the whole page that fills one
+  goes in first (`candidates._edhrec_recommendations`, `roles_wanted`).
+- **The cap is chosen by the weakest signal.** Shaping keeps the brain map's
+  top 60, and the brain map alone recovers fewer of the player's cards than
+  plain EDHREC order (27% vs 32% end to end). Retrieving deeper therefore did
+  not help: 200 per role with the cap at 60, 100, or 300 per role all scored at
+  or below the default.
+
+### Learned blend
+
+`tools/fit_blend.py` fits a logistic model on `jev_eval.py` feature rows
+(every legal candidate, its signals, and whether the player ran it) and
+evaluates it leave-one-deck-out, so a deck is always scored by weights that
+never saw it. `JEV_MODE=blend` ranks with the saved weights
+(`app/pipeline/jev_blend.json`); `blend_features` in `jev.py` is the single
+definition the eval, the fitter, and ranking all use. The weights are this
+player's: refit as decks accumulate, with `--save`, and say why in the commit.
+
+Everything together, 100 cases (79 role, 21 theme) on 11 decks, 2026-09-26:
+
+| End to end | Role | Theme |
+|---|---|---|
+| Brain map order | 33% | 32% |
+| EDHREC order | 39% | 40% |
+| Jev verdict ×3 | 52% | 40% |
+| **Blend** | **56%** | **44%** |
+| Before this round (old EDHREC source, verdict ×3) | 44% | 36% |
+
+Leave-one-deck-out the blend scored 59% role and 40% theme; the theme cases
+are 21 and move about four points between runs, so theme is a tie. The fitted
+weights lean on Jev's verdict and its "answers the request" answer, then
+EDHREC play rate and brain map consensus; brain map mechanical fit gets a
+negative weight once the others are in.
 
 ### Behaviour eval
 

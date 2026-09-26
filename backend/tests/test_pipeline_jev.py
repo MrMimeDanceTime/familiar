@@ -330,3 +330,40 @@ def test_no_cuts_while_the_deck_has_room():
                                cut_cards=candidates, deck_total=60)
     assert selection.cuts == []
     assert not any("cut_0" in call["questions"] for call in client.calls)
+
+
+def _model(**weights):
+    names = list(weights)
+    return {"features": names, "bias": 0.0, "weights": list(weights.values()),
+            "mean": [0.0] * len(names), "std": [1.0] * len(names)}
+
+
+def test_blend_ranks_on_the_fitted_weights(monkeypatch):
+    # asked outweighs the verdict here, so the card that answers the request wins.
+    monkeypatch.setattr(jev, "load_blend", lambda: _model(jev=1.0, asked=3.0))
+    pool = [_card("Strong Off-Ask"), _card("On-Ask")]
+    client = FakeJev({"Strong Off-Ask": (3.6, 0.1), "On-Ask": (2.0, 0.9)})
+    selection = jev.select_jev(client, pool, "x", mode="blend")
+    assert [p.name for p in selection.picks] == ["On-Ask", "Strong Off-Ask"]
+    assert selection.picks[0].reason.endswith("Jev 50%.")
+
+
+def test_blend_without_weights_falls_back_to_the_verdict(monkeypatch):
+    monkeypatch.setattr(jev, "load_blend", lambda: None)
+    pool = [_card("Strong Off-Ask"), _card("On-Ask")]
+    client = FakeJev({"Strong Off-Ask": (3.6, 0.1), "On-Ask": (2.0, 0.9)})
+    selection = jev.select_jev(client, pool, "x", mode="blend")
+    assert [p.name for p in selection.picks] == ["Strong Off-Ask", "On-Ask"]
+
+
+def test_blend_vector_flags_missing_optional_signals():
+    row = {"jev": 0.8, "asked": 0.5, "bm_total": None, "edhrec_rate": 0.4}
+    assert jev.blend_vector(row, ["jev", "bm_total", "edhrec_rate"]) == [0.8, 0.0, 1.0, 0.4, 0.0]
+
+
+def test_the_shipped_blend_matches_the_feature_layout():
+    model = jev.load_blend()
+    if model is None:
+        pytest.skip("no fitted blend shipped")
+    width = len(jev.blend_vector({}, model["features"]))
+    assert len(model["weights"]) == len(model["mean"]) == len(model["std"]) == width
