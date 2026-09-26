@@ -211,6 +211,27 @@ class _HeldOut:
         self.session.commit()
 
 
+ENGINE_BUILT_SHARE = 0.5
+
+
+def _engine_share(session, deck_id: int) -> float:
+    """Share of the deck's non-land cards that arrived as approved suggestions.
+    On an engine-built deck the held-out cards are the engine's own past
+    picks, so the eval partly grades agreement with itself; decks built
+    outside the app are the clean ground truth, reported separately."""
+    from sqlalchemy import text
+
+    row = session.connection().execute(text("""
+        SELECT COUNT(*),
+               SUM(CASE WHEN EXISTS (
+                   SELECT 1 FROM deck_proposals p WHERE p.deck_id = c.deck_id
+                   AND p.action = 'add' AND p.status = 'approved'
+                   AND lower(p.card_name) = lower(c.card_name)) THEN 1 ELSE 0 END)
+        FROM deckcard c WHERE c.deck_id = :d AND c.type_line NOT LIKE '%Land%'
+    """), {"d": deck_id}).fetchone()
+    return (row[1] or 0) / row[0] if row and row[0] else 0.0
+
+
 def _timed(fn):
     start = time.monotonic()
     value = fn()
@@ -238,6 +259,7 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
     from app.pipeline import explain, jev, service
 
     intent = _intent(role, deck_id)
+    engine_share = _engine_share(session, deck_id)
     with _HeldOut(session, deck_id, held):
         prepared, prep_s = _timed(lambda: service.prepare_pool(
             session, deck_id, intent, provider, model=model, pool_cap=pool_cap,
@@ -255,6 +277,7 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
     record = {
         "deck_id": deck_id, "commander": prepared.snapshot.get("commander"),
         "role": role, "intent": intent, "held_out": held,
+        "engine_share": round(engine_share, 3),
         "held_in_pool": sorted(in_pool), "legal_pool": len(legal),
         "prepare_s": prep_s, "selectors": {},
         "missed": {
@@ -649,6 +672,22 @@ def main(argv: list[str] | None = None) -> int:
     for kind in ("role", "synergy", "all"):
         summary[kind] = summarize(records, selectors, None if kind == "all" else kind)
         print_summary(summary[kind], kind, baseline.get(kind))
+
+    # The same end-to-end numbers split by where the deck came from.
+    names = [*BASELINES, *selectors] + (["llm"] if any("llm" in r["selectors"] for r in records) else [])
+    print("\n== end to end by deck origin (engine-built: >50% of cards were approved suggestions)")
+    summary["by_origin"] = {}
+    for label, pick in (("engine-built", lambda r: r.get("engine_share", 0) > ENGINE_BUILT_SHARE),
+                        ("built outside", lambda r: r.get("engine_share", 0) <= ENGINE_BUILT_SHARE)):
+        for kind in ("role", "synergy"):
+            rs = [r for r in records if pick(r) and (r["role"] == "synergy") == (kind == "synergy")]
+            held = sum(len(r["held_out"]) for r in rs)
+            if not held:
+                continue
+            row = {n: sum(r["selectors"][n]["hits"] for r in rs if n in r["selectors"]) / held for n in names}
+            summary["by_origin"][f"{label}/{kind}"] = row
+            print(f"   {label:<14}{kind:<8}{len(rs):>4} cases  "
+                  + "  ".join(f"{n} {v:.0%}" for n, v in row.items()))
 
     TRACE_DIR.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

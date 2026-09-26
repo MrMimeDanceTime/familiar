@@ -529,6 +529,30 @@ held-out role cards end to end. The one untested source of better data is the
 player's own decisions on real suggestions, which this offline eval cannot
 measure.
 
+### Is the eval grading the engine against itself?
+
+Six of the eleven decks were built almost entirely from approved suggestions
+(Korlash 64 of 65 non-land cards, Azula 64 of 65, Hei Bai 70 of 71); four were
+built outside the app with none (Torbran, Captain N'ghathrod, Rin and Seri,
+Marina Vendrell). On an engine-built deck the held-out cards are the engine's
+own past picks, and the player approves almost anything that is not a blunder,
+so that ground truth partly measures agreement with the engine.
+
+Split out, role requests end to end over the 102-case run:
+
+| | Engine-built (45 cases) | Built outside the app (28 cases) |
+|---|---|---|
+| Held-out cards reaching the pool | 87% | 73% |
+| EDHREC order | 41% | 42% |
+| Jev alone | 51% | 55% |
+| Blend | 65% | 61% |
+
+Fitted on the engine-built decks only and tested on the four others, the blend
+scores 60% against Jev's 55%. The gains hold on ground truth the engine never
+touched. `jev_eval.py` now prints this split on every run (a deck is
+engine-built when more than half its non-land cards were approved
+suggestions); trust the "built outside" row.
+
 ### Behaviour eval
 
 `tools/behaviour_eval.py replay` over 13 stored turns. Its records were fixed
