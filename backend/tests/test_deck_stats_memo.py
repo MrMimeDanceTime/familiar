@@ -70,7 +70,10 @@ def test_callers_cannot_poison_the_memo(session):
 def test_memo_expires(session, monkeypatch):
     deck = _deck(session)
     deck_stats.compute_deck_stats(session, deck.id)
-    monkeypatch.setattr(deck_stats, "STATS_MEMO_SECONDS", 0.0)
+    # Negative, not 0.0: expiry is a strict ``now - stamped > TTL`` and
+    # time.monotonic() has 15.6ms granularity on Windows, so both reads land
+    # in the same tick and a 0.0 TTL compares 0.0 > 0.0 -> never expires.
+    monkeypatch.setattr(deck_stats, "STATS_MEMO_SECONDS", -1.0)
     calls = {"n": 0}
     monkeypatch.setattr(deck_stats, "_deck_combos", lambda names: calls.__setitem__("n", calls["n"] + 1) or [])
     deck_stats.compute_deck_stats(session, deck.id)

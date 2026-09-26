@@ -66,3 +66,57 @@ def test_a_role_request_does_not_widen_into_the_theme():
     store = _Store()
     local_retrieval.retrieve("more ramp", frozenset("B"), store=store, themes=["wither"])
     assert "wither" not in store.text_queries
+
+
+def test_background_draft_fills_an_empty_plan_and_never_replaces_one(tmp_path, monkeypatch):
+    from sqlmodel import Session, SQLModel, create_engine
+
+    import app.db.session as db_session
+    import app.llm.factory as factory
+    from app.db import repository as repo
+    from app.tools import deck_tools
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'g.db'}")
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db_session, "get_engine", lambda: engine)
+
+    class Provider:
+        def complete_json(self, system, user, **kwargs):
+            return json.dumps({"plan": "Win with wither.", "themes": ["wither"]})
+
+    monkeypatch.setattr(factory, "get_provider", lambda: Provider())
+    monkeypatch.setattr(deck_tools, "lookup_card",
+                        lambda client, name: {"name": name, "oracle_text": "Wither."})
+    with Session(engine) as s:
+        empty = repo.create_deck(s, name="A").id
+        planned = repo.create_deck(s, name="B").id
+        repo.update_deck(s, planned, plan_notes="Mine.", themes=["mine"])
+
+    gameplan._draft_and_store(empty, "Massacre Girl, Known Killer")
+    gameplan._draft_and_store(planned, "Massacre Girl, Known Killer")
+    with Session(engine) as s:
+        assert repo.deck_snapshot(s, empty)["plan_notes"] == "Win with wither."
+        assert repo.deck_snapshot(s, planned)["plan_notes"] == "Mine."
+
+
+def test_suggest_cards_accepts_goal_as_intent(monkeypatch):
+    from app.tools import dispatch as d
+
+    seen = {}
+    monkeypatch.setitem(d.PROVIDER_SESSION_TOOLS, "suggest_cards",
+                        lambda session, provider, **kw: seen.update(kw) or {"ok": True})
+    result = d.dispatch("suggest_cards", {"goal": "ramp", "deck_id": 1}, session=None, provider=object())
+    assert result.ok and seen["intent"] == "ramp" and "goal" not in seen
+
+
+def test_pending_adds_count_as_in_the_deck():
+    from app.pipeline.shaping import DeckContext
+
+    ctx = DeckContext.from_snapshot(
+        {"cards": [], "pending_proposals": {"proposals": [
+            {"action": "add", "card_name": "Arcane Signet"},
+            {"action": "set_commander", "card_name": None},
+        ]}},
+        frozenset("BR"),
+    )
+    assert "arcane signet" in ctx.card_names_lower

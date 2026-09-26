@@ -48,9 +48,17 @@ def _gzipped_jsonl(records) -> bytes:
 
 @pytest.fixture(autouse=True)
 def _isolate_cache(tmp_path, monkeypatch):
-    """Point the cache at a temp file and clear the module-level memo."""
+    """Point the cache at a temp file and clear the module-level memo.
+
+    The index is forced to abstain. ``tags_for_oracle_id`` prefers the local
+    card index and only falls through to the bulk cache when the index returns
+    None, so with a populated ``familiar.db`` sitting in ``backend/`` these
+    tests read an empty set from the index and never touch the mocked
+    download they exist to exercise.
+    """
     monkeypatch.setattr(tag_lookup, "_CACHE_PATH", tmp_path / "oracle_tags.jsonl.gz")
     monkeypatch.setattr(tag_lookup, "_lookup", None)
+    monkeypatch.setattr(tag_lookup, "_tags_from_index", lambda oracle_id: None)
     yield
     tag_lookup._lookup = None
 

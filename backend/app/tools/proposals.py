@@ -164,6 +164,14 @@ def propose_deck_changes(
             **facts.get((proposal.card_name or "").lower(), {}),
         })
 
+    commander_rows = [r for r in rows if r.action == "set_commander" and r.commander_name]
+    if commander_rows:
+        from app.config import settings
+
+        if settings.auto_draft_gameplan:
+            from app.pipeline import gameplan
+
+            gameplan.draft_in_background(deck_id, commander_rows[-1].commander_name)
     return {"ok": True, "summary": summary, "proposals": proposals}
 
 

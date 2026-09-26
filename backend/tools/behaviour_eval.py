@@ -91,7 +91,15 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
     if not record.get("plan_was_set"):
         first_batch = next((i for i, n in enumerate(names) if n in _PROPOSAL_TOOLS), None)
         if first_batch is not None:
-            plan_set_before_batch = "deck_set_plan" in names[:first_batch]
+            # The app drafts the plan when a commander is proposed, so a
+            # set_commander proposal before the batch counts as setting it.
+            before = calls[:first_batch]
+            plan_set_before_batch = "deck_set_plan" in names[:first_batch] or any(
+                c.get("name") == "propose_deck_changes"
+                and any(ch.get("action") == "set_commander"
+                        for ch in (c.get("arguments") or {}).get("changes") or [])
+                for c in before
+            )
 
     # Card names the reply described without their text in any tool result
     # this turn. The engine grounds and re-writes such a reply, so this

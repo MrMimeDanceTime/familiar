@@ -121,7 +121,13 @@ class Settings(BaseSettings):
     # starved the planning send: the reasoning spent the whole budget, the
     # reply came back empty, and the empty assistant message poisoned every
     # later call ("content or tool_calls must be set").
+    # A lower cap (2,500) was tried against 30-45s setup turns and made them
+    # worse: a think that hits the cap has produced nothing usable, so its
+    # time is lost and the no-thinking retry starts over (measured 44s).
     chat_thinking_max_tokens: int = 8000
+    # Draft the gameplan in the background when a commander is proposed, so
+    # the chat model does not compose it inside its thinking. See gameplan.py.
+    auto_draft_gameplan: bool = True
 
     # Cap on the chat model's response length. DeepSeek generates at ~40 tok/s,
     # so an unbounded final answer of 2000+ tokens takes ~50s purely to write —

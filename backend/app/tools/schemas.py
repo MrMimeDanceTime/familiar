@@ -415,12 +415,12 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name="deck_set_plan",
         description=(
-            "Record the deck's PLAN: what it is trying to be, before building it. "
-            "Set this once you and the player have agreed on a direction, and "
-            "update it whenever the direction changes. The plan drives card "
-            "suggestions (suggest_cards aims at the roles the deck is short on) "
-            "and comes back on every deck read, so the strategy never has to be "
-            "re-inferred from the card list. Pass only the fields you are changing."
+            "Record what the PLAYER stated about the deck: a power level, a budget, "
+            "excluded types or cards, how off-meta to build, themes they spelled "
+            "out, or a change of direction. The app drafts the deck's themes and "
+            "gameplan itself when you propose the commander, so do not compose "
+            "them here. The plan drives card suggestions and comes back on every "
+            "deck read. Pass only the fields you are changing."
         ),
         parameters={
             "type": "object",
@@ -430,9 +430,9 @@ TOOL_SPECS: list[ToolSpec] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Short phrases naming what the deck is built around, e.g. "
-                        '["cat and dog tribal", "token swarm"]. These steer which '
-                        "mechanical relationships card suggestions look for."
+                        "Only themes the player stated or a pivot they asked for, e.g. "
+                        '["cat and dog tribal"]. The app drafts the initial themes '
+                        "itself when the commander is proposed."
                     ),
                 },
                 "role_targets": {
@@ -453,7 +453,11 @@ TOOL_SPECS: list[ToolSpec] = [
                 },
                 "plan_notes": {
                     "type": "string",
-                    "description": "One or two lines on the gameplan and how it wins.",
+                    "description": (
+                        "The gameplan in the player's own words, only when they "
+                        "described one. Leave it unset otherwise: the app drafts "
+                        "the gameplan itself when the commander is proposed."
+                    ),
                 },
                 "power_level": {
                     "type": "string",

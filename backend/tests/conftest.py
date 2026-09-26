@@ -36,6 +36,9 @@ def _disable_card_index_refresh():
     # every fake provider; tests/test_ground_ahead.py calls it directly.
     settings.chat_correct_ungrounded_replies = False
     settings.chat_anticipate_cards = False
+    # Proposing a commander starts a background gameplan draft, a real model
+    # call; tests of it call _draft_and_store directly with a fake provider.
+    settings.auto_draft_gameplan = False
     yield
 
 

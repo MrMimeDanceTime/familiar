@@ -331,12 +331,24 @@ PROVIDER_SESSION_TOOLS: dict[str, Callable[..., Any]] = {
 }
 
 
+# Argument names the model reaches for that mean an existing parameter. A
+# wrong name used to fail the call and cost a whole extra round ("goal" for
+# suggest_cards' intent, seen in profiled turns).
+_ARGUMENT_ALIASES: dict[str, dict[str, str]] = {
+    "suggest_cards": {"goal": "intent", "query": "intent", "request": "intent"},
+}
+
+
 def dispatch(
     name: str,
     arguments: dict[str, Any],
     session: Session,
     provider: Any | None = None,
 ) -> DispatchResult:
+    for alias, real in _ARGUMENT_ALIASES.get(name, {}).items():
+        if alias in arguments and real not in arguments:
+            arguments = {**arguments, real: arguments[alias]}
+        arguments = {k: v for k, v in arguments.items() if k != alias}
     if arguments.get("_parse_error"):
         return DispatchResult(
             ok=False,

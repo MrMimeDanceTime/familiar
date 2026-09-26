@@ -375,3 +375,17 @@ def test_role_request_drops_candidates_that_do_not_answer_it():
     client = FakeJev({"Plains": (4.0, 0.03), "Night's Whisper": (2.0, 0.9)})
     selection = jev.select_jev(client, pool, "more card draw", mode="verdict", min_ask=0.2)
     assert [p.name for p in selection.picks] == ["Night's Whisper"]
+
+
+def test_a_non_land_batch_keeps_only_lands_that_fill_the_role():
+    def land(name, roles, basic=False):
+        card = _card(name)
+        card.type_line = "Basic Land — Mountain" if basic else "Land"
+        card.fine_roles = set(roles)
+        return card
+
+    pool = [land("Mountain", [], basic=True), land("Command Tower", ["fixing"]),
+            land("Myriad Landscape", ["ramp"]), _card("Arcane Signet")]
+    client = FakeJev({n: (3.0, 0.9) for n in ("Mountain", "Command Tower", "Myriad Landscape", "Arcane Signet")})
+    selection = jev.select_jev(client, pool, "more ramp", mode="verdict", request_roles={"ramp"})
+    assert sorted(p.name for p in selection.picks) == ["Arcane Signet", "Myriad Landscape"]
