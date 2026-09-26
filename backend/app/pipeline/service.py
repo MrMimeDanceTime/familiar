@@ -646,6 +646,13 @@ def build_suggestions(
             backend=select_backend, model=model, select_thinking=select_thinking,
             max_picks=max_picks, player_message=player_message, jev_client=jev_client,
         )
+        from app.pipeline import manabase
+
+        if manabase.is_land_request(user_intent):
+            selection = manabase.fill(
+                selection, prepared.shaped, prepared.snapshot,
+                _commander_identity(prepared.snapshot, scryfall),
+            )
 
     debug = {
         "queries": spec.queries,
