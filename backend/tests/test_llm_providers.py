@@ -319,7 +319,7 @@ def test_deepseek_send_stream_yields_text_then_the_turn(mock_openai_cls):
     call_kwargs = mock_client.chat.completions.create.call_args.kwargs
     assert call_kwargs["stream"] is True
     assert provider.usage == {
-        "llm_calls": 1, "prompt_tokens": 120, "completion_tokens": 8, "reasoning_tokens": 0,
+        "llm_calls": 1, "prompt_tokens": 120, "completion_tokens": 8, "reasoning_tokens": 0, "cache_hit_tokens": 0,
     }
 
 
@@ -375,7 +375,7 @@ def test_deepseek_usage_accumulates_across_send_and_complete_json(mock_openai_cl
     provider.complete_json("sys", "user")
 
     assert provider.usage == {
-        "llm_calls": 2, "prompt_tokens": 20, "completion_tokens": 10, "reasoning_tokens": 0,
+        "llm_calls": 2, "prompt_tokens": 20, "completion_tokens": 10, "reasoning_tokens": 0, "cache_hit_tokens": 0,
     }
 
 

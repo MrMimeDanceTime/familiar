@@ -77,7 +77,7 @@ def propose_deck_changes(
         canonical_name: str | None = None
         if action in ("add", "set_commander"):
             try:
-                card = scryfall.named(card_name, fuzzy=True)
+                card = deck_tools.lookup_card(scryfall, card_name)
                 canonical_name = card["name"]
                 facts[canonical_name.lower()] = {
                     "mana_cost": card.get("mana_cost"),

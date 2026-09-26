@@ -65,3 +65,34 @@ def test_proposed_cards_count_as_grounded():
     content = {"proposals": [{"id": 1, "action": "add", "card_name": "Hurl Through Hell",
                               "oracle_text": "Exile target..."}]}
     assert "hurl through hell" in render.grounded_card_names(content)
+
+
+def test_card_lookup_answers_from_the_index_before_scryfall(monkeypatch):
+    from app.cards import schema as card_schema
+    from app.cards import store as card_store
+    from app.tools import deck_tools
+
+    class NoScryfall:
+        def named(self, *a, **k):
+            raise AssertionError("an indexed card must not hit Scryfall")
+
+    monkeypatch.setattr(card_schema, "tag_count", lambda: 1)
+    monkeypatch.setattr(card_store, "by_names", lambda names: {
+        "sol ring": {"name": "Sol Ring", "cmc": 1.0, "color_identity": [],
+                     "type_line": "Artifact", "oracle_text": "T: Add {C}{C}.", "oracle_id": "o1"},
+    })
+    assert deck_tools.lookup_card(NoScryfall(), "Sol Ring")["name"] == "Sol Ring"
+
+
+def test_card_lookup_falls_back_to_scryfall_for_unknown_names(monkeypatch):
+    from app.cards import schema as card_schema
+    from app.cards import store as card_store
+    from app.tools import deck_tools
+
+    class Fuzzy:
+        def named(self, name, fuzzy=True):
+            return {"name": "Sol Ring", "fuzzy": fuzzy}
+
+    monkeypatch.setattr(card_schema, "tag_count", lambda: 1)
+    monkeypatch.setattr(card_store, "by_names", lambda names: {})
+    assert deck_tools.lookup_card(Fuzzy(), "sol rnig") == {"name": "Sol Ring", "fuzzy": True}
