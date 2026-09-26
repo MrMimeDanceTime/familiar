@@ -34,6 +34,7 @@ the baseline, and belongs in a commit that says why.
     python tools/jev_eval.py --pool-cap 150  # a wider pool for every selector
     python tools/jev_eval.py --all-selectors # also the modes that lost earlier rounds
     python tools/jev_eval.py --save          # move the baseline
+    python tools/jev_eval.py --cuts          # rank cuts against the player's own removals
 
 Runs against a scratch copy of the DB; nothing live is touched. A JSON trace
 lands in tools/traces/.
@@ -283,6 +284,140 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
     return record
 
 
+CUT_INTENT = "tighten the deck: find the cards that are weakest for its plan"
+
+
+_LLM_CUT_PROMPT = """\
+You are helping trim a Magic: The Gathering Commander deck. Given the deck,
+name the {k} cards currently in it that are the weakest for its plan and
+commander: the ones to cut first. Choose only from the cut candidates listed,
+by exact name. Output ONLY a JSON object: {{"cuts": ["<name>", ...]}}\
+"""
+
+
+def _llm_cuts(provider, model, candidates, deck_context, k: int, thinking: bool) -> list[str]:
+    lines = []
+    for c in candidates:
+        text = " ".join(str(c.get("oracle_text") or "").split())
+        lines.append(f"- {c['name']} | {c.get('type_line') or ''} | {text}")
+    user = f"{deck_context}\n\nCut candidates:\n" + "\n".join(lines)
+    raw = provider.complete_json(
+        _LLM_CUT_PROMPT.format(k=k), user, model=model, thinking=thinking,
+        reasoning_effort="low" if thinking else None,
+    )
+    names = json.loads(raw).get("cuts") or []
+    valid = {c["name"].lower(): c["name"] for c in candidates}
+    return [valid[n.lower()] for n in names if isinstance(n, str) and n.lower() in valid][:k]
+
+
+def run_cut_eval(session, jev_client, samples: int, min_removed: int = 5,
+                 provider=None, model: str | None = None) -> list[dict]:
+    """Cut accuracy against the player's own history. For each deck with
+    enough approved removals, the removed cards go back into the deck and Jev
+    ranks every cut candidate. Accurate means the cards the player actually
+    removed rank highest, and the removals they DENIED rank low."""
+    from sqlalchemy import text
+
+    from app.cards import store
+    from app.db import repository as repo
+    from app.pipeline import jev, service
+
+    rows = session.connection().execute(text(
+        "SELECT deck_id, card_name, status FROM deck_proposals "
+        "WHERE action = 'remove' AND status IN ('approved', 'denied') AND card_name IS NOT NULL"
+    )).fetchall()
+    by_deck: dict[int, dict[str, set[str]]] = {}
+    for deck_id, name, status in rows:
+        by_deck.setdefault(deck_id, {"approved": set(), "denied": set()})[status].add(name)
+
+    records = []
+    for deck_id, history in sorted(by_deck.items()):
+        if repo.get_deck(session, deck_id) is None:
+            continue
+        snapshot = repo.deck_snapshot(session, deck_id)
+        in_deck = {c["name"].lower() for c in snapshot["cards"]}
+        restored = []
+        for name in sorted(history["approved"]):
+            if name.lower() in in_deck:
+                continue  # removed and later re-added: not a clean verdict
+            card = store.by_name(name)
+            if card:
+                restored.append({"name": card["name"], "type_line": card.get("type_line"),
+                                 "oracle_text": card.get("oracle_text"), "tags": card.get("tags") or []})
+        snapshot["cards"] = snapshot["cards"] + restored
+        candidates = jev.cut_candidates(snapshot)
+        names = {c["name"].lower() for c in candidates}
+        removed = {c["name"].lower() for c in restored} & names
+        denied = {n.lower() for n in history["denied"]} & names - removed
+        if len(removed) < min_removed:
+            continue
+        state = jev.build_state(service._render_deck_context(snapshot), CUT_INTENT, None)
+        evidence = jev.cut_evidence(snapshot.get("commander"))
+        k = len(removed)
+
+        def score(order: list[str]) -> dict:
+            span = max(1, len(order) - 1)
+            return {
+                "recall_at_k": sum(1 for n in order[:k] if n in removed) / k,
+                "removed_percentile": sum(order.index(n) for n in removed) / k / span,
+                "denied_percentile": (sum(order.index(n) for n in denied) / len(denied) / span
+                                      if denied else None),
+            }
+
+        def rate(card):
+            seen = evidence.get(card["name"].lower()) or {}
+            return seen.get("inclusion_rate") or 0.0
+
+        variants = {}
+        # Baseline: cut the cards this commander's decks play least.
+        variants["edhrec_low"] = score([c["name"].lower() for c in sorted(candidates, key=rate)])
+        for label, ev in (("jev", None), ("jev+edhrec", evidence)):
+            ranking, secs = _timed(lambda: jev.rank_cuts(
+                jev_client, candidates, state, samples=samples, evidence=ev,
+            ))
+            variants[label] = {**score([n.lower() for n, _ in ranking]), "seconds": secs,
+                               "top": ranking[:k]}
+        if provider is not None:
+            context = service._render_deck_context(snapshot)
+            for label, thinking in (("llm", False), ("llm-think", True)):
+                picks, secs = _timed(lambda: _llm_cuts(provider, model, candidates, context, k, thinking))
+                # A pick list, not a ranking: recall only, the rest of the
+                # order is unknown.
+                variants[label] = {
+                    "recall_at_k": sum(1 for n in picks if n.lower() in removed) / k,
+                    "removed_percentile": None,
+                    "denied_percentile": None,
+                    "denied_picked": sum(1 for n in picks if n.lower() in denied),
+                    "seconds": secs, "top": picks,
+                }
+        records.append({
+            "deck_id": deck_id, "commander": snapshot.get("commander"),
+            "candidates": len(candidates), "removed": sorted(removed), "denied": sorted(denied),
+            "chance": k / len(candidates), "variants": variants,
+        })
+    return records
+
+
+def print_cut_records(records: list[dict]) -> None:
+    for r in records:
+        print(f"   {str(r['commander'])[:30]:<32} {r['candidates']} candidates, "
+              f"{len(r['removed'])} removed, {len(r['denied'])} denied, chance {r['chance']:.0%}")
+        for label, v in r["variants"].items():
+            print(f"      {label:<12} recall@k {v['recall_at_k']:>4.0%}  removed pct "
+                  f"{_fmt(v['removed_percentile'], '.2f')}  denied pct {_fmt(v['denied_percentile'], '.2f')}"
+                  + (f"  denied picked {v['denied_picked']}" if "denied_picked" in v else ""))
+    removed = sum(len(r["removed"]) for r in records) or 1
+    chance = sum(r["chance"] * len(r["removed"]) for r in records) / removed
+    print(f"\n   pooled over {removed} removed cards (chance recall@k {chance:.0%}; "
+          f"percentile 0 = cut first, 0.5 = chance):")
+    for label in records[0]["variants"] if records else []:
+        hits = sum(r["variants"][label]["recall_at_k"] * len(r["removed"]) for r in records)
+        pct = _mean([r["variants"][label]["removed_percentile"] for r in records]) or float("nan")
+        den = _mean([r["variants"][label]["denied_percentile"] for r in records])
+        print(f"      {label:<12} recall@k {hits / removed:.0%}  removed pct {pct:.2f}  "
+              f"denied pct {_fmt(den, '.2f')}")
+
+
 def _mean(values):
     values = [v for v in values if v is not None]
     return sum(values) / len(values) if values else None
@@ -369,6 +504,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="cards fetched per role from the local index")
     parser.add_argument("--all-selectors", action="store_true")
     parser.add_argument("--save", action="store_true", help="write this run as the baseline")
+    parser.add_argument("--cuts", action="store_true",
+                        help="evaluate cut ranking against approved and denied removals")
+    parser.add_argument("--samples", type=int, default=3, help="Jev samples for --cuts")
     args = parser.parse_args(argv)
     selectors = ALL_SELECTORS if args.all_selectors else JEV_SELECTORS
 
@@ -393,6 +531,20 @@ def main(argv: list[str] | None = None) -> int:
     jev_client = jev.get_client()
     provider = get_provider()
     model = get_fast_model()
+
+    if args.cuts:
+        with Session(get_engine()) as session:
+            cut_records = run_cut_eval(
+                session, jev_client, args.samples,
+                provider=None if args.no_llm else provider, model=model,
+            )
+        print_cut_records(cut_records)
+        TRACE_DIR.mkdir(exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out = TRACE_DIR / f"jev_cuts_{stamp}.json"
+        out.write_text(json.dumps(cut_records, indent=2, default=str), encoding="utf-8")
+        print(f"\ntrace: {out}")
+        return 0
 
     records = []
     with Session(get_engine()) as session:

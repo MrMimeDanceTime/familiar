@@ -23,8 +23,9 @@ class FakeJev:
 
     model = "jev-test"
 
-    def __init__(self, verdicts):
+    def __init__(self, verdicts, cuts=None):
         self.verdicts = verdicts
+        self.cuts = cuts or {}
         self.calls = []
 
     def system_one(self, state, questions):
@@ -38,6 +39,10 @@ class FakeJev:
                 probs = {label: w / total for label, w in weights.items()}
                 answers[key] = {"type": "choice", "choice": max(probs, key=probs.get),
                                 "confidence": 0.5, "probabilities": probs}
+                continue
+            if key.startswith("cut_"):
+                name = question["instructions"]["card"]["name"]
+                answers[key] = {"type": "noul", "noul": self.cuts.get(name, 0.1)}
                 continue
             name = question["instructions"]["candidate"]["name"]
             fit, asked = self.verdicts[name]
@@ -176,7 +181,7 @@ def test_verdict_mode_ranks_on_one_calibrated_probability():
     assert [p.name for p in selection.picks] == ["Yes", "Maybe", "No"]
     question = client.calls[0]["questions"]["add_0"]["instructions"]
     assert "more ramp" in question["statement"]
-    assert selection.picks[0].reason.startswith("Jev: 90% that it belongs")
+    assert selection.picks[0].reason.endswith("Jev 90%.")
 
 
 def test_choice_mode_averages_the_pool_wide_question_over_orderings():
@@ -278,3 +283,50 @@ def test_verdict_threshold_returns_a_short_batch():
     client = FakeJev({"Sure": (3.6, 1), "Maybe": (2.4, 1), "Nope": (1.0, 1)})
     selection = jev.select_jev(client, pool, "x", mode="verdict", min_probability=0.5)
     assert [p.name for p in selection.picks] == ["Sure", "Maybe"]
+
+
+def test_verdict_reason_is_built_from_the_pipelines_facts():
+    card = _card("Engine", combo=["Commander X"], brainmap={
+        "total": 0.9, "explain": "consensus 0.95, mechanical 1.00 — 54% of decks, synergy +0.47; "
+                                 "works with the commander via synergy-swamp",
+    })
+    card.fine_roles = {"ramp"}
+    selection = jev.select_jev(FakeJev({"Engine": (3.6, 1)}), [card], "ramp", mode="verdict")
+    assert selection.picks[0].reason == (
+        "Ramp; completes a combo with Commander X; 54% of decks, synergy +0.47; "
+        "works with the commander via synergy-swamp; Jev 90%."
+    )
+
+
+_DECK = [
+    {"name": "Commander", "type_line": "Legendary Creature"},
+    {"name": "Weak Rock", "type_line": "Artifact", "oracle_text": "T: Add C."},
+    {"name": "Key Engine", "type_line": "Enchantment"},
+    {"name": "Swamp", "type_line": "Basic Land - Swamp"},
+]
+
+
+def test_cut_candidates_skip_the_commander_and_lands():
+    names = [c["name"] for c in jev.cut_candidates({"commander": "Commander", "cards": _DECK})]
+    assert names == ["Weak Rock", "Key Engine"]
+
+
+def test_cuts_fill_exactly_the_overflow_past_the_deck_limit():
+    pool = [_card("A"), _card("B")]
+    client = FakeJev({"A": (3.0, 1), "B": (2.0, 1)}, cuts={"Weak Rock": 0.8, "Key Engine": 0.1})
+    candidates = jev.cut_candidates({"commander": "Commander", "cards": _DECK})
+    selection = jev.select_jev(client, pool, "x", mode="verdict",
+                               cut_cards=candidates, deck_total=99)
+    assert [c.name for c in selection.cuts] == ["Weak Rock"]
+    assert selection.cuts[0].reason.endswith("Jev 80% that cutting it costs the deck little.")
+    cut_state = next(call["state"] for call in client.calls if "cut_0" in call["questions"])
+    assert "Cards being added in this batch: A, B" in cut_state
+
+
+def test_no_cuts_while_the_deck_has_room():
+    client = FakeJev({"A": (3.0, 1)}, cuts={"Weak Rock": 0.9})
+    candidates = jev.cut_candidates({"commander": "Commander", "cards": _DECK})
+    selection = jev.select_jev(client, [_card("A")], "x", mode="verdict",
+                               cut_cards=candidates, deck_total=60)
+    assert selection.cuts == []
+    assert not any("cut_0" in call["questions"] for call in client.calls)

@@ -53,4 +53,4 @@ def test_run_selection_keeps_fact_reasons_when_the_explainer_fails():
         jev_client=FakeJev({"A": (3.0, 0.9)}), jev_mode="verdict", jev_samples=1, jev_explain=True,
     )
     assert used == "jev"
-    assert selection.picks[0].reason.startswith("Jev:")
+    assert selection.picks[0].reason == "Jev 75%."

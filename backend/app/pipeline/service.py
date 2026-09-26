@@ -438,6 +438,10 @@ def run_selection(
                 samples=jev_samples or settings.jev_samples or 1,
                 max_similar=settings.jev_max_similar or None,
                 min_probability=settings.jev_min_probability or None,
+                cut_cards=jev.cut_candidates(prepared.snapshot) if settings.jev_cuts else None,
+                cut_evidence_map=(jev.cut_evidence(prepared.snapshot.get("commander"))
+                                  if settings.jev_cuts else None),
+                deck_total=prepared.snapshot.get("total_cards"),
             )
         except Exception as exc:  # noqa: BLE001 - the LLM path is the fallback
             logger.warning("jev selection failed, falling back to llm: %s", exc)

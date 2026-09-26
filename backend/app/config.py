@@ -60,9 +60,16 @@ class Settings(BaseSettings):
     # probability (0 disables). Set from tools/jev_eval.py results.
     jev_max_similar: int = 0
     jev_min_probability: float = 0.0
-    # One fast, non-thinking model call writes reasons, a summary, and cuts for
-    # Jev's picks. It cannot change which cards were picked.
-    jev_explain: bool = True
+    # One fast, non-thinking model call rewrites the reasons and adds a summary
+    # and cuts for Jev's picks, without changing them. Off by default: it cost
+    # ~6.5s of a ~7s suggestion, the chat model writes the prose reply after
+    # every batch anyway, and reasons and cuts are now built without it.
+    jev_explain: bool = False
+    # Jev proposes as many cuts as the batch would push the deck past 100.
+    # Off by default: against the player's own removals it ranked 27% of them
+    # in its top k (chance 18%; the LLM's cuts 11%), and on a full deck ten
+    # cuts a batch, some of them key pieces, got withdrawn by the chat model.
+    jev_cuts: bool = False
 
     # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
     # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a

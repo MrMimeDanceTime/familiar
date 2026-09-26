@@ -281,10 +281,25 @@ The split:
    pipeline's evidence (role tags, EDHREC play rate and synergy, brain map
    layer scores). The probability is the rank. Three samples are averaged,
    because identical requests swap about one card in ten.
-2. **Python takes the top 10** and builds a fact reason for each.
-3. **DeepSeek explains.** One call with thinking off rewrites the reasons,
-   adds a summary and cuts from the current deck, with every card name in
-   `[[brackets]]`. It cannot add, drop, or reorder picks. It adds about 6.5s.
+2. **Python takes the top 10** and writes each reason from facts it holds:
+   the card's roles, any combo it completes, and the brain map's
+   plain-language line, e.g. "Ramp; 54% of decks, synergy +0.47; works with
+   the commander via synergy-swamp; you have taken this before; Jev 87%."
+
+No language model runs in stage 4. The proposals the chat model reads carry
+each card's rules text (`render_proposals`), and the chat model writes the
+prose reply after every batch anyway, so a second model writing prose was
+duplicate work. A whole suggestion takes 1.2-1.6s when the local index fills
+the pool; the remaining slow path is stage 1 query planning, which ran for
+"damage to each opponent" and took the total to 14.5s.
+
+Two optional steps, both off by default:
+
+- `JEV_EXPLAIN=true`: DeepSeek (thinking off) rewrites the reasons and adds a
+  summary and cuts, without changing the picks. About 6.5s.
+- `JEV_CUTS=true`: Jev proposes exactly as many cuts as the batch would push
+  the deck past 100, ranking non-land, non-commander deck cards by "cutting
+  this costs the deck little", with the batch's adds in the state.
 
 Any Jev failure (no key, a 5xx or 429 that survives three retries, a missing
 answer) falls back to the LLM selector; an explainer failure keeps the fact
@@ -292,10 +307,29 @@ reasons. `debug.select_backend` records which selector answered. Illegal cards
 are never sent to Jev, so they cannot be picked.
 
 Settings (`.env.example`): `JEV_MODE` (default `verdict`), `JEV_SAMPLES` (3),
-`JEV_EXPLAIN` (true), `JEV_MAX_SIMILAR` and `JEV_MIN_PROBABILITY` (both 0, off),
-and `TYPESAFE_MODEL` pinned to `jev-1.13.0`. `jev-latest` and `jev-preview`
-both resolved to 1.13.0 on 2026-09-25; the pin keeps a measured baseline from
-moving silently.
+`JEV_EXPLAIN` and `JEV_CUTS` (false), `JEV_MAX_SIMILAR` and
+`JEV_MIN_PROBABILITY` (both 0, off), and `TYPESAFE_MODEL` pinned to
+`jev-1.13.0`. `jev-latest` and `jev-preview` both resolved to 1.13.0 on
+2026-09-25; the pin keeps a measured baseline from moving silently.
+
+### Cuts
+
+`jev_eval.py --cuts` puts each deck's approved removals back into the deck and
+asks every method for the weakest cards. 37 removed cards across three decks
+(Korlash, Krark, Azula); chance puts 18% of them in a top k of their size.
+
+| Method | Removed cards in top k | Mean position (0 = cut first) |
+|---|---|---|
+| Cut what this commander's decks play least (EDHREC) | 14% | 0.42 |
+| DeepSeek, thinking off | 11% | |
+| DeepSeek, thinking on | 11% | |
+| Jev | 27% | 0.34 |
+| Jev with EDHREC evidence | 24-27% | 0.33 |
+
+Jev is the best of these and still weak: a removal happens in the context of a
+specific swap, which a static "weakest card" ranking cannot see. In a replay on
+a full deck, ten cuts a batch (some of them key pieces such as Necropotence)
+were withdrawn by the chat model, which is why cuts are off by default.
 
 ### How it was measured
 
@@ -370,17 +404,21 @@ the deeper candidates before the cap, not retrieving more of them.
 
 ### Behaviour eval
 
-`tools/behaviour_eval.py replay` over 13 stored turns, both selectors, run the
-same hour. Its records were fixed to score each turn on its own tool calls:
-they had been collecting the whole replay conversation, so one refusal in
-turn 1 counted again in turns 2 and 3.
+`tools/behaviour_eval.py replay` over 13 stored turns. Its records were fixed
+to score each turn on its own tool calls: they had been collecting the whole
+replay conversation, so one refusal in turn 1 counted again in turns 2 and 3.
 
-| Per turn | LLM | Jev |
-|---|---|---|
-| Hand-pick refusals | 0 | 0 |
-| Tool errors | 0.08 | 0 |
-| Role batches through the pipeline | 100% | 100% |
-| Turns with unbracketed card names | 6 | 2 |
-| Card mentions without card text shown | 6.1 | 7.0 |
+| Run | Refusals / turn | Role batches via pipeline | Unbracketed-name turns | Ungrounded mentions / turn |
+|---|---|---|---|---|
+| LLM, run 1 (saved baseline) | 0 | 100% | 6 | 6.1 |
+| LLM, run 2 | 0.15 | 0% | 3 | 8.2 |
+| Jev + explainer | 0 | 100% | 2 | 7.0 |
+| Jev + cuts, no explainer | 0 | none asked | 5 | 7.8 |
+| Jev, no explainer, no cuts, run 1 | 0 | 100% | 7 | 9.4 |
+| Jev, no explainer, no cuts, run 2 | 0.08 | 0% | 6 | 7.6 |
 
-The LLM run is saved as `tools/behaviour_baseline.json`, the first baseline.
+The two LLM runs differ from each other as much as any Jev run differs from
+them. Refusals and the pipeline rate turn on whether the chat model tries to
+hand-pick in its own send, before stage 4 runs. At 13 turns this eval cannot
+separate the selectors; it shows no harm from Jev, and one real one from cuts
+(see above). The first LLM run is saved as `tools/behaviour_baseline.json`.

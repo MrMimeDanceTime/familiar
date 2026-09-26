@@ -491,7 +491,7 @@ def reason_for(judgment: Judgment, card: ShapedCard, mode: str = "blind",
     if mode in ("choice", "ensemble"):
         head = f"Jev ranked it #{position} of {pool_size} candidates for this request"
     elif mode == "verdict":
-        head = f"Jev: {judgment.score:.0%} that it belongs in this batch"
+        return _verdict_reason(judgment, card)
     else:
         levels = VERDICT_LEVELS if mode == "informed" else FIT_LEVELS
         level = levels[min(_SCORE_MAX, max(0, round(judgment.score)))].split(":")[0]
@@ -507,6 +507,138 @@ def reason_for(judgment: Judgment, card: ShapedCard, mode: str = "blind",
     return "; ".join(parts) + "."
 
 
+def _brainmap_detail(card: ShapedCard) -> str:
+    """The brain map's plain-language half ("54% of decks, synergy +0.47;
+    works with the commander via synergy-swamp; you have taken this
+    before"), without the per-layer numbers in front of it."""
+    explain = (card.brainmap or {}).get("explain") or ""
+    return explain.split(" — ", 1)[1].strip() if " — " in explain else ""
+
+
+def _verdict_reason(judgment: Judgment, card: ShapedCard) -> str:
+    """A proposal's reason, built from what the pipeline already knows. This
+    is what replaced the explainer call: the chat model writes the prose
+    reply after every batch anyway, so the reason only has to carry facts."""
+    parts: list[str] = []
+    if card.fine_roles:
+        parts.append(", ".join(sorted(card.fine_roles)).capitalize())
+    if card.completes_combo_with:
+        parts.append(f"completes a combo with {' + '.join(card.completes_combo_with)}")
+    detail = _brainmap_detail(card)
+    rate = (card.edhrec or {}).get("inclusion_rate")
+    if detail:
+        parts.append(detail)
+    elif isinstance(rate, (int, float)):
+        parts.append(f"in {rate:.0%} of this commander's decks")
+    parts.append(f"Jev {judgment.score:.0%}")
+    return "; ".join(parts) + "."
+
+
+_CUT_STATEMENT = (
+    "Cutting this card to make room for the cards being added costs this deck "
+    "little: of the cards already in it, this is among the weakest for the "
+    "deck's plan and commander."
+)
+_CUT_CHUNK = 50
+
+
+def cut_candidates(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deck cards a batch may propose cutting: not the commander(s), and not
+    lands, whose count is a manabase decision rather than a swap."""
+    commanders = {
+        n.lower() for n in (snapshot.get("commander"), snapshot.get("partner_commander")) if n
+    }
+    return [
+        c for c in snapshot.get("cards", [])
+        if c.get("name") and c["name"].lower() not in commanders
+        and "Land" not in (c.get("type_line") or "")
+    ]
+
+
+def cut_evidence(commander: str | None, client: Any = None) -> dict[str, dict[str, float | None]]:
+    """``lower(name) -> {inclusion_rate, synergy}`` from the commander's EDHREC
+    page, for judging the deck's own cards. Deliberately not the brain map:
+    its personal layer counts approvals, and every deck card was once an
+    approved add, which would tilt every cut toward keeping. Empty on any
+    failure; cuts then rest on rules text and roles alone."""
+    if not commander:
+        return {}
+    try:
+        from app.pipeline import edhrec_source
+        from app.tools.edhrec_client import get_edhrec_client
+
+        recs = (client or get_edhrec_client()).commander_recs(commander)
+        return {
+            c.name.lower(): {"inclusion_rate": c.inclusion_rate, "synergy": c.synergy}
+            for c in edhrec_source.collect(recs, per_list_cap=500)
+        }
+    except Exception as exc:  # noqa: BLE001 - evidence is a bonus
+        logger.warning("cut evidence unavailable for %r: %s", commander, exc)
+        return {}
+
+
+def _deck_card_facts(
+    card: dict[str, Any], evidence: dict[str, dict[str, float | None]] | None = None,
+) -> dict[str, Any]:
+    from app.pipeline import roles
+
+    facts: dict[str, Any] = {"name": card["name"]}
+    if card.get("type_line"):
+        facts["type_line"] = card["type_line"]
+    if card.get("oracle_text"):
+        facts["rules_text"] = " ".join(str(card["oracle_text"]).split())
+    fine = roles.fine_roles_for_tags(card.get("tags") or [], card.get("type_line"))
+    if fine:
+        facts["role_tags"] = sorted(fine)
+    if evidence is not None:
+        seen = evidence.get(card["name"].lower())
+        if seen is None:
+            facts["edhrec"] = "not among this commander's EDHREC recommendations"
+        else:
+            if isinstance(seen.get("inclusion_rate"), (int, float)):
+                facts["played_in_share_of_decks_with_this_commander"] = f"{seen['inclusion_rate']:.0%}"
+            if isinstance(seen.get("synergy"), (int, float)):
+                facts["edhrec_synergy_vs_same_colour_decks"] = f"{seen['synergy']:+.2f}"
+    return facts
+
+
+def rank_cuts(
+    client: Any, cards: list[dict[str, Any]], state: str, *, samples: int = 1,
+    evidence: dict[str, dict[str, float | None]] | None = None,
+) -> list[tuple[str, float]]:
+    """Every cut candidate with the probability that cutting it costs the
+    deck little, highest first. Averaged over ``samples`` like the picks."""
+    if not cards:
+        return []
+    chunks = [list(range(i, min(i + _CUT_CHUNK, len(cards))))
+              for i in range(0, len(cards), _CUT_CHUNK)]
+
+    def run(indices: list[int]) -> dict[int, float]:
+        questions = {
+            f"cut_{n}": {"type": "noul", "instructions": {
+                "statement": _CUT_STATEMENT, "card": _deck_card_facts(cards[i], evidence),
+            }}
+            for n, i in enumerate(indices)
+        }
+        answers = client.system_one(state, questions).get("answers") or {}
+        out: dict[int, float] = {}
+        for n, i in enumerate(indices):
+            answer = answers.get(f"cut_{n}") or {}
+            if "noul" not in answer:
+                raise JevError(f"Jev cut answer missing for {cards[i]['name']!r}")
+            out[i] = float(answer["noul"])
+        return out
+
+    jobs = [chunk for _ in range(max(1, samples)) for chunk in chunks]
+    totals = [0.0] * len(cards)
+    with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(jobs))) as pool:
+        for result in pool.map(run, jobs):
+            for i, p in result.items():
+                totals[i] += p
+    ranked = [(cards[i]["name"], totals[i] / max(1, samples)) for i in range(len(cards))]
+    return sorted(ranked, key=lambda kv: kv[1], reverse=True)
+
+
 def select_jev(
     client: Any,
     pool: list[ShapedCard],
@@ -520,6 +652,10 @@ def select_jev(
     samples: int = 1,
     max_similar: int | None = None,
     min_probability: float | None = None,
+    cut_cards: list[dict[str, Any]] | None = None,
+    cut_evidence_map: dict[str, dict[str, float | None]] | None = None,
+    deck_total: int | None = None,
+    deck_limit: int = 100,
 ) -> Selection:
     """Stage 4 on Jev. Same contract as ``selection.select``: picks are legal
     pool cards only. Illegal cards are never sent, so they cannot be picked.
@@ -555,14 +691,34 @@ def select_jev(
         for i in chosen
     ]
 
+    # Cuts only when the deck would go over its limit, and then exactly as
+    # many as it would go over by: a cut the deck does not need is a card the
+    # player has to deny.
+    cuts: list[Pick] = []
+    cut_ranking: list[tuple[str, float]] = []
+    needed = max(0, (deck_total or 0) + len(picks) - deck_limit) if deck_total else 0
+    if needed and cut_cards:
+        adding = ", ".join(p.name for p in picks)
+        cut_ranking = rank_cuts(
+            client, cut_cards, f"{state}\nCards being added in this batch: {adding}",
+            samples=samples, evidence=cut_evidence_map,
+        )
+        by_name = {c["name"]: c for c in cut_cards}
+        for name, probability in cut_ranking[:min(needed, len(picks))]:
+            fine = _deck_card_facts(by_name[name]).get("role_tags") or []
+            role = f"{', '.join(fine).capitalize()}; " if fine else ""
+            cuts.append(Pick(name=name, reason=f"{role}Jev {probability:.0%} that cutting it costs the deck little."))
+
     def _round(value: float | None, places: int) -> float | None:
         return None if value is None else round(value, places)
 
     return Selection(
         picks=picks,
+        cuts=cuts,
         summary="",
         raw={
             "backend": "jev",
+            "cuts": [{"name": n, "p": round(p, 4)} for n, p in cut_ranking],
             "mode": mode,
             "samples": samples,
             "model": getattr(client, "model", None),
