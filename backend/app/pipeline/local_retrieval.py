@@ -64,6 +64,16 @@ _STOPWORDS = frozenset({
     "this", "deck", "my", "with", "and", "or", "to", "of", "in", "on", "at",
     "cheap", "good", "best", "please", "need", "want", "add", "find", "suggest",
     "fits", "fit", "commander", "under", "over", "mana", "budget", "package",
+    # Conversational filler. The text search requires every term, so one of
+    # these left in ("now card draw, preferably things that play well with
+    # exiling cards") emptied it and pushed the request to the Scryfall
+    # fallback.
+    "now", "also", "just", "really", "maybe", "preferably", "ideally",
+    "things", "thing", "stuff", "play", "plays", "playing", "well", "work",
+    "works", "working", "like", "any", "give", "get", "show", "want", "need",
+    "would", "could", "should", "please", "can", "you", "what", "which",
+    "some", "good", "great", "best", "better", "other", "into", "from",
+    "them", "they", "these", "those", "its", "deck's", "decks",
 })
 
 

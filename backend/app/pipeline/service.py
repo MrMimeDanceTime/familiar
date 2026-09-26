@@ -367,6 +367,9 @@ class PreparedPool:
     timings: dict[str, float]
 
 
+ROLE_LOCAL_POOL_MIN = 10
+
+
 def prepare_pool(
     session: Session,
     deck_id: int,
@@ -433,7 +436,13 @@ def prepare_pool(
             logger.warning("local retrieval failed, falling back to query planning: %s", exc)
         logger.info("pipeline: local retrieval found %d candidate(s)", len(local_pool))
 
-    stage1_skipped = len(local_pool) >= local_pool_min
+    # A request naming a role is served by the role query plus EDHREC's
+    # role-filtered page, which joins the pool in stage 2 regardless; a couple
+    # of dozen on-colour role matches is plenty. The old single threshold sent
+    # "card draw" for a two-colour deck (24 local matches) to the Scryfall
+    # fallback: 11s of LLM query planning and rate-limited API search.
+    threshold = ROLE_LOCAL_POOL_MIN if local_retrieval.intent_roles(user_intent) else local_pool_min
+    stage1_skipped = len(local_pool) >= threshold
     if stage1_skipped:
         spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
     else:

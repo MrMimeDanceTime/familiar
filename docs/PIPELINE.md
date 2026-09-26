@@ -11,16 +11,20 @@ the `suggest_cards` tool.
 
 ## The core idea
 
-Deterministic Python owns retrieval, filtering, legality, and ranking. The LLM
-is bounded to two calls: **plan queries** (stage 1) and **pick from a curated
-shortlist** (stage 4). Everything the code *can* decide (what's legal, on-color,
-already in the deck, how cards rank) it decides, so correctness never depends on
-the model getting card facts right.
+Deterministic Python owns retrieval, filtering, legality, and ranking, and a
+language model is not in the selection path at all. Stage 4 is TypeSafe's Jev
+(`SELECT_BACKEND=jev`, the default): it answers typed questions about each
+candidate against the deck (commander text, current cards, gameplan), and a
+blend fitted to the player's decks ranks the pool. The picks' reasons are built
+from facts. A thinking LLM selector remains as the fallback when Jev fails. The
+only LLM call left in the pipeline is stage 1 query planning, and it runs only
+when the local index cannot fill a request.
 
-The one thing Python genuinely can't do — judge whether a card *fits this
-specific deck* (combos with the commander, completes a line, is a synergy trap)
-— is exactly what stage 4 is for, and why it gets the commander + current deck
-as context and runs with thinking on. See "Model & thinking policy" below.
+Everything the code *can* decide (what's legal, on-colour, already in the deck,
+within budget, outside the deck's restrictions) it decides, so correctness never
+depends on a model getting card facts right. The measurements behind this are in
+"Stage 4 on Jev" and the sections after it; the stage-by-stage description below
+predates it and still describes the LLM selector.
 
 ## Stages
 
@@ -157,6 +161,9 @@ truthiness check puts both groups in the same bucket and lets generic staples
 outrank the commander-specific picks. That bug is pinned by a regression test.
 
 ## Model & thinking policy
+
+(This describes the LLM selector, which is now the fallback when Jev fails; see
+"Stage 4 on Jev".)
 
 The two LLM stages are **not symmetric**, and the defaults reflect that
 (`build_suggestions`):
