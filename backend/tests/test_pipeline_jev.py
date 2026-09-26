@@ -367,3 +367,11 @@ def test_the_shipped_blend_matches_the_feature_layout():
         pytest.skip("no fitted blend shipped")
     width = len(jev.blend_vector({}, model["features"]))
     assert len(model["weights"]) == len(model["mean"]) == len(model["std"]) == width
+
+
+def test_role_request_drops_candidates_that_do_not_answer_it():
+    pool = [_card("Plains"), _card("Night's Whisper")]
+    # Plains: popular, high verdict, but not card draw.
+    client = FakeJev({"Plains": (4.0, 0.03), "Night's Whisper": (2.0, 0.9)})
+    selection = jev.select_jev(client, pool, "more card draw", mode="verdict", min_ask=0.2)
+    assert [p.name for p in selection.picks] == ["Night's Whisper"]

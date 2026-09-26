@@ -352,10 +352,15 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
         order = [c.name for c in sorted(legal, key=key, reverse=True)]
         record["selectors"][name] = {"order": order, **_score(order, in_pool, order)}
 
+    from app.config import settings
+
+    # Mirror production: a role request gates on "answers the request".
+    gate = {"min_ask": settings.jev_min_ask} if role != "synergy" else {}
+
     def jev_run(pool, kwargs):
         selection = jev.select_jev(
             jev_client, pool, intent, max_picks=TOP,
-            deck_context=prepared.deck_context, **kwargs,
+            deck_context=prepared.deck_context, **{**gate, **kwargs},
         )
         order = [j["name"] for j in selection.raw["judgments"]]
         return selection, [p.name for p in selection.picks], order

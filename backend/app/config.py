@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # probability (0 disables). Set from tools/jev_eval.py results.
     jev_max_similar: int = 0
     jev_min_probability: float = 0.0
+    # For a request that names a role ("more card draw"), drop candidates Jev
+    # judges below this on "answers the request". See jev.select_jev.
+    jev_min_ask: float = 0.2
     # One fast, non-thinking model call rewrites the reasons and adds a summary
     # and cuts for Jev's picks, without changing them. Off by default: it cost
     # ~6.5s of a ~7s suggestion, the chat model writes the prose reply after
