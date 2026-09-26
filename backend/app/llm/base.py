@@ -35,6 +35,15 @@ class ToolResult:
 
 
 @dataclass
+class ThinkingProgress:
+    """Streamed while a thinking send reasons, before any reply text: the send
+    is working, not stalled. Reasoning itself is never shown."""
+
+    seconds: float
+    chars: int
+
+
+@dataclass
 class AssistantTurn:
     text: str | None
     tool_calls: list[ToolCallRequest] = field(default_factory=list)

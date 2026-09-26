@@ -96,3 +96,39 @@ def test_card_lookup_falls_back_to_scryfall_for_unknown_names(monkeypatch):
     monkeypatch.setattr(card_schema, "tag_count", lambda: 1)
     monkeypatch.setattr(card_store, "by_names", lambda names: {})
     assert deck_tools.lookup_card(Fuzzy(), "sol rnig") == {"name": "Sol Ring", "fuzzy": True}
+
+
+def test_anticipation_never_delays_the_first_send(monkeypatch):
+    from concurrent.futures import Future
+
+    state = _state(_Provider("{}"))
+    pending: Future = Future()
+    state.anticipation = pending
+    engine._apply_anticipation(state, wait=False)
+    assert state.anticipation is pending  # not ready, first send goes ahead
+
+    monkeypatch.setattr(card_facts, "is_available", lambda: True)
+    monkeypatch.setattr(card_facts, "resolve", lambda names: (
+        {n.lower(): {"name": n, "oracle_text": "t", "type_line": "Instant"} for n in names}, [],
+    ))
+    pending.set_result(["Counterspell"])
+    engine._apply_anticipation(state, wait=True)
+    assert state.anticipation is None
+    assert "counterspell" in state.grounded
+
+
+def test_thinking_progress_streams_as_an_event():
+    from app.llm.base import AssistantTurn, ThinkingProgress
+
+    class Streaming:
+        def send_stream(self, system, history, tools, *, thinking=False):
+            yield ThinkingProgress(seconds=1.2, chars=300)
+            yield "Hello"
+            yield AssistantTurn(text="Hello", tool_calls=[], stop_reason="stop",
+                                raw_assistant_message={"role": "assistant", "content": "Hello"})
+
+    state = _state(Streaming())
+    events = list(engine._stream_send(state, [], thinking=True))
+    kinds = [getattr(e, "event", type(e).__name__) for e in events]
+    assert kinds == ["thinking", "token", "AssistantTurn"]
+    assert events[0].data == {"seconds": 1.2, "chars": 300}
