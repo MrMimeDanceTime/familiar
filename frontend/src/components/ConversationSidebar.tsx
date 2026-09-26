@@ -48,6 +48,9 @@ export function Sidebar({
         >
           {isDark ? <SunIcon /> : <MoonIcon />}
         </button>
+        <a className="sidebar-icon-btn sidebar-icon-btn--text" href="#grading" title="Grade suggestion batches">
+          Grade
+        </a>
         <button className="sidebar-icon-btn" onClick={onOpenPreferences} title="Preferences" aria-label="Preferences">
           <GearIcon />
         </button>

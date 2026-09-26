@@ -265,3 +265,350 @@ Colour identity is applied there. When that pool reaches `local_pool_min`
 entirely; EDHREC's recommendations still lead the pool. A thin local pool
 falls back to stage 1 as before. `debug.local_pool` and `debug.stage1_skipped`
 say which path a suggestion took.
+
+## Stage 4 on Jev (September 2026)
+
+`SELECT_BACKEND=jev` swaps the thinking selection call for
+[TypeSafe's Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+a System One model: it takes a state plus typed questions and returns
+calibrated answers (scores, yes/no probabilities, choices) in one parallel pass.
+Code is in `pipeline/jev.py` (ranking) and `pipeline/explain.py` (prose).
+
+The split:
+
+1. **Jev judges.** Per legal card, one yes/no: "should be one of the cards added
+   to this deck in answer to the request", over the card's rules text plus the
+   pipeline's evidence (role tags, EDHREC play rate and synergy, brain map
+   layer scores), plus one for "answers the request". Three samples are
+   averaged, because identical requests swap about one card in ten.
+2. **The blend ranks.** A logistic model fitted to the player's own decks
+   weighs Jev's two answers with the brain map layers and EDHREC numbers (see
+   "Learned blend" below).
+3. **Python takes the top 10** and writes each reason from facts it holds:
+   the card's roles, any combo it completes, and the brain map's
+   plain-language line, e.g. "Ramp; 54% of decks, synergy +0.47; works with
+   the commander via synergy-swamp; you have taken this before; Jev 87%."
+
+No language model runs in stage 4. The proposals the chat model reads carry
+each card's rules text (`render_proposals`), and the chat model writes the
+prose reply after every batch anyway, so a second model writing prose was
+duplicate work. A whole suggestion takes 1.2-1.6s when the local index fills
+the pool; the remaining slow path is stage 1 query planning, which ran for
+"damage to each opponent" and took the total to 14.5s.
+
+Two optional steps, both off by default:
+
+- `JEV_EXPLAIN=true`: DeepSeek (thinking off) rewrites the reasons and adds a
+  summary and cuts, without changing the picks. About 6.5s.
+- `JEV_CUTS=true`: Jev proposes exactly as many cuts as the batch would push
+  the deck past 100, ranking non-land, non-commander deck cards by "cutting
+  this costs the deck little", with the batch's adds in the state.
+
+Any Jev failure (no key, a 5xx or 429 that survives three retries, a missing
+answer) falls back to the LLM selector; an explainer failure keeps the fact
+reasons. `debug.select_backend` records which selector answered. Illegal cards
+are never sent to Jev, so they cannot be picked.
+
+Settings (`.env.example`): `JEV_MODE` (default `verdict`), `JEV_SAMPLES` (3),
+`JEV_EXPLAIN` and `JEV_CUTS` (false), `JEV_MAX_SIMILAR` and
+`JEV_MIN_PROBABILITY` (both 0, off), and `TYPESAFE_MODEL` pinned to
+`jev-1.13.0`. `jev-latest` and `jev-preview` both resolved to 1.13.0 on
+2026-09-25; the pin keeps a measured baseline from moving silently.
+
+### Cuts
+
+`jev_eval.py --cuts` puts each deck's approved removals back into the deck and
+asks every method for the weakest cards. 37 removed cards across three decks
+(Korlash, Krark, Azula); chance puts 18% of them in a top k of their size.
+
+| Method | Removed cards in top k | Mean position (0 = cut first) |
+|---|---|---|
+| Cut what this commander's decks play least (EDHREC) | 14% | 0.42 |
+| DeepSeek, thinking off | 11% | |
+| DeepSeek, thinking on | 11% | |
+| Jev | 27% | 0.34 |
+| Jev with EDHREC evidence | 24-27% | 0.33 |
+
+Jev is the best of these and still weak: a removal happens in the context of a
+specific swap, which a static "weakest card" ranking cannot see. In a replay on
+a full deck, ten cuts a batch (some of them key pieces such as Necropotence)
+were withdrawn by the chat model, which is why cuts are off by default.
+
+### How it was measured
+
+`tools/jev_eval.py` scores selectors against ground truth from the player's
+own decks. For each deck, its two best-filled roles (ramp, removal, draw) and
+its theme cards (those filling no generic role) each become a case: up to six
+of those cards are removed, along with this deck's proposal history for them so
+the brain map's personal layer cannot leak the answer, and the pipeline is
+asked for "more <role>" or for cards that fit the commander and the deck's
+plan. 33 cases across 11 decks.
+
+- **End to end**: of every card held out, the share returned in the batch.
+  This is the number to trust.
+- **Recall@10**: the same, only over held-out cards that reached the pool.
+- **Stable**: batch overlap (of 10) after shuffling the pool.
+
+The run is compared against `tools/jev_eval_baseline.json`; `--save` moves it.
+
+### Results, 2026-09-25
+
+Default depth (80 cards per role from the local index, pool cap 60):
+
+| Selector | Role end to end | Role recall@10 | Theme end to end | Theme recall@10 | Stable | Seconds |
+|---|---|---|---|---|---|---|
+| Brain map order | 26% | 50% | 27% | 55% | | |
+| EDHREC order | 31% | 55% | 37% | 69% | | |
+| LLM (`low` effort) | 35% | 63% | 38% | 76% | 6.7 | 9.1 |
+| **Jev verdict ×3** | **42%** | **73%** | **35%** | **70%** | **9.5** | **0.4** |
+
+Across three runs on this code Jev verdict ×3 held 72-73% role recall@10 and 42% role end to
+end; the LLM ranged 63-72%. On theme requests Jev, the LLM, and plain EDHREC
+order are within noise of each other.
+
+Earlier rounds, same harness, role cases:
+
+| Mode | Recall@10 | Stable |
+|---|---|---|
+| blind (0-4 fit, rules text only) | 60% | 9.4 |
+| informed (0-4 verdict, with evidence) | 69% | 9.3 |
+| verdict (one yes/no, with evidence) | 73% | 9.3 |
+| verdict ×3 | 73% | 9.5 |
+| choice ×3 (one question across the pool) | 72% | 7.2 |
+| ensemble of verdict and choice | 71% | 8.2 |
+
+Evidence helps when it is weighed into one calibrated answer; judging
+candidates head to head stayed position-sensitive even averaged over three
+orderings.
+
+### What did not help
+
+- **Batch shaping.** Capping interchangeable cards (same type and roles) at 2
+  or 3 per batch changed nothing measurable. A 0.5 probability floor halved
+  the batch and cut role recall to 54%. Both remain settings, off.
+- **A deeper pool.** 200 cards per role and a 150-card cap raised the share of
+  held-out cards reaching the pool (58% to 70%) but diluted the top 10: role
+  end to end fell from 42% to 36%.
+- **Filtering the role query by colour identity before its limit.**
+  `cards_matching_slug_rules` takes the top 80 cards across every colour and
+  `local_retrieval` filters identity afterwards, so a mono-black deck gets only
+  the black share of the 80. Filtering in SQL looks like the obvious fix and
+  measured worse: role end to end 38% against 42% (the unfixed code scored 42%
+  in two runs). An all-on-colour 80 crowds the capped pool with generic
+  staples that the off-colour share used to leave room for. Not applied.
+
+### Where the ceiling was, and the two fixes
+
+About 40% of held-out role cards never reached the pool. Two causes:
+
+- **The EDHREC source ignored the request.** It added the commander's top 40
+  cards by play rate and specificity whatever was asked, so for "more ramp"
+  the commander's own ramp further down the page never became a candidate, and
+  local retrieval's role query ranks by global popularity (a mono-black deck's
+  Greed sits 91st of 637 black draw cards, past its 80). Of 84 held-out cards
+  that never reached the pool, 54 were on the commander's EDHREC page. Now,
+  when the request names roles, every card on the whole page that fills one
+  goes in first (`candidates._edhrec_recommendations`, `roles_wanted`).
+- **The cap is chosen by the weakest signal.** Shaping keeps the brain map's
+  top 60, and the brain map alone recovers fewer of the player's cards than
+  plain EDHREC order (27% vs 32% end to end). Retrieving deeper therefore did
+  not help: 200 per role with the cap at 60, 100, or 300 per role all scored at
+  or below the default.
+
+### Learned blend
+
+`tools/fit_blend.py` fits a logistic model on `jev_eval.py` feature rows
+(every legal candidate, its signals, and whether the player ran it) and
+evaluates it leave-one-deck-out, so a deck is always scored by weights that
+never saw it. `JEV_MODE=blend` ranks with the saved weights
+(`app/pipeline/jev_blend.json`); `blend_features` in `jev.py` is the single
+definition the eval, the fitter, and ranking all use. The weights are this
+player's: refit as decks accumulate, with `--save`, and say why in the commit.
+
+Everything together, 100 cases (79 role, 21 theme) on 11 decks, 2026-09-26:
+
+| End to end | Role | Theme |
+|---|---|---|
+| Brain map order | 33% | 32% |
+| EDHREC order | 39% | 40% |
+| Jev verdict ×3 | 52% | 40% |
+| **Blend** | **56%** | **44%** |
+| Before this round (old EDHREC source, verdict ×3) | 44% | 36% |
+
+Leave-one-deck-out the blend scored 59% role and 40% theme; the theme cases
+are 21 and move about four points between runs, so theme is a tie. The fitted
+weights lean on Jev's verdict and its "answers the request" answer, then
+EDHREC play rate and brain map consensus; brain map mechanical fit gets a
+negative weight once the others are in.
+
+### What each signal is worth
+
+Per-case AUC over 100 cases (the chance that one of the player's own cards
+outscores another candidate; 0.5 is a coin flip), 2026-09-26:
+
+| Signal | Role | Theme |
+|---|---|---|
+| Jev "should be added" | 0.85 | 0.85 |
+| Jev "answers the request" | 0.72 | 0.83 |
+| EDHREC play rate (on the page at all: 52% role, 28% theme) | 0.81 | 0.84 |
+| Brain map total | 0.68 | 0.77 |
+| Brain map consensus | 0.66 | 0.83 |
+| Brain map mechanical | 0.50 | 0.55 |
+| Brain map personal | 0.55 | 0.44 |
+
+The mechanical layer is a coin flip on these decks. It scores a card by its
+single strongest tag relationship to the commander's tags, and the result is
+bimodal: 23% of candidates score exactly 1.0 and 40% exactly 0, so on a full
+deck it cannot rank. A replacement scoring each candidate's IDF-weighted tag
+overlap with the current deck reached 0.58 role and 0.66 theme, too weak to
+build. The personal layer reads cross-deck history only here, because the eval
+deletes this deck's proposal history to keep the answer from leaking; this
+deck's own denials are its strongest input and this eval cannot credit them.
+
+The blend already gives mechanical a negative weight and personal little, so
+the brain map's weak layers do not reach the ranking. They still order the
+pool before the cap, which cuts 7% of held-out role cards at 60; a cap of 80
+measured no better.
+
+### Theme requests: the whole EDHREC page did not help
+
+A request that names no role draws the commander's top 40 EDHREC cards, and 46
+of the 72 held-out theme cards that never reached the pool were on the page
+past that cut. Drawing the whole page (`theme_whole_page`, off) raised the share
+reaching the pool from 53% to 81% but the batch barely moved:
+
+| Theme, 30-33 cases | Reach | Blend end to end |
+|---|---|---|
+| Top 40 (current) | 53% | 43% |
+| Whole page, cap 60 | 57% | 40% |
+| Whole page, cap 120 | 70% | 44% |
+| Whole page, cap 250 | 81% | 45% |
+
+Refitting the blend on the whole-page pools scored 43% leave-one-deck-out. With
+~180 candidates the rankers cannot pick the player's cards out, and EDHREC
+synergy alone gets 42%, so theme requests sit near 43-45% whatever the pool.
+The whole page costs about three times the Jev tokens for a gain inside the
+noise; it stays off.
+
+### Archetype-conditioned EDHREC (built, measured, off)
+
+EDHREC publishes each commander's themes with their own pages, computed over
+only that theme's decks. `pipeline/theme_fit.py` matches the deck to them by
+its distinctive cards (mean lift of the deck's cards on each theme page over
+the commander page, softmax at temperature 0.02) and reads each candidate's
+play rate through the match. The matches are sensible (Massacre Girl Wither to
+-1/-1 Counters, Vendrell Rooms to Enchantress and Rooms). Matching on raw play
+rates instead spread every deck about evenly across every theme, because the
+staples all themes share dominate them.
+
+It adds nothing measurable, leave-one-deck-out over 102 cases:
+
+| | Role | Theme |
+|---|---|---|
+| Commander-wide EDHREC rate alone | 40% | 37% |
+| Theme-matched rate alone | 41% | 35% |
+| Blend without theme signals | 59% | 39% |
+| Blend with theme signals | 60% | 39% |
+
+The player's cards are mostly the popular ones within their archetype, which
+are popular commander-wide too. `prepare_pool(theme_signal=...)` is off.
+
+`jev_eval.py --named-themes` asks each deck's theme cases for its matched
+theme by name ("more -1/-1 Counters cards"). Jev and the blend fell to 28% and
+32% while EDHREC order held at 39%: given a named theme Jev chases cards that
+fit the name, and this eval's theme ground truth (the deck's cards with no
+generic role) is not "Combo cards" or "Chaos cards". The theme cases cannot
+judge named requests until their ground truth is defined by the theme too.
+
+### Where accuracy stands
+
+Tag-derived signals are weak (mechanical 0.50-0.55 AUC, deck-tag similarity
+0.58-0.66) and archetype conditioning adds nothing over commander-wide EDHREC.
+The blend of Jev with EDHREC and brain map consensus holds at about 60% of
+held-out role cards end to end. The one untested source of better data is the
+player's own decisions on real suggestions, which this offline eval cannot
+measure.
+
+### Is the eval grading the engine against itself?
+
+Six of the eleven decks were built almost entirely from approved suggestions
+(Korlash 64 of 65 non-land cards, Azula 64 of 65, Hei Bai 70 of 71); four were
+built outside the app with none (Torbran, Captain N'ghathrod, Rin and Seri,
+Marina Vendrell). On an engine-built deck the held-out cards are the engine's
+own past picks, and the player approves almost anything that is not a blunder,
+so that ground truth partly measures agreement with the engine.
+
+Split out, role requests end to end over the 102-case run:
+
+| | Engine-built (45 cases) | Built outside the app (28 cases) |
+|---|---|---|
+| Held-out cards reaching the pool | 87% | 73% |
+| EDHREC order | 41% | 42% |
+| Jev alone | 51% | 55% |
+| Blend | 65% | 61% |
+
+Fitted on the engine-built decks only and tested on the four others, the blend
+scores 60% against Jev's 55%. The gains hold on ground truth the engine never
+touched. `jev_eval.py` now prints this split on every run (a deck is
+engine-built when more than half its non-land cards were approved
+suggestions); trust the "built outside" row.
+
+### Deck gameplans and deck-aware search
+
+For a request that names no role ("what fits my deck"), search was blind to the
+deck: stage 1 saw only the request's words and the colour identity, local
+retrieval only the request's words, and EDHREC contributed the commander's top
+40 regardless. Jev saw the commander and deck when ranking, but can only rank
+what search found. And no deck had a gameplan: `plan_notes` and `themes` were
+empty on all eleven.
+
+- `pipeline/gameplan.py` drafts a plan (how the deck wins, its engine, early /
+  mid / late) and themes written as rules-text phrases ("-1/-1 counter",
+  "sacrifice another creature"), from the commander's text, the cards, and the
+  deck notes. `tools/draft_gameplans.py` stores one per deck through
+  `deck_set_plan`; all eleven now have one, editable in the app.
+- Stage 1 receives a deck brief (commander rules text, plan, themes) and is told
+  to plan queries for that deck, not generic staples.
+- Local retrieval, for a request naming no role, also searches each theme
+  phrase in rules text and pulls cards carrying the commander's own mechanic
+  tags. `prepare_pool(deck_aware_search=False)` restores the old search.
+- The plan already reached Jev and the chat through `render_plan`.
+
+`jev_eval.py --gameplans` drafts each case's plan from the deck WITHOUT its
+held-out cards, so the plan cannot point search at the answer. The eval also
+reports novelty: the share of each batch not on the commander's EDHREC page.
+
+Theme cases, 29-32 each, with per-case plans:
+
+| | Old search | Deck-aware, cap 60 | cap 100 | cap 150 |
+|---|---|---|---|---|
+| Held-out cards never found | 47% | 39% | 38% | 38% |
+| Found, then cut by the cap | 1% | 11% | 8% | 5% |
+| Blend end to end | 43% | 41% | 41% | 42% |
+| Batch off the EDHREC page | 3% | 7% | 6% | 6% |
+
+Search finds more of the player's cards and the batch reaches further past
+EDHREC's page, but end to end holds at 41-43% at every cap: the extra
+candidates are no easier to rank. On role requests the plans cost nothing
+(blend 55%, as before) and Jev alone rose from 44% to 48% with the plan to read.
+
+### Behaviour eval
+
+`tools/behaviour_eval.py replay` over 13 stored turns. Its records were fixed
+to score each turn on its own tool calls: they had been collecting the whole
+replay conversation, so one refusal in turn 1 counted again in turns 2 and 3.
+
+| Run | Refusals / turn | Role batches via pipeline | Unbracketed-name turns | Ungrounded mentions / turn |
+|---|---|---|---|---|
+| LLM, run 1 (saved baseline) | 0 | 100% | 6 | 6.1 |
+| LLM, run 2 | 0.15 | 0% | 3 | 8.2 |
+| Jev + explainer | 0 | 100% | 2 | 7.0 |
+| Jev + cuts, no explainer | 0 | none asked | 5 | 7.8 |
+| Jev, no explainer, no cuts, run 1 | 0 | 100% | 7 | 9.4 |
+| Jev, no explainer, no cuts, run 2 | 0.08 | 0% | 6 | 7.6 |
+
+The two LLM runs differ from each other as much as any Jev run differs from
+them. Refusals and the pipeline rate turn on whether the chat model tries to
+hand-pick in its own send, before stage 4 runs. At 13 turns this eval cannot
+separate the selectors; it shows no harm from Jev, and one real one from cuts
+(see above). The first LLM run is saved as `tools/behaviour_baseline.json`.

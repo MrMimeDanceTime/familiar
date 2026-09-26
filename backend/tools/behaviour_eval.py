@@ -25,8 +25,10 @@ overwrite the evidence.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -153,6 +155,20 @@ def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _scratch_copy(src: Path) -> Path:
     dest = Path(tempfile.mkdtemp(prefix="familiar-eval-")) / "familiar.db"
+
+    # The copy is the size of the live DB (~450MB) and was never removed: a day
+    # of eval runs left 14GB in temp. The engine is disposed first because
+    # Windows will not delete a file SQLite still has open.
+    def _cleanup() -> None:
+        try:
+            from app.db.session import get_engine
+
+            get_engine().dispose()
+        except Exception:  # noqa: BLE001 - best effort at interpreter exit
+            pass
+        shutil.rmtree(dest.parent, ignore_errors=True)
+
+    atexit.register(_cleanup)
     a = sqlite3.connect(str(src))
     b = sqlite3.connect(str(dest))
     try:
@@ -167,7 +183,13 @@ def _collect_record(session, conversation_id: int, user_text: str, plan_was_set:
                     deck_card_names: list[str], usage: dict | None) -> dict[str, Any]:
     from app.db import repository as repo
 
+    # Only this turn: from the last user message on. Collecting the whole
+    # replay conversation scored every later turn on the earlier turns' calls
+    # too, so one refusal in turn 1 counted again in turns 2 and 3.
     messages = repo.list_messages(session, conversation_id)
+    last_user = max((i for i, m in enumerate(messages) if m.role == "user"), default=0)
+    messages = messages[last_user:]
+    turn_message_ids = {m.id for m in messages}
     results_by_call: dict[str, dict] = {}
     for m in messages:
         for r in m.tool_results or []:
@@ -190,7 +212,11 @@ def _collect_record(session, conversation_id: int, user_text: str, plan_was_set:
         (m.text_content for m in reversed(messages) if m.role == "assistant" and m.text_content),
         "",
     )
-    proposed = [p.card_name or p.commander_name or "" for p in repo.list_proposals(session, conversation_id)]
+    proposed = [
+        p.card_name or p.commander_name or ""
+        for p in repo.list_proposals(session, conversation_id)
+        if p.message_id is None or p.message_id in turn_message_ids
+    ]
     return {
         "user_text": user_text,
         "final_text": final,
@@ -224,11 +250,15 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
     with Session(get_engine()) as session:
         sources = (
             [repo.get_conversation(session, conversation_id)] if conversation_id
-            else repo.list_conversations(session)[:limit_conversations]
+            else repo.list_conversations(session)
         )
+        # A conversation can outlive its deck; replaying one crashed the run.
+        # Filtered before the limit so orphans do not use up the sample.
+        sources = [
+            s for s in sources
+            if s is not None and s.deck_id is not None and repo.get_deck(session, s.deck_id)
+        ][:limit_conversations]
         for source in sources:
-            if source is None or source.deck_id is None:
-                continue
             user_turns = [m.text_content for m in repo.list_messages(session, source.id)
                           if m.role == "user" and m.text_content][:limit_turns]
             if not user_turns:

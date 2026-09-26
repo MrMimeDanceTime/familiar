@@ -25,6 +25,11 @@ def _disable_card_index_refresh():
     from app.tools import scryfall_client
 
     scryfall_client.RETRY_BACKOFF_SECONDS = 0.0
+    # Jev is the default selector and the developer's .env carries a real key,
+    # so without this every pipeline test using a fake provider would make a
+    # live, billed Jev call. Tests that exercise Jev pass a fake client.
+    settings.select_backend = "llm"
+    settings.typesafe_api_key = ""
     yield
 
 

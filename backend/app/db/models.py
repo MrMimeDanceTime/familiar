@@ -209,3 +209,33 @@ class TurnEvent(SQLModel, table=True):
     event: str
     data: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class GradingBatch(SQLModel, table=True):
+    """A suggestion batch generated for the player to grade, pick by pick.
+
+    The offline eval can only score agreement with cards the player already
+    chose; a good card they never ran counts as a miss. Grading real batches
+    measures the thing that matters: how many picks are actually bad. Each
+    batch records which selector made it so the two can be compared blind."""
+
+    __tablename__ = "grading_batches"
+    id: int | None = Field(default=None, primary_key=True)
+    deck_id: int = Field(foreign_key="deck.id")
+    intent: str
+    backend: str  # jev | llm
+    # [{name, reason, mana_cost, type_line, oracle_text, off_page}]
+    picks: list | None = Field(default=None, sa_column=Column(JSON))
+    seconds: float | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class PickGrade(SQLModel, table=True):
+    __tablename__ = "pick_grades"
+    __table_args__ = (UniqueConstraint("batch_id", "card_name"),)
+    id: int | None = Field(default=None, primary_key=True)
+    batch_id: int = Field(foreign_key="grading_batches.id")
+    card_name: str
+    grade: str  # good | fine | bad
+    note: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)

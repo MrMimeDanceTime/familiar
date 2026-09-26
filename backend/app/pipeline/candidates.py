@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.cards import store as card_store
-from app.pipeline import edhrec_source
+from app.pipeline import edhrec_source, roles
 from app.pipeline.broaden import search_with_broadening
 from app.pipeline.spec import QuerySpec
 from app.tools.edhrec_client import EdhrecError, get_edhrec_client
@@ -36,8 +36,18 @@ def _edhrec_recommendations(
     *,
     off_meta: float,
     cap: int,
+    roles_wanted: set[str] | None = None,
+    role_cap: int = 60,
+    whole_page: bool = False,
 ) -> list[dict[str, Any]]:
     """Pull the commander's EDHREC page in as candidates, hydrated locally.
+
+    ``roles_wanted`` makes it answer the request. The top ``cap`` of the page
+    is intent-blind: for "more ramp" it is the commander's best cards of every
+    kind, and the commander-specific ramp further down the page never entered
+    the pool. With roles given, every card on the whole page that fills one of
+    them goes in first (up to ``role_cap``). Measured: 54 of 84 held-out cards
+    that never reached the pool were on the page past the per-list cut.
 
     This is the half that was missing: the page was fetched only to annotate
     cards Scryfall had already returned, so a card EDHREC recommends that no
@@ -58,7 +68,31 @@ def _edhrec_recommendations(
     try:
         collected = edhrec_source.collect(recs)
         ranked = edhrec_source.rank(collected, off_meta=off_meta)
-        return edhrec_source.hydrate(ranked[:cap], card_store, identity)
+        if whole_page:
+            # A request that names no role ("what fits my commander") is a
+            # request for the page itself: 46 of 72 held-out theme cards that
+            # never reached the pool were on it, past the top-``cap`` cut.
+            return edhrec_source.hydrate(
+                edhrec_source.rank(
+                    edhrec_source.collect(recs, per_list_cap=10_000), off_meta=off_meta,
+                ),
+                card_store, identity,
+            )
+        general = edhrec_source.hydrate(ranked[:cap], card_store, identity)
+        if not roles_wanted:
+            return general
+        whole_page = edhrec_source.rank(
+            edhrec_source.collect(recs, per_list_cap=10_000), off_meta=off_meta,
+        )
+        hydrated = edhrec_source.hydrate(whole_page, card_store, identity)
+        tags = card_store.tags_for_many([c["oracle_id"] for c in hydrated if c.get("oracle_id")])
+        on_request = [
+            c for c in hydrated
+            if roles.fine_roles_for_tags(tags.get(c.get("oracle_id"), set()), c.get("type_line"))
+            & roles_wanted
+        ][:role_cap]
+        seen = {c.get("oracle_id") for c in on_request}
+        return on_request + [c for c in general if c.get("oracle_id") not in seen]
     except Exception as exc:  # noqa: BLE001 — never sink retrieval
         logger.warning("EDHREC hydration failed for %r: %s", commander_name, exc)
         return []
@@ -144,6 +178,8 @@ def gather_candidates_detailed(
     identity: frozenset[str] | None = None,
     off_meta: float = 0.0,
     edhrec_cap: int = 40,
+    edhrec_roles: set[str] | None = None,
+    edhrec_whole_page: bool = False,
 ) -> CandidateResult:
     """Run the spec's queries, merge/dedupe/annotate/cap into a raw candidate pool.
 
@@ -171,6 +207,7 @@ def gather_candidates_detailed(
     synergy = _edhrec_synergy_map(commander_name, edhrec)
     recommendations = _edhrec_recommendations(
         commander_name, edhrec, identity, off_meta=off_meta, cap=edhrec_cap,
+        roles_wanted=edhrec_roles, whole_page=edhrec_whole_page,
     )
     edhrec_dt = time.monotonic() - edhrec_start
     if edhrec_dt > 5:

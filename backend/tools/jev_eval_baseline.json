@@ -1,0 +1,215 @@
+{
+  "pool_cap": 60,
+  "role_limit": 80,
+  "jev_model": "jev-latest",
+  "role": {
+    "cases": 22,
+    "scored_cases": 22,
+    "pool_recall": 0.787878787878788,
+    "chance_recall": 0.16836734693877545,
+    "missed": {
+      "never_retrieved": 0.12121212121212122,
+      "cut_by_cap": 0.09090909090909091,
+      "illegal": 0.0
+    },
+    "explain_seconds": null,
+    "selectors": {
+      "brainmap": {
+        "end_to_end": 0.3106060606060606,
+        "recall@10": 0.4273181818181819,
+        "percentile": 0.3453636363636363,
+        "stable": null,
+        "determinism": null,
+        "batch": null,
+        "seconds": null,
+        "vs_edhrec": [
+          2,
+          11,
+          9
+        ]
+      },
+      "edhrec": {
+        "end_to_end": 0.3939393939393939,
+        "recall@10": 0.5318636363636364,
+        "percentile": 0.21931818181818186,
+        "stable": null,
+        "determinism": null,
+        "batch": null,
+        "seconds": null,
+        "vs_edhrec": [
+          0,
+          22,
+          0
+        ]
+      },
+      "verdict3": {
+        "end_to_end": 0.4393939393939394,
+        "recall@10": 0.5900909090909091,
+        "percentile": 0.1885909090909091,
+        "stable": 9.454545454545455,
+        "determinism": 9.590909090909092,
+        "batch": 10.0,
+        "seconds": 0.30454545454545456,
+        "vs_edhrec": [
+          9,
+          7,
+          6
+        ]
+      },
+      "blend": {
+        "end_to_end": 0.5454545454545454,
+        "recall@10": 0.7113181818181817,
+        "percentile": 0.13718181818181818,
+        "stable": 9.045454545454545,
+        "determinism": 9.772727272727273,
+        "batch": 10.0,
+        "seconds": 0.31363636363636355,
+        "vs_edhrec": [
+          14,
+          7,
+          1
+        ]
+      }
+    }
+  },
+  "synergy": {
+    "cases": 11,
+    "scored_cases": 10,
+    "pool_recall": 0.4848484848484848,
+    "chance_recall": 0.20596491228070177,
+    "missed": {
+      "never_retrieved": 0.5,
+      "cut_by_cap": 0.015151515151515152,
+      "illegal": 0.0
+    },
+    "explain_seconds": null,
+    "selectors": {
+      "brainmap": {
+        "end_to_end": 0.2878787878787879,
+        "recall@10": 0.6367,
+        "percentile": 0.17420000000000002,
+        "stable": null,
+        "determinism": null,
+        "batch": null,
+        "seconds": null,
+        "vs_edhrec": [
+          0,
+          6,
+          4
+        ]
+      },
+      "edhrec": {
+        "end_to_end": 0.36363636363636365,
+        "recall@10": 0.7767,
+        "percentile": 0.1274,
+        "stable": null,
+        "determinism": null,
+        "batch": null,
+        "seconds": null,
+        "vs_edhrec": [
+          0,
+          10,
+          0
+        ]
+      },
+      "verdict3": {
+        "end_to_end": 0.3787878787878788,
+        "recall@10": 0.7767,
+        "percentile": 0.1234,
+        "stable": 9.8,
+        "determinism": 9.9,
+        "batch": 10.0,
+        "seconds": 0.3430000000000001,
+        "vs_edhrec": [
+          1,
+          8,
+          1
+        ]
+      },
+      "blend": {
+        "end_to_end": 0.3787878787878788,
+        "recall@10": 0.76,
+        "percentile": 0.10690000000000002,
+        "stable": 9.3,
+        "determinism": 10.0,
+        "batch": 10.0,
+        "seconds": 0.286,
+        "vs_edhrec": [
+          1,
+          8,
+          1
+        ]
+      }
+    }
+  },
+  "all": {
+    "cases": 33,
+    "scored_cases": 32,
+    "pool_recall": 0.6868686868686869,
+    "chance_recall": 0.18011658610812753,
+    "missed": {
+      "never_retrieved": 0.2474747474747475,
+      "cut_by_cap": 0.06565656565656566,
+      "illegal": 0.0
+    },
+    "explain_seconds": null,
+    "selectors": {
+      "brainmap": {
+        "end_to_end": 0.30303030303030304,
+        "recall@10": 0.49275,
+        "percentile": 0.29187499999999994,
+        "stable": null,
+        "determinism": null,
+        "batch": null,
+        "seconds": null,
+        "vs_edhrec": [
+          2,
+          17,
+          13
+        ]
+      },
+      "edhrec": {
+        "end_to_end": 0.3838383838383838,
+        "recall@10": 0.608375,
+        "percentile": 0.19059374999999998,
+        "stable": null,
+        "determinism": null,
+        "batch": null,
+        "seconds": null,
+        "vs_edhrec": [
+          0,
+          32,
+          0
+        ]
+      },
+      "verdict3": {
+        "end_to_end": 0.41919191919191917,
+        "recall@10": 0.64840625,
+        "percentile": 0.16821875,
+        "stable": 9.5625,
+        "determinism": 9.6875,
+        "batch": 10.0,
+        "seconds": 0.3165625,
+        "vs_edhrec": [
+          10,
+          15,
+          7
+        ]
+      },
+      "blend": {
+        "end_to_end": 0.4898989898989899,
+        "recall@10": 0.7265312500000002,
+        "percentile": 0.12771875000000002,
+        "stable": 9.125,
+        "determinism": 9.84375,
+        "batch": 10.0,
+        "seconds": 0.3049999999999999,
+        "vs_edhrec": [
+          15,
+          15,
+          2
+        ]
+      }
+    }
+  }
+}

@@ -60,7 +60,7 @@ def commander_name_to_slug(name: str) -> str:
 def _cache_path(slug: str) -> Path:
     cache_dir = settings.edhrec_cache_path
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / f"{slug}.json"
+    return cache_dir / f"{slug.replace('/', '--')}.json"
 
 
 def _get_or_fetch(slug: str, fetch_fn) -> dict[str, Any]:
@@ -109,6 +109,8 @@ class EdhrecClient:
         self._client.close()
 
     def _fetch_commander_page(self, slug: str) -> dict[str, Any]:
+        # ``slug`` may carry a theme ("korlash-heir-to-blackblade/voltron"):
+        # EDHREC serves a commander's theme pages at the same path shape.
         with self._lock:
             response = self._client.get(f"/pages/commanders/{slug}.json")
         if response.status_code in (403, 404):
@@ -120,14 +122,31 @@ class EdhrecClient:
         except json.JSONDecodeError as exc:
             raise EdhrecError(f"EDHREC returned non-JSON response for '{slug}'") from exc
 
-    def commander_recs(self, commander_name: str) -> dict[str, Any]:
+    def commander_themes(self, commander_name: str) -> list[dict[str, Any]]:
+        """The commander's themes as EDHREC counts them, most decks first:
+        ``[{"slug": "voltron", "value": "Voltron", "count": 111}, ...]``. Read
+        from the commander page already cached, so this costs no request."""
+        slug = commander_name_to_slug(commander_name)
+        data = _get_or_fetch(slug, lambda: self._fetch_commander_page(slug))
+        raw = (data.get("panels") or {}).get("taglinks") or data.get("tag_counts") or []
+        themes = [
+            {"slug": t["slug"], "value": t.get("value") or t["slug"], "count": int(t.get("count") or 0)}
+            for t in raw if isinstance(t, dict) and t.get("slug")
+        ]
+        return sorted(themes, key=lambda t: t["count"], reverse=True)
+
+    def commander_recs(self, commander_name: str, theme: str | None = None) -> dict[str, Any]:
         """Return EDHREC's cardlists for a commander, grouped by category.
+        With ``theme`` (a slug from ``commander_themes``), the same lists
+        computed over only that theme's decks.
 
         Shape: {"commander": str, "categories": {tag: {"header": str, "cards": [...]}}}
         Degrades gracefully (empty categories) if EDHREC's response shape
         has changed in a way we don't recognize, rather than raising.
         """
         slug = commander_name_to_slug(commander_name)
+        if theme:
+            slug = f"{slug}/{theme}"
         data = _get_or_fetch(slug, lambda: self._fetch_commander_page(slug))
 
         categories: dict[str, Any] = {}

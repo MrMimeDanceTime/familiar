@@ -185,6 +185,45 @@ def _render_deck_context(snapshot: dict[str, Any], max_cards: int = 120) -> str:
     return "\n".join(lines)
 
 
+def deck_brief(snapshot: dict[str, Any]) -> str:
+    """The commander's rules text, the gameplan, and its themes: what search
+    needs to know to look for cards that fit THIS deck."""
+    cards = {(c.get("name") or "").lower(): c for c in snapshot.get("cards", [])}
+    lines = []
+    for name in (snapshot.get("commander"), snapshot.get("partner_commander")):
+        if not name:
+            continue
+        text = " ".join(str((cards.get(name.lower()) or {}).get("oracle_text") or "").split())
+        lines.append(f"Commander: {name}" + (f" | {text}" if text else ""))
+    plan = (snapshot.get("plan_notes") or "").strip()
+    if plan:
+        lines.append(f"Gameplan: {' '.join(plan.split())}")
+    themes = [t for t in (snapshot.get("themes") or []) if t]
+    if themes:
+        lines.append(f"Themes: {', '.join(themes)}")
+    return "\n".join(lines)
+
+
+def _commander_mechanic_tags(snapshot: dict[str, Any]) -> set[str]:
+    """The commander's own functional tags (flavour and colour tags dropped):
+    what Tagger says the commander cares about."""
+    try:
+        from app.brainmap.mechanical import is_flavour_tag
+
+        name = snapshot.get("commander")
+        card = card_store.by_name(name) if name else None
+        if not card or not card.get("oracle_id"):
+            return set()
+        return {
+            t for t in card_store.tags_for(card["oracle_id"])
+            if not is_flavour_tag(t) and not t.startswith(("synergy-white", "synergy-blue",
+                "synergy-black", "synergy-red", "synergy-green", "color-", "colour-"))
+        }
+    except Exception as exc:  # noqa: BLE001 - a bonus source
+        logger.warning("commander tags unavailable: %s", exc)
+        return set()
+
+
 def _deck_off_meta(snapshot: dict[str, Any]) -> float:
     """How far off-consensus this deck wants to be, 0.0 to 1.0.
 
@@ -288,60 +327,49 @@ def _tags_for_pool(pool: list[dict[str, Any]]) -> dict[str, set[str]]:
     return {oid: lookup.get(oid, set()) for oid in oracle_ids}
 
 
-def build_suggestions(
+@dataclass
+class PreparedPool:
+    """Stages 1-3 done: everything stage 4 needs, so two selection backends can
+    be run against the identical pool (see tools/jev_compare.py)."""
+
+    snapshot: dict[str, Any]
+    spec: spec_stage.QuerySpec
+    gathered: Any
+    local_pool: list[dict[str, Any]]
+    stage1_skipped: bool
+    pool: list[dict[str, Any]]
+    shaped: list[Any]
+    deck_context: str
+    timings: dict[str, float]
+
+
+def prepare_pool(
     session: Session,
     deck_id: int,
     user_intent: str,
     provider: Any,
     *,
-    conversation_id: int | None = None,
-    message_id: int | None = None,
-    model: str | None = None,
-    spec_thinking: bool | None = None,
-    select_thinking: bool | None = None,
+    model: str,
+    spec_thinking: bool = False,
     max_queries: int = 6,
     pool_cap: int = 60,
-    max_picks: int = 10,
     scryfall: Any | None = None,
     edhrec: Any | None = None,
     off_meta: float | None = None,
     local_store: Any | None = None,
     local_pool_min: int = 25,
-    player_message: str | None = None,
-) -> SuggestionResult:
-    """Run the full retrieval pipeline for a deck and intent.
-
-    When ``conversation_id`` is given, the selection is turned into pending
-    proposals (stage 5); without it, the result carries the raw selection for
-    preview and ``proposals`` stays empty. ``scryfall``/``edhrec`` are injectable
-    for testing.
-
-    Model/thinking policy — the two LLM stages are NOT symmetric:
-      * Stage 1 (query planning) is a mechanical intent->Scryfall-query mapping;
-        the harness enforces legality regardless of what it writes. So it runs
-        FAST model, thinking OFF.
-      * Stage 4 (selection) is where deck-aware FIT judgment happens — the one
-        thing Python can't do. It gets the commander + current deck as context
-        (see _render_deck_context) and runs with thinking ON so it can actually
-        reason about combos/synergy, still on the FAST model to stay responsive.
-    Defaults trigger this policy; pass ``model``/``spec_thinking``/
-    ``select_thinking`` to override (e.g. tests pin a fake provider).
-    """
-    if model is None:
-        from app.llm.factory import get_fast_model
-        model = get_fast_model()
-    if spec_thinking is None:
-        spec_thinking = False
-    if select_thinking is None:
-        select_thinking = True
-
-    timings: dict[str, float] = {}
-    overall_start = time.monotonic()
-    logger.info(
-        "pipeline: build_suggestions deck=%s intent=%r model=%s",
-        deck_id, user_intent[:80], model,
-    )
-
+    local_role_limit: int = 80,
+    edhrec_by_role: bool = True,
+    theme_whole_page: bool = False,
+    theme_pool_cap: int | None = None,
+    # Off: measured +1 point role, 0 theme over commander-wide EDHREC
+    # (docs/PIPELINE.md), not worth a second set of page fetches per commander.
+    theme_signal: bool = False,
+    deck_aware_search: bool = True,
+    timings: dict[str, float] | None = None,
+) -> PreparedPool:
+    """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
+    timings = {} if timings is None else timings
     snapshot = repo.deck_snapshot(session, deck_id)
     # The prompt has the model batch set_commander with the opening cards, and
     # the hand-pick guard sends those cards here. At that moment the commander
@@ -373,6 +401,9 @@ def build_suggestions(
         try:
             local_pool = local_retrieval.retrieve(
                 user_intent, identity, store=local_store or card_store,
+                per_role_limit=local_role_limit,
+                themes=(snapshot.get("themes") or []) if deck_aware_search else None,
+                commander_tags=_commander_mechanic_tags(snapshot) if deck_aware_search else None,
             )
         except Exception as exc:  # noqa: BLE001 - fall back to the model
             logger.warning("local retrieval failed, falling back to query planning: %s", exc)
@@ -383,17 +414,34 @@ def build_suggestions(
         spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
     else:
         with _timed("stage1_spec", timings):
-            spec = spec_stage.generate_query_spec(
-                provider, user_intent, identity,
-                model=model, max_queries=max_queries, thinking=spec_thinking,
-            )
+            try:
+                spec = spec_stage.generate_query_spec(
+                    provider, user_intent, identity,
+                    deck_brief=deck_brief(snapshot) if deck_aware_search else "",
+                    model=model, max_queries=max_queries, thinking=spec_thinking,
+                )
+            except ValueError as exc:
+                # Unusable query planning used to fail the whole suggestion.
+                # EDHREC's page and the local pool still stand without it.
+                logger.warning("stage 1 failed, continuing without planned queries: %s", exc)
+                spec = spec_stage.QuerySpec(queries=[], intent_summary=user_intent)
 
+    intent_roles = local_retrieval.intent_roles(user_intent)
+    whole_page = theme_whole_page and not intent_roles
+    if theme_pool_cap and not intent_roles:
+        pool_cap = theme_pool_cap
     with _timed("stage2_candidates", timings):
         gathered = candidates_stage.gather_candidates_detailed(
             spec, snapshot.get("commander"),
             scryfall=scryfall, edhrec=edhrec,
             identity=identity,
             off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
+            edhrec_roles=intent_roles or None if edhrec_by_role else None,
+            edhrec_whole_page=whole_page,
+            # The raw cap was 120, and most of a page's top cards are already
+            # in the deck (so illegal to suggest): a whole page capped at 120
+            # left ~50 legal cards, fewer than the top-40 source it replaced.
+            **({"cap": 500} if whole_page else {}),
         )
         # EDHREC's commander-specific picks lead, then the local hits, then
         # whatever the fallback queries added; dedupe keeps the first seen.
@@ -406,6 +454,18 @@ def build_suggestions(
             seen.add(oid)
             pool.append(card)
 
+    if theme_signal:
+        with _timed("stage2b_themes", timings):
+            from app.pipeline import theme_fit
+            from app.tools.edhrec_client import get_edhrec_client
+
+            profile = theme_fit.build_profile(
+                snapshot.get("commander"),
+                [c.get("name") or "" for c in snapshot.get("cards", [])],
+                edhrec or get_edhrec_client(),
+            )
+            theme_fit.annotate(pool, profile)
+
     with _timed("stage3_shape", timings):
         pool = _apply_brain_map(
             session, pool, snapshot, identity, deck_id,
@@ -414,15 +474,152 @@ def build_suggestions(
         ctx = _with_combo_partners(ctx, snapshot, pool)
         shaped = shape(pool, ctx, _tags_for_pool(pool), cap=pool_cap)
 
-    with _timed("stage4_select", timings):
-        from app.config import settings
+    return PreparedPool(
+        snapshot=snapshot, spec=spec, gathered=gathered, local_pool=local_pool,
+        stage1_skipped=stage1_skipped, pool=pool, shaped=shaped,
+        deck_context=_render_deck_context(snapshot), timings=timings,
+    )
 
-        selection = selection_stage.select(
-            provider, shaped, user_intent,
-            model=model, max_picks=max_picks, thinking=select_thinking,
-            deck_context=_render_deck_context(snapshot),
-            reasoning_effort=settings.select_reasoning_effort or None,
-            player_message=player_message,
+
+def run_selection(
+    prepared: PreparedPool,
+    user_intent: str,
+    provider: Any,
+    *,
+    backend: str,
+    model: str,
+    select_thinking: bool = True,
+    max_picks: int = 10,
+    player_message: str | None = None,
+    jev_client: Any | None = None,
+    jev_mode: str | None = None,
+    jev_samples: int | None = None,
+    jev_explain: bool | None = None,
+) -> tuple[selection_stage.Selection, str]:
+    """Run stage 4 on the requested backend. Returns (selection, backend used):
+    a failed Jev call logs and falls back to the LLM rather than failing the
+    suggestion, and the second value says which one actually answered."""
+    from app.config import settings
+
+    if backend == "jev":
+        from app.pipeline import jev
+
+        selection = None
+        try:
+            client = jev_client or jev.get_client()
+            selection = jev.select_jev(
+                client, prepared.shaped, user_intent,
+                max_picks=max_picks, deck_context=prepared.deck_context,
+                player_message=player_message,
+                mode=jev_mode or settings.jev_mode or "verdict",
+                samples=jev_samples or settings.jev_samples or 1,
+                max_similar=settings.jev_max_similar or None,
+                min_probability=settings.jev_min_probability or None,
+                cut_cards=jev.cut_candidates(prepared.snapshot) if settings.jev_cuts else None,
+                cut_evidence_map=(jev.cut_evidence(prepared.snapshot.get("commander"))
+                                  if settings.jev_cuts else None),
+                deck_total=prepared.snapshot.get("total_cards"),
+            )
+        except Exception as exc:  # noqa: BLE001 - the LLM path is the fallback
+            logger.warning("jev selection failed, falling back to llm: %s", exc)
+        if selection is not None:
+            explain_picks = settings.jev_explain if jev_explain is None else jev_explain
+            if explain_picks:
+                from app.pipeline import explain
+
+                start = time.monotonic()
+                try:
+                    selection = explain.explain(
+                        provider, selection, prepared.shaped, user_intent, model=model,
+                        deck_context=prepared.deck_context, player_message=player_message,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fact-built reasons still stand
+                    logger.warning("explaining jev picks failed, keeping fact reasons: %s", exc)
+                selection.raw["explain_seconds"] = round(time.monotonic() - start, 2)
+            return selection, "jev"
+
+    return selection_stage.select(
+        provider, prepared.shaped, user_intent,
+        model=model, max_picks=max_picks, thinking=select_thinking,
+        deck_context=prepared.deck_context,
+        reasoning_effort=settings.select_reasoning_effort or None,
+        player_message=player_message,
+    ), "llm"
+
+
+def build_suggestions(
+    session: Session,
+    deck_id: int,
+    user_intent: str,
+    provider: Any,
+    *,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
+    model: str | None = None,
+    spec_thinking: bool | None = None,
+    select_thinking: bool | None = None,
+    max_queries: int = 6,
+    pool_cap: int = 60,
+    max_picks: int = 10,
+    scryfall: Any | None = None,
+    edhrec: Any | None = None,
+    off_meta: float | None = None,
+    local_store: Any | None = None,
+    local_pool_min: int = 25,
+    player_message: str | None = None,
+    select_backend: str | None = None,
+    jev_client: Any | None = None,
+) -> SuggestionResult:
+    """Run the full retrieval pipeline for a deck and intent.
+
+    When ``conversation_id`` is given, the selection is turned into pending
+    proposals (stage 5); without it, the result carries the raw selection for
+    preview and ``proposals`` stays empty. ``scryfall``/``edhrec`` are injectable
+    for testing.
+
+    Model/thinking policy — the two LLM stages are NOT symmetric:
+      * Stage 1 (query planning) is a mechanical intent->Scryfall-query mapping;
+        the harness enforces legality regardless of what it writes. So it runs
+        FAST model, thinking OFF.
+      * Stage 4 (selection) is where deck-aware FIT judgment happens — the one
+        thing Python can't do. It gets the commander + current deck as context
+        (see _render_deck_context) and runs with thinking ON so it can actually
+        reason about combos/synergy, still on the FAST model to stay responsive.
+    Defaults trigger this policy; pass ``model``/``spec_thinking``/
+    ``select_thinking`` to override (e.g. tests pin a fake provider).
+    """
+    if model is None:
+        from app.llm.factory import get_fast_model
+        model = get_fast_model()
+    if spec_thinking is None:
+        spec_thinking = False
+    if select_thinking is None:
+        select_thinking = True
+    if select_backend is None:
+        from app.config import settings
+        select_backend = settings.select_backend or "llm"
+
+    timings: dict[str, float] = {}
+    overall_start = time.monotonic()
+    logger.info(
+        "pipeline: build_suggestions deck=%s intent=%r model=%s",
+        deck_id, user_intent[:80], model,
+    )
+
+    prepared = prepare_pool(
+        session, deck_id, user_intent, provider,
+        model=model, spec_thinking=spec_thinking, max_queries=max_queries,
+        pool_cap=pool_cap, scryfall=scryfall, edhrec=edhrec, off_meta=off_meta,
+        local_store=local_store, local_pool_min=local_pool_min, timings=timings,
+    )
+    spec, gathered, shaped = prepared.spec, prepared.gathered, prepared.shaped
+    local_pool, pool = prepared.local_pool, prepared.pool
+
+    with _timed("stage4_select", timings):
+        selection, backend_used = run_selection(
+            prepared, user_intent, provider,
+            backend=select_backend, model=model, select_thinking=select_thinking,
+            max_picks=max_picks, player_message=player_message, jev_client=jev_client,
         )
 
     debug = {
@@ -430,7 +627,8 @@ def build_suggestions(
         "intent_summary": spec.intent_summary,
         "broadened": gathered.broadened,
         "local_pool": len(local_pool),
-        "stage1_skipped": stage1_skipped,
+        "stage1_skipped": prepared.stage1_skipped,
+        "select_backend": backend_used,
         "pool_size": len(pool),
         "shaped_size": len(shaped),
         "legal_shaped": sum(1 for c in shaped if c.legal_in_deck),

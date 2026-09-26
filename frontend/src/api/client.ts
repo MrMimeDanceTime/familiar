@@ -1,4 +1,4 @@
-import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, DeckSummary, ImportMode, ImportResult, KnowledgeEntry, KnowledgeEntryIn, UserPreferences } from '../types/api'
+import type { Conversation, ConversationDetail, Deck, DeckProvider, DeckStats, DeckStatsNuance, DeckSummary, Grade, GradingBackendSummary, GradingBatch, ImportMode, ImportResult, KnowledgeEntry, KnowledgeEntryIn, UserPreferences } from '../types/api'
 
 async function asJson<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
@@ -9,6 +9,32 @@ async function asJson<T>(resp: Response): Promise<T> {
 }
 
 export const api = {
+  gradingRequests: (): Promise<{ requests: string[] }> =>
+    fetch('/api/grading/requests').then((r) => asJson<{ requests: string[] }>(r)),
+
+  listGradingBatches: (): Promise<GradingBatch[]> =>
+    fetch('/api/grading/batches').then((r) => asJson<GradingBatch[]>(r)),
+
+  createGradingBatch: (deckId: number, intent: string): Promise<GradingBatch> =>
+    fetch('/api/grading/batches', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deck_id: deckId, intent }),
+    }).then((r) => asJson<GradingBatch>(r)),
+
+  gradePick: (batchId: number, cardName: string, grade: Grade, note?: string): Promise<GradingBatch> =>
+    fetch(`/api/grading/batches/${batchId}/grades`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card_name: cardName, grade, note }),
+    }).then((r) => asJson<GradingBatch>(r)),
+
+  deleteGradingBatch: (batchId: number): Promise<{ ok: boolean }> =>
+    fetch(`/api/grading/batches/${batchId}`, { method: 'DELETE' }).then((r) => asJson<{ ok: boolean }>(r)),
+
+  gradingSummary: (): Promise<{ by_backend: Record<string, GradingBackendSummary> }> =>
+    fetch('/api/grading/summary').then((r) => asJson<{ by_backend: Record<string, GradingBackendSummary> }>(r)),
+
   listConversations: (): Promise<Conversation[]> =>
     fetch('/api/conversations').then((r) => asJson<Conversation[]>(r)),
 

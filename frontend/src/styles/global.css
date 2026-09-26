@@ -2808,3 +2808,263 @@ body.has-pinned-tray .deck-detail {
   display: flex;
   gap: 0.5rem;
 }
+
+/* ---- Grading page (#grading) -------------------------------------------- */
+
+.sidebar-icon-btn--text {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.grading {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  padding: 24px clamp(16px, 4vw, 48px) 64px;
+  max-width: 1100px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.grading__top {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.grading__title {
+  font-family: var(--serif);
+  color: var(--text-h);
+  font-size: 26px;
+  margin: 0 0 4px;
+}
+
+.grading__muted {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: 4px 0 12px;
+  max-width: 70ch;
+}
+
+.grading__error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.grading__summary {
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 8px 0 20px;
+}
+
+.grading__summary th,
+.grading__summary td {
+  text-align: left;
+  padding: 6px 14px 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.grading__summary th {
+  color: var(--label);
+  font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.grading__bad {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.grading__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.grading__input {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--text);
+  min-width: 0;
+}
+
+.grading__input--wide {
+  flex: 1 1 260px;
+}
+
+.grading__toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin: 8px 0 16px;
+}
+
+.grading__batch {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.grading__batch--done {
+  opacity: 0.75;
+}
+
+.grading__batch-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.grading__deck {
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.grading__intent {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.grading__batch-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.grading__chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.grading__chip--reveal {
+  font-weight: 700;
+}
+
+.grading__picks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.grading__pick {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.grading__pick-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.grading__pick-title {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.grading__name {
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.grading__cost {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.grading__type {
+  font-size: 12px;
+  color: var(--label);
+  margin-top: 2px;
+}
+
+.grading__oracle {
+  font-size: 12.5px;
+  margin-top: 4px;
+  white-space: pre-line;
+}
+
+.grading__reason {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.grading__buttons {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.grading__grade--on.grading__grade--good {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+
+.grading__grade--on.grading__grade--fine {
+  background: var(--bg);
+  color: var(--text-h);
+  border-color: var(--text-dim);
+  font-weight: 700;
+}
+
+.grading__grade--on.grading__grade--bad {
+  background: var(--danger);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+
+.grading__pick--bad .grading__name {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .grading__top,
+  .grading__pick {
+    flex-direction: column;
+  }
+  .grading__buttons {
+    width: 100%;
+  }
+  .grading__grade {
+    flex: 1;
+  }
+}

@@ -210,3 +210,40 @@ export type SseEvent =
   | { event: 'message_reset'; data: Record<string, never> }
   | { event: 'done'; data: { message_id: number; conversation_id: number } }
   | { event: 'error'; data: { message: string } }
+
+export type Grade = 'good' | 'fine' | 'bad'
+
+export interface GradedPick {
+  name: string
+  reason: string
+  mana_cost: string | null
+  type_line: string | null
+  oracle_text: string | null
+  off_page: boolean
+  grade: Grade | null
+  note: string | null
+}
+
+export interface GradingBatch {
+  id: number
+  deck_id: number
+  deck_name: string | null
+  intent: string
+  picks: GradedPick[]
+  complete: boolean
+  // Withheld by the server until every pick is graded.
+  backend: 'jev' | 'llm' | null
+  seconds: number | null
+  created_at: string
+}
+
+export interface GradingBackendSummary {
+  batches: number
+  picks: number
+  good: number
+  fine: number
+  bad: number
+  bad_rate: number | null
+  good_rate: number | null
+  mean_seconds: number | null
+}

@@ -42,6 +42,38 @@ class Settings(BaseSettings):
     # 93s for output that graded the same. Set empty to restore provider default.
     select_reasoning_effort: str = "low"
 
+    # Which backend runs stage 4: "jev" (TypeSafe's System One model ranks every
+    # candidate in about a second; see app/pipeline/jev.py and PIPELINE.md for
+    # the measurements) or "llm" (the thinking selection call above). "jev"
+    # falls back to "llm" on any error, including a missing key, so it cannot
+    # break suggestions.
+    select_backend: str = "jev"
+    typesafe_api_key: str = ""
+    typesafe_model: str = "jev-1.13.0"
+    # How Jev judges (blind | informed | verdict | choice | ensemble | blend)
+    # and how many samples it averages. blend ranks verdict's answers together
+    # with the brain map and EDHREC numbers, weighted by a model fitted to the
+    # player's own decks (app/pipeline/jev_blend.json, tools/fit_blend.py).
+    # It returned 56% of held-out role cards end to end against verdict's 52%.
+    # See PIPELINE.md.
+    jev_mode: str = "blend"
+    jev_samples: int = 3
+    # Batch shaping after ranking: at most this many interchangeable cards
+    # (same primary type and roles; 0 disables), and stop below this verdict
+    # probability (0 disables). Set from tools/jev_eval.py results.
+    jev_max_similar: int = 0
+    jev_min_probability: float = 0.0
+    # One fast, non-thinking model call rewrites the reasons and adds a summary
+    # and cuts for Jev's picks, without changing them. Off by default: it cost
+    # ~6.5s of a ~7s suggestion, the chat model writes the prose reply after
+    # every batch anyway, and reasons and cuts are now built without it.
+    jev_explain: bool = False
+    # Jev proposes as many cuts as the batch would push the deck past 100.
+    # Off by default: against the player's own removals it ranked 27% of them
+    # in its top k (chance 18%; the LLM's cuts 11%), and on a full deck ten
+    # cuts a batch, some of them key pieces, got withdrawn by the chat model.
+    jev_cuts: bool = False
+
     # Per-request timeout (seconds) for LLM API calls. The OpenAI SDK defaults to
     # 600s, which reads as a total freeze from the UI when a call stalls (e.g. a
     # slow thinking-mode pipeline call). Cap it so a stalled request fails fast
