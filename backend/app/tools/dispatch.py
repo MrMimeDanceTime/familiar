@@ -93,7 +93,22 @@ def _scryfall_card_by_name(name: str, fuzzy: bool = True) -> dict:
 
 
 def _scryfall_card_collection(names: list[str]) -> dict:
-    result = get_scryfall_client().collection(names)
+    # Local first. The card index is a complete offline copy of Scryfall's
+    # oracle data, so a batch lookup answers in milliseconds with no network;
+    # only names the index lacks (a card newer than the last index refresh)
+    # go to the API. A cheap lookup is the one the model will actually make.
+    local: dict[str, dict] = {}
+    try:
+        from app.cards import schema as card_schema
+        from app.cards import store as card_store
+
+        if card_schema.tag_count() > 0:
+            local = card_store.by_names(names)
+    except Exception:  # noqa: BLE001 - the API below still answers
+        local = {}
+    missing = [n for n in names if n.lower() not in local]
+    result = get_scryfall_client().collection(missing) if missing else {"found": [], "not_found": []}
+    result["found"] = [*local.values(), *result.get("found", [])]
     for c in result.get("found", []):
         c["tags"] = get_tags_for_card(c.get("oracle_id"))
     _attach_rulings(result.get("found", []))
@@ -296,7 +311,8 @@ def _suggest_cards(
         conversation_id=conversation_id, message_id=message_id,
         max_picks=picks, player_message=player_message,
     )
-    return {"ok": True, "summary": result.summary, "proposals": result.proposals}
+    return {"ok": True, "summary": result.summary, "proposals": result.proposals,
+            "alternatives": getattr(result, "alternatives", [])}
 
 
 # Tools that additionally need the LLM provider injected alongside `session`.

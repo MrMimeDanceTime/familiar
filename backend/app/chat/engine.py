@@ -9,6 +9,7 @@ too.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,12 @@ from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_
 from app.tools import render
 from app.tools.render import render_result
 from app.tools.schemas import TOOL_SPECS
+
+# One record per finished reply: how many cards it names, how many of those
+# it described without their real text in context, and whether a rewrite
+# round ran. tools/behaviour_eval.py collects these; the prompt-injected card
+# facts are invisible to anything reading only the transcript.
+grounding_log = logging.getLogger("app.chat.grounding")
 
 logger = logging.getLogger("app.chat.engine")
 
@@ -453,7 +460,45 @@ def _prepare_turn(
         *state_card_names,
         *_recent_reply_names(session, conversation_id),
     ])
+    _anticipate_cards(state, deck_state_text=deck_state.block or "")
     return state
+
+
+_ANTICIPATE_PROMPT = """\
+You help a Magic: The Gathering Commander deckbuilding assistant prepare a reply.
+Given the deck and the player's message, list the real card names the reply is
+likely to mention, suggest, or compare that are NOT already in the deck: the
+cards someone answering well would bring up. Exact English card names only.
+Output ONLY a JSON object: {"cards": ["<card name>", ...]} with at most 20 names,
+or {"cards": []} when the message is not about specific cards.\
+"""
+_ANTICIPATE_MAX = 20
+
+
+def _anticipate_cards(state: "_TurnState", *, deck_state_text: str) -> None:
+    """Ground the cards the reply will probably reach for, before it is written.
+
+    The reply used to be checked after it was written, and a draft that
+    described cards without their text was withdrawn and rewritten: a whole
+    second reply, streamed over the first. Guessing the cards up front and
+    loading their real text costs one short call instead. Only names the
+    index knows are loaded, so a guess the model invents adds nothing.
+    """
+    if not settings.chat_anticipate_cards or not card_facts.is_available():
+        return
+    try:
+        from app.llm.factory import get_fast_model
+
+        user = f"{deck_state_text[:4000]}\n\nPlayer's message: {state.user_text[:2000]}"
+        raw = state.provider.complete_json(
+            _ANTICIPATE_PROMPT, user, model=get_fast_model(), thinking=False,
+        )
+        names = json.loads(raw).get("cards") or []
+        names = [n for n in names if isinstance(n, str)][:_ANTICIPATE_MAX]
+        found, _ = card_facts.resolve(names)
+        state.ground_names([card["name"] for card in found.values() if card.get("name")])
+    except Exception as exc:  # noqa: BLE001 - anticipation is a head start, never a precondition
+        logger.info("chat: card anticipation skipped: %s", exc)
 
 
 # How far back to look for cards the conversation is still about. A follow-up
@@ -646,6 +691,14 @@ def run_chat_turn(
                 logger.info(
                     "chat: turn complete in %.2fs over %d LLM call(s)",
                     time.perf_counter() - turn_started, iteration + 1,
+                )
+                grounding_log.info(
+                    "grounding", extra={"grounding": {
+                        "named": len(card_facts.names_in_text(text)),
+                        "ungrounded": len(state.ungrounded_in(text)),
+                        "rewrote": state.corrected_once,
+                        "seconds": round(time.perf_counter() - turn_started, 2),
+                    }},
                 )
                 yield from _finalize_turn(
                     state, text, turn.raw_assistant_message,

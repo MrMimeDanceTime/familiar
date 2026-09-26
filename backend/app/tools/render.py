@@ -419,6 +419,15 @@ def render_proposals(content: Any) -> str:
             )
             text = _one_line(p.get("oracle_text"))
             lines.append(f"  {head}" + (f" — {text}" if text else ""))
+    alternatives = content.get("alternatives") or []
+    if alternatives:
+        lines.append("Also considered, not proposed (real text, for comparison):")
+        for a in alternatives:
+            if not isinstance(a, dict) or not a.get("name"):
+                continue
+            head = " · ".join(str(a[k]) for k in ("mana_cost", "type_line") if a.get(k))
+            text = _one_line(a.get("oracle_text"))
+            lines.append(f"- {a['name']}" + (f" · {head}" if head else "") + (f" — {text}" if text else ""))
     return "\n".join(lines)
 
 

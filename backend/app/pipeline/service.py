@@ -72,6 +72,30 @@ class SuggestionResult:
     proposals: list[dict[str, Any]] = field(default_factory=list)
     selection: selection_stage.Selection | None = None
     debug: dict[str, Any] = field(default_factory=dict)
+    # The best candidates that were not picked, with their text. The chat
+    # model's reply compares picks with alternatives ("I dropped Etali"), and
+    # those alternatives were the cards it most often described from memory.
+    alternatives: list[dict[str, Any]] = field(default_factory=list)
+
+
+_ALTERNATIVES = 12
+
+
+def _alternatives(shaped: list[Any], selection: selection_stage.Selection) -> list[dict[str, Any]]:
+    picked = {p.name.lower() for p in selection.picks}
+    ranked = [j["name"] for j in (selection.raw or {}).get("judgments") or []]
+    by_name = {c.name.lower(): c for c in shaped if c.name and c.legal_in_deck}
+    order = [n.lower() for n in ranked] or list(by_name)
+    out = []
+    for key in order:
+        card = by_name.get(key)
+        if card is None or key in picked:
+            continue
+        out.append({"name": card.name, "mana_cost": card.mana_cost,
+                    "type_line": card.type_line, "oracle_text": card.oracle_text or ""})
+        if len(out) >= _ALTERNATIVES:
+            break
+    return out
 
 
 def _commander_identity(snapshot: dict[str, Any], scryfall: Any | None = None) -> frozenset[str]:
@@ -643,6 +667,7 @@ def build_suggestions(
         )
         return SuggestionResult(
             summary=selection.summary, proposals=[], selection=selection, debug=debug,
+            alternatives=_alternatives(shaped, selection),
         )
 
     # The brain map's verdict per card, so the review surface can show why a
@@ -669,4 +694,5 @@ def build_suggestions(
         proposals=result["proposals"],
         selection=selection,
         debug=debug,
+        alternatives=_alternatives(shaped, selection),
     )
