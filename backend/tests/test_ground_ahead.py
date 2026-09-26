@@ -22,6 +22,9 @@ def _state(provider):
 
 
 def test_anticipated_cards_are_grounded_before_the_model_writes(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_anticipate_cards", True)
     monkeypatch.setattr(card_facts, "is_available", lambda: True)
     monkeypatch.setattr(card_facts, "resolve", lambda names: (
         {n.lower(): {"name": n, "oracle_text": f"{n} text", "type_line": "Instant"}
