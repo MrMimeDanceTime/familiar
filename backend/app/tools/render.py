@@ -484,7 +484,10 @@ def grounded_card_names(content: Any) -> set[str]:
         if depth > _GROUNDING_MAX_DEPTH:
             return
         if isinstance(node, dict):
-            name = node.get("name")
+            # Proposals name their card as ``card_name``; missing that key
+            # counted every proposed card as ungrounded even though its text
+            # was rendered right under it, and the rewrite round fired on it.
+            name = node.get("name") or node.get("card_name")
             if isinstance(name, str) and name.strip() and "oracle_text" in node:
                 found.add(name.strip().lower())
             for value in node.values():

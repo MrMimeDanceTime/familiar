@@ -56,3 +56,9 @@ def test_suggest_result_grounds_the_alternatives_it_lists():
     text = render.render_proposals(content)
     assert "Also considered, not proposed" in text and "Whenever Etali attacks" in text
     assert "etali, primal storm" in render.grounded_card_names(content)
+
+
+def test_proposed_cards_count_as_grounded():
+    content = {"proposals": [{"id": 1, "action": "add", "card_name": "Hurl Through Hell",
+                              "oracle_text": "Exile target..."}]}
+    assert "hurl through hell" in render.grounded_card_names(content)
