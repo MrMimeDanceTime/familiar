@@ -21,6 +21,9 @@ from app.pipeline.shaping import ShapedCard, render_pool
 class Pick:
     name: str
     reason: str = ""
+    # Copies to add. Only basics go above 1 (a manabase fill), which is the
+    # one card Commander allows more than one of.
+    quantity: int = 1
 
 
 @dataclass

@@ -612,3 +612,25 @@ them. Refusals and the pipeline rate turn on whether the chat model tries to
 hand-pick in its own send, before stage 4 runs. At 13 turns this eval cannot
 separate the selectors; it shows no harm from Jev, and one real one from cuts
 (see above). The first LLM run is saved as `tools/behaviour_baseline.json`.
+
+## Land requests fill the manabase
+
+A land request ("add lands", "fill out the manabase") used to go through the
+same path as any role: ten distinct picks, so one Plains, one Swamp, a few
+duals, and sometimes a mana rock. End-to-end simulations left decks at 0-1
+lands after six turns of building. `pipeline/manabase.py` now fills to the
+deck plan's land target (33-35 by power level, `deckplan.TARGETS_BY_POWER`):
+
+- the gap is the target minus the lands already in the deck;
+- nonbasic lands come from the ranked pool (Jev's order), non-land cards
+  dropped, capped by colour count (6 mono-colour, 12 two, 16 three, up to 24);
+- basics fill the rest as multiples (`Pick.quantity`), split across the
+  deck's colours by the coloured pips in its spells.
+
+On a land-less three-colour Kaalia deck: 16 nonbasics and 17 basics (6
+Mountain, 6 Plains, 5 Swamp) in one batch of 19 proposals, 34 lands after
+approval.
+
+Role requests also drop candidates Jev scores below 0.2 on "answers the
+request" (`jev_min_ask`), which is what keeps basics and staples out of a
+"card draw" batch for a deck that has no lands yet.

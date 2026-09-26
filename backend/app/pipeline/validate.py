@@ -52,7 +52,7 @@ def selection_to_changes(
         change: dict[str, Any] = {
             "action": "add",
             "card_name": pick.name,
-            "quantity": 1,
+            "quantity": pick.quantity,
             "reasoning": pick.reason,
         }
         verdict = scores_by_name.get(pick.name.lower())
