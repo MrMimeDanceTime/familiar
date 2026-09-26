@@ -42,11 +42,12 @@ class Settings(BaseSettings):
     # 93s for output that graded the same. Set empty to restore provider default.
     select_reasoning_effort: str = "low"
 
-    # Which backend runs stage 4: "llm" (the thinking selection call above) or
-    # "jev" (TypeSafe's System One model scores every candidate in under a
-    # second; see app/pipeline/jev.py). "jev" falls back to "llm" on any error,
-    # including a missing key, so switching it on cannot break suggestions.
-    select_backend: str = "llm"
+    # Which backend runs stage 4: "jev" (TypeSafe's System One model ranks every
+    # candidate in about a second; see app/pipeline/jev.py and PIPELINE.md for
+    # the measurements) or "llm" (the thinking selection call above). "jev"
+    # falls back to "llm" on any error, including a missing key, so it cannot
+    # break suggestions.
+    select_backend: str = "jev"
     typesafe_api_key: str = ""
     typesafe_model: str = "jev-1.13.0"
     # How Jev judges (blind | informed | verdict | choice | ensemble | blend)
