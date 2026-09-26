@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { StreamInterrupted, cancelTurn, getTurnStatus, startTurn, streamTurnEvents } from '../api/sse'
+import { THINKING } from '../lib/activity'
 import type { Deck, DeckProposal } from '../types/api'
 
 export interface DisplayMessage {
@@ -137,6 +138,10 @@ export function useChatStream(options: UseChatStreamOptions = {}) {
 
     if (evt.event === 'tool_call') {
       setActiveTool(evt.data.name)
+    } else if (evt.event === 'thinking') {
+      // The model is reasoning before it writes. Without this the turn looked
+      // stalled for the 5-20s a thinking send takes.
+      setActiveTool(THINKING)
     } else if (evt.event === 'token') {
       assistantText.current += evt.data.text
       setActiveTool(null)

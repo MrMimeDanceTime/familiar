@@ -30,6 +30,11 @@ def token_event(text: str) -> ChatEvent:
     return ChatEvent("token", {"text": text})
 
 
+def thinking_event(seconds: float, chars: int) -> ChatEvent:
+    """The model is reasoning before it writes; shown as a live indicator."""
+    return ChatEvent("thinking", {"seconds": seconds, "chars": chars})
+
+
 def tool_call_event(name: str, arguments: dict[str, Any]) -> ChatEvent:
     return ChatEvent("tool_call", {"name": name, "arguments": arguments})
 

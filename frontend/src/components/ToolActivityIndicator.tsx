@@ -1,3 +1,6 @@
+import { useEffect, useState } from 'react'
+import { THINKING } from '../lib/activity'
+
 const TOOL_LABELS: Record<string, string> = {
   scryfall_search: 'Searching Scryfall…',
   scryfall_card_by_name: 'Looking up a card…',
@@ -16,7 +19,27 @@ const TOOL_LABELS: Record<string, string> = {
   suggest_cards: 'Hunting for cards that fit…',
 }
 
+// Shown while the model reasons before writing (the `thinking` stream event),
+// with its own elapsed counter so a long think reads as work in progress
+// rather than a stall.
+
+function ThinkingIndicator() {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    const started = Date.now()
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  return (
+    <div className="tool-activity">
+      <span className="tool-activity__dot" />
+      Thinking it through…{seconds >= 2 ? ` ${seconds}s` : ''}
+    </div>
+  )
+}
+
 export function ToolActivityIndicator({ toolName }: { toolName: string }) {
+  if (toolName === THINKING) return <ThinkingIndicator />
   return (
     <div className="tool-activity">
       <span className="tool-activity__dot" />

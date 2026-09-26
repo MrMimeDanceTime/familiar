@@ -7,7 +7,7 @@ from typing import Any, Iterator
 
 from openai import OpenAI
 
-from app.llm.base import AssistantTurn, ToolCallRequest, ToolResult, ToolSpec
+from app.llm.base import AssistantTurn, ThinkingProgress, ToolCallRequest, ToolResult, ToolSpec
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
@@ -203,6 +203,7 @@ class DeepSeekProvider:
         """
         kwargs = self._request_kwargs(system_prompt, history, tools, thinking, model)
         started = time.perf_counter()
+        last_progress = 0.0
         marks: dict[str, float] = {}
         try:
             stream = self._client.chat.completions.create(
@@ -242,6 +243,15 @@ class DeepSeekProvider:
                 if getattr(delta, "reasoning_content", None):
                     marks.setdefault("first_reasoning", time.perf_counter() - started)
                     reasoning_parts.append(delta.reasoning_content)
+                    # A thinking send is otherwise silent for 5-20s; report
+                    # progress about once a second so the UI shows it working.
+                    now = time.perf_counter()
+                    if now - last_progress >= 1.0:
+                        last_progress = now
+                        yield ThinkingProgress(
+                            seconds=round(now - started, 1),
+                            chars=sum(len(r) for r in reasoning_parts),
+                        )
                 if getattr(delta, "content", None):
                     marks.setdefault("first_text", time.perf_counter() - started)
                     text_parts.append(delta.content)

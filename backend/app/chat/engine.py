@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator
 
@@ -27,11 +28,12 @@ from app.chat.streaming import (
     deck_updated_event,
     done_event,
     error_event,
+    thinking_event,
     token_event,
     tool_call_event,
 )
 from app.db import repository as repo
-from app.llm.base import AssistantTurn, ChatProvider, ToolResult
+from app.llm.base import AssistantTurn, ThinkingProgress, ChatProvider, ToolResult
 from app.tools.dispatch import DECK_MUTATION_TOOLS, DECK_SCOPED_TOOLS, PROPOSAL_TOOLS, dispatch
 from app.tools import render
 from app.tools.render import render_result
@@ -250,6 +252,8 @@ class _TurnState:
     grounded: set[str] = field(default_factory=set)
     unknown_names: set[str] = field(default_factory=set)
     corrected_once: bool = False
+    # The background card-anticipation call, until its names are grounded.
+    anticipation: Any = None
 
     @property
     def streamed_text(self) -> str:
@@ -462,7 +466,9 @@ def _prepare_turn(
         *state_card_names,
         *_recent_reply_names(session, conversation_id),
     ])
-    _anticipate_cards(state, deck_state_text=deck_state.block or "")
+    state.anticipation = _ANTICIPATION_POOL.submit(
+        _anticipated_names, state, deck_state.block or "",
+    )
     return state
 
 
@@ -475,6 +481,42 @@ Output ONLY a JSON object: {"cards": ["<card name>", ...]} with at most 20 names
 or {"cards": []} when the message is not about specific cards.\
 """
 _ANTICIPATE_MAX = 20
+
+
+_ANTICIPATION_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="anticipate")
+_ANTICIPATION_WAIT_SECONDS = 10.0
+
+
+def _anticipated_names(state: "_TurnState", deck_state_text: str) -> list[str]:
+    """Run in the background while the first send goes out: the model call
+    and index lookup only. Grounding (which mutates the turn state) happens on
+    the turn's own thread in ``_apply_anticipation``."""
+    if not settings.chat_anticipate_cards or not card_facts.is_available():
+        return []
+    from app.llm.factory import get_fast_model
+
+    user = f"{deck_state_text[:4000]}\n\nPlayer's message: {state.user_text[:2000]}"
+    raw = state.provider.complete_json(
+        _ANTICIPATE_PROMPT, user, model=get_fast_model(), thinking=False,
+    )
+    names = json.loads(raw).get("cards") or []
+    names = [n for n in names if isinstance(n, str)][:_ANTICIPATE_MAX]
+    found, _ = card_facts.resolve(names)
+    return [card["name"] for card in found.values() if card.get("name")]
+
+
+def _apply_anticipation(state: "_TurnState", *, wait: bool) -> None:
+    """Ground the anticipated cards once they are ready. The first send never
+    waits (the guess ran alongside it, costing no time); a later send, which
+    is the one that writes the reply, waits briefly for it."""
+    future = state.anticipation
+    if future is None or (not wait and not future.done()):
+        return
+    state.anticipation = None
+    try:
+        state.ground_names(future.result(timeout=_ANTICIPATION_WAIT_SECONDS))
+    except Exception as exc:  # noqa: BLE001 - a head start, never a precondition
+        logger.info("chat: card anticipation skipped: %s", exc)
 
 
 def _anticipate_cards(state: "_TurnState", *, deck_state_text: str) -> None:
@@ -536,6 +578,9 @@ def _stream_send(
         state.provider, state.system_prompt, bound_history(state.history), tools,
         thinking=thinking,
     ):
+        if isinstance(item, ThinkingProgress):
+            yield thinking_event(item.seconds, item.chars)
+            continue
         if isinstance(item, AssistantTurn):
             names = [c.name for c in item.tool_calls] if item.tool_calls else []
             logger.info(
@@ -638,6 +683,7 @@ def run_chat_turn(
                 yield from _stop_turn(state)
                 return
 
+            _apply_anticipation(state, wait=state.history_has_tool_round)
             tools, thinking = state.tools_for_send()
             turn: AssistantTurn | None = None
             for item in _stream_send(state, tools, thinking=thinking):
