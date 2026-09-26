@@ -129,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   {label:<34} role {pct(result['role']):>4}   theme {pct(result['synergy']):>4}")
 
     print("single signals (end to end: held-out cards in the top 10 / all held out)")
-    for key in ("jev", "bm_total", "bm_personal", "bm_mechanical", "edhrec_rate", "edhrec_synergy"):
+    for key in ("jev", "bm_total", "bm_personal", "bm_mechanical", "edhrec_rate", "edhrec_synergy",
+                "theme_rate", "theme_lift"):
         show(key, single_signal(records, key))
     show("pool order", single_signal(records, "pool_position", reverse=False))
 
@@ -139,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         "brain map + edhrec (no jev)": ("bm_total", "bm_consensus", "bm_mechanical", "bm_personal",
                                          "edhrec_rate", "edhrec_synergy", "pool_position", "combo"),
         "everything": ALWAYS + OPTIONAL,
+        "everything but themes": ALWAYS + tuple(o for o in OPTIONAL if not o.startswith("theme_")),
         "compact": COMPACT,
     }
     for label, names in variants.items():

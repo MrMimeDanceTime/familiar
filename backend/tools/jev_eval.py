@@ -99,8 +99,37 @@ ROLES_PER_DECK = 2
 TOP = 10
 
 
-def _intent(role: str) -> str:
-    return SYNERGY_INTENT if role == "synergy" else ROLE_INTENTS[role]
+_THEME_NAMES: dict[int, str] = {}
+
+
+def _intent(role: str, deck_id: int | None = None) -> str:
+    if role == "synergy":
+        # A real theme request names the theme. With --named-themes the deck's
+        # best-matching EDHREC theme is asked for by name instead of the
+        # generic phrasing, which gives the selectors nothing to go on.
+        name = _THEME_NAMES.get(deck_id) if deck_id is not None else None
+        return f"more {name} cards for my deck" if name else SYNERGY_INTENT
+    return ROLE_INTENTS[role]
+
+
+def _name_themes(session, deck_ids) -> None:
+    from app.db import repository as repo
+    from app.pipeline import theme_fit
+    from app.tools.edhrec_client import get_edhrec_client
+
+    client = get_edhrec_client()
+    for deck in repo.list_decks(session):
+        if deck_ids and deck.id not in deck_ids:
+            continue
+        snapshot = repo.deck_snapshot(session, deck.id)
+        profile = theme_fit.build_profile(
+            snapshot.get("commander"), [c["name"] for c in snapshot["cards"]], client,
+        )
+        top = profile.top_theme()
+        if top:
+            label = next((t["value"] for t in client.commander_themes(snapshot["commander"])
+                          if t["slug"] == top), top)
+            _THEME_NAMES[deck.id] = label
 
 
 def _held_out_cases(session, deck_ids: list[int] | None, roles_per_deck: int = ROLES_PER_DECK,
@@ -208,7 +237,7 @@ def run_case(session, deck_id: int, role: str, held: list[str], provider, jev_cl
              theme_cap: int | None = None) -> dict:
     from app.pipeline import explain, jev, service
 
-    intent = _intent(role)
+    intent = _intent(role, deck_id)
     with _HeldOut(session, deck_id, held):
         prepared, prep_s = _timed(lambda: service.prepare_pool(
             session, deck_id, intent, provider, model=model, pool_cap=pool_cap,
@@ -536,6 +565,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="held-out samples per (deck, role); more cases for fitting")
     parser.add_argument("--fast", action="store_true", help="skip the consistency reruns")
     parser.add_argument("--theme-only", action="store_true", help="run only the theme cases")
+    parser.add_argument("--named-themes", action="store_true",
+                        help="theme cases ask for the deck's matched EDHREC theme by name")
     parser.add_argument("--theme-cap", type=int, default=None,
                         help="requests naming no role draw on the whole EDHREC page, capped here")
     parser.add_argument("--edhrec-blind", action="store_true",
@@ -589,6 +620,9 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     with Session(get_engine()) as session:
         cases = _held_out_cases(session, args.deck, args.roles_per_deck, args.repeats)
+        if args.named_themes:
+            _name_themes(session, args.deck)
+            print("theme requests:", {d: f"more {n} cards" for d, n in _THEME_NAMES.items()})
         if args.theme_only:
             cases = [c for c in cases if c[1] == "synergy"]
         print(f"{len(cases)} case(s), pool cap {args.pool_cap}, role limit {args.role_limit}, "

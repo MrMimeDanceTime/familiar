@@ -484,7 +484,7 @@ BLEND_PATH = Path(__file__).with_name("jev_blend.json")
 # Signals that can be missing become 0 plus a "missing" flag, so the model can
 # learn what "the brain map had no opinion" means.
 BLEND_OPTIONAL = ("bm_total", "bm_consensus", "bm_mechanical", "bm_personal",
-                  "edhrec_rate", "edhrec_synergy")
+                  "edhrec_rate", "edhrec_synergy", "theme_rate", "theme_lift")
 
 
 def blend_features(judgment: Judgment, card: ShapedCard, position: float) -> dict[str, Any]:
@@ -499,6 +499,7 @@ def blend_features(judgment: Judgment, card: ShapedCard, position: float) -> dic
         "bm_total": bm.get("total"), "bm_consensus": bm.get("consensus"),
         "bm_mechanical": bm.get("mechanical"), "bm_personal": bm.get("personal"),
         "edhrec_rate": ed.get("inclusion_rate"), "edhrec_synergy": ed.get("synergy"),
+        "theme_rate": ed.get("theme_rate"), "theme_lift": ed.get("theme_lift"),
     }
 
 

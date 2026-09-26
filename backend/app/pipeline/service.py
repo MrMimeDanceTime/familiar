@@ -323,6 +323,9 @@ def prepare_pool(
     edhrec_by_role: bool = True,
     theme_whole_page: bool = False,
     theme_pool_cap: int | None = None,
+    # Off: measured +1 point role, 0 theme over commander-wide EDHREC
+    # (docs/PIPELINE.md), not worth a second set of page fetches per commander.
+    theme_signal: bool = False,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -407,6 +410,18 @@ def prepare_pool(
                 continue
             seen.add(oid)
             pool.append(card)
+
+    if theme_signal:
+        with _timed("stage2b_themes", timings):
+            from app.pipeline import theme_fit
+            from app.tools.edhrec_client import get_edhrec_client
+
+            profile = theme_fit.build_profile(
+                snapshot.get("commander"),
+                [c.get("name") or "" for c in snapshot.get("cards", [])],
+                edhrec or get_edhrec_client(),
+            )
+            theme_fit.annotate(pool, profile)
 
     with _timed("stage3_shape", timings):
         pool = _apply_brain_map(

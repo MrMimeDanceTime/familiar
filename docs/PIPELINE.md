@@ -490,6 +490,45 @@ synergy alone gets 42%, so theme requests sit near 43-45% whatever the pool.
 The whole page costs about three times the Jev tokens for a gain inside the
 noise; it stays off.
 
+### Archetype-conditioned EDHREC (built, measured, off)
+
+EDHREC publishes each commander's themes with their own pages, computed over
+only that theme's decks. `pipeline/theme_fit.py` matches the deck to them by
+its distinctive cards (mean lift of the deck's cards on each theme page over
+the commander page, softmax at temperature 0.02) and reads each candidate's
+play rate through the match. The matches are sensible (Massacre Girl Wither to
+-1/-1 Counters, Vendrell Rooms to Enchantress and Rooms). Matching on raw play
+rates instead spread every deck about evenly across every theme, because the
+staples all themes share dominate them.
+
+It adds nothing measurable, leave-one-deck-out over 102 cases:
+
+| | Role | Theme |
+|---|---|---|
+| Commander-wide EDHREC rate alone | 40% | 37% |
+| Theme-matched rate alone | 41% | 35% |
+| Blend without theme signals | 59% | 39% |
+| Blend with theme signals | 60% | 39% |
+
+The player's cards are mostly the popular ones within their archetype, which
+are popular commander-wide too. `prepare_pool(theme_signal=...)` is off.
+
+`jev_eval.py --named-themes` asks each deck's theme cases for its matched
+theme by name ("more -1/-1 Counters cards"). Jev and the blend fell to 28% and
+32% while EDHREC order held at 39%: given a named theme Jev chases cards that
+fit the name, and this eval's theme ground truth (the deck's cards with no
+generic role) is not "Combo cards" or "Chaos cards". The theme cases cannot
+judge named requests until their ground truth is defined by the theme too.
+
+### Where accuracy stands
+
+Tag-derived signals are weak (mechanical 0.50-0.55 AUC, deck-tag similarity
+0.58-0.66) and archetype conditioning adds nothing over commander-wide EDHREC.
+The blend of Jev with EDHREC and brain map consensus holds at about 60% of
+held-out role cards end to end. The one untested source of better data is the
+player's own decisions on real suggestions, which this offline eval cannot
+measure.
+
 ### Behaviour eval
 
 `tools/behaviour_eval.py replay` over 13 stored turns. Its records were fixed
