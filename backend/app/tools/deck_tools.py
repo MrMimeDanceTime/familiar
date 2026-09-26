@@ -343,6 +343,8 @@ def deck_set_plan(
     off_meta: float | None = None,
     power_level: str | None = None,
     max_card_price: float | None = None,
+    exclude_types: list | None = None,
+    exclude_cards: list | None = None,
 ) -> dict:
     """Record what the deck is TRYING to be.
 
@@ -379,6 +381,27 @@ def deck_set_plan(
     if isinstance(max_card_price, (int, float)) and not isinstance(max_card_price, bool):
         clean_price = max(0.0, float(max_card_price))
 
+    restrictions = None
+    if exclude_types is not None or exclude_cards is not None:
+        from app import deckplan
+
+        current = deckplan.restrictions_of(repo.deck_snapshot(session, deck_id))
+
+        def _clean(values: list | None, fallback: list[str], title: bool) -> list[str]:
+            if values is None:
+                return fallback
+            out: list[str] = []
+            for v in values:
+                if isinstance(v, str) and v.strip():
+                    v = v.strip().title() if title else v.strip()
+                    if v.lower() not in {o.lower() for o in out}:
+                        out.append(v)
+            return out
+
+        restrictions = {
+            "exclude_types": _clean(exclude_types, current["exclude_types"], True),
+            "exclude_cards": _clean(exclude_cards, current["exclude_cards"], False),
+        }
     repo.update_deck(
         session, deck_id,
         themes=clean_themes,
@@ -387,6 +410,7 @@ def deck_set_plan(
         off_meta=clean_off_meta,
         power_level=power_level,
         max_card_price=clean_price,
+        restrictions=restrictions,
     )
     return repo.deck_snapshot(session, deck_id)
 

@@ -133,6 +133,7 @@ class DeckPlan:
     power_level: int = DEFAULT_POWER
     # Per-card price ceiling in USD, or None for no budget.
     max_card_price: float | None = None
+    restrictions: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def unmet(self) -> list[RoleGap]:
@@ -146,6 +147,36 @@ class DeckPlan:
     def has_plan(self) -> bool:
         """True when the deck carries an explicit plan rather than defaults."""
         return bool(self.themes or self.notes)
+
+
+def restrictions_of(snapshot: dict[str, Any]) -> dict[str, list[str]]:
+    """The player's standing exclusions for this deck: card types ("Dragon",
+    "Demon", "Planeswalker") and specific cards. Stored on the deck so a
+    restriction said once holds for every later request; it used to live only
+    in the chat message that stated it, and the next batch ignored it."""
+    raw = snapshot.get("restrictions") or {}
+    return {
+        "exclude_types": [t for t in raw.get("exclude_types") or [] if isinstance(t, str) and t.strip()],
+        "exclude_cards": [c for c in raw.get("exclude_cards") or [] if isinstance(c, str) and c.strip()],
+    }
+
+
+def restriction_broken(
+    name: str | None, type_line: str | None, restrictions: dict[str, list[str]],
+) -> str | None:
+    """Why a card breaks the deck's restrictions, or None. Types match whole
+    words of the type line, so "Demon" catches "Creature — Demon" but not
+    "Demonic Tutor"."""
+    words = {w.strip(",").lower() for w in (type_line or "").replace("—", " ").split()}
+    for excluded in restrictions.get("exclude_types") or []:
+        e = excluded.strip().lower()
+        # The player's word, forgiving plurals: "Dragons" -> Dragon, "Elves" -> Elf.
+        forms = {e, e.rstrip("s"), e[:-3] + "f" if e.endswith("ves") else e}
+        if forms & words:
+            return f"the deck excludes {excluded} cards"
+    if name and name.lower() in {c.lower() for c in restrictions.get("exclude_cards") or []}:
+        return f"the deck excludes {name}"
+    return None
 
 
 def count_roles(cards: list[dict[str, Any]]) -> dict[str, int]:
@@ -222,6 +253,7 @@ def build_plan(snapshot: dict[str, Any]) -> DeckPlan:
         max_card_price=price_ceiling(
             snapshot.get("max_card_price"), snapshot.get("budget_preference")
         ),
+        restrictions=restrictions_of(snapshot),
     )
 
 
@@ -243,6 +275,11 @@ def render_plan(plan: DeckPlan) -> str:
             f"Budget: no single card over ${plan.max_card_price:.2f} "
             "(candidates above it are marked ILLEGAL in the pool)"
         )
+    excluded = plan.restrictions.get("exclude_types") or []
+    if excluded:
+        lines.append(f"Excluded types: no {', '.join(excluded)} cards (marked ILLEGAL in the pool)")
+    if plan.restrictions.get("exclude_cards"):
+        lines.append(f"Excluded cards: {', '.join(plan.restrictions['exclude_cards'])}")
 
     lines.append(f"Deck size: {plan.total_cards} cards (excluding commander)")
 

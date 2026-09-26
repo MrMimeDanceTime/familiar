@@ -45,6 +45,9 @@ def propose_deck_changes(
     deck = repo.get_deck(session, deck_id)
     is_commander = deck is not None and deck.format == "commander"
     banned_lower = {n.lower() for n in _BANNED_COMMANDER}
+    from app import deckplan
+
+    restrictions = deckplan.restrictions_of(repo.deck_snapshot(session, deck_id))
 
     # The whole batch is validated before any row is written. Committing per
     # change meant a banned or duplicate card in position four left the first
@@ -86,6 +89,14 @@ def propose_deck_changes(
                 }
             except ScryfallNotFoundError:
                 raise ValueError(f"No Scryfall card found matching '{card_name}'")
+            # The deck's standing exclusions hold unless the player named the
+            # card themselves in this message (their word overrides their rule).
+            broken = deckplan.restriction_broken(canonical_name, card.get("type_line"), restrictions)
+            if action == "add" and broken and not change.get("player_named"):
+                raise ValueError(
+                    f"'{canonical_name}' breaks the deck's restrictions ({broken}). "
+                    "Suggest a card that fits them, or ask the player to lift the restriction."
+                )
             # Commander is a banned-list format — refuse to propose an
             # illegal card rather than relying on the model to self-police.
             if is_commander and canonical_name.lower() in banned_lower:

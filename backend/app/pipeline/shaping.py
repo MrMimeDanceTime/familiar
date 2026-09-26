@@ -70,6 +70,8 @@ class DeckContext:
     # candidates that would complete a combo. Rendered so the selection model
     # has a concrete reason rather than an impression of synergy.
     combo_partners: dict[str, list[str]] = field(default_factory=dict)
+    # The deck's standing exclusions (deckplan.restrictions_of).
+    restrictions: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_snapshot(
@@ -83,9 +85,12 @@ class DeckContext:
             for c in snapshot.get("cards", [])
             if c.get("name")
         }
+        from app import deckplan
+
         return cls(
             identity=identity, card_names_lower=frozenset(names),
             max_card_price=max_card_price,
+            restrictions=deckplan.restrictions_of(snapshot),
         )
 
 
@@ -120,6 +125,12 @@ def _strip(raw: dict[str, Any]) -> dict[str, Any]:
     return {k: raw.get(k) for k in _STRIP_FIELDS}
 
 
+def _restriction_broken(card: dict[str, Any], ctx: DeckContext) -> str | None:
+    from app import deckplan
+
+    return deckplan.restriction_broken(card.get("name"), card.get("type_line"), ctx.restrictions)
+
+
 def legal_in_deck(card: dict[str, Any], ctx: DeckContext) -> tuple[bool, list[str]]:
     """Return ``(is_legal, reasons)`` for a candidate against the deck.
 
@@ -144,6 +155,10 @@ def legal_in_deck(card: dict[str, Any], ctx: DeckContext) -> tuple[bool, list[st
 
     if name.lower() in ctx.card_names_lower:
         reasons.append("already in deck")
+
+    broken = _restriction_broken(card, ctx)
+    if broken:
+        reasons.append(broken)
 
     price = card.get("price_usd")
     if (

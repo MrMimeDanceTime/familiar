@@ -21,6 +21,7 @@ _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     # in SQLite; SQLModel's JSON type reads/writes them transparently.
     ("deck", "role_targets", "JSON"),
     ("deck", "themes", "JSON"),
+    ("deck", "restrictions", "JSON"),
     ("deck", "plan_notes", "TEXT"),
     ("deck", "off_meta", "REAL"),
     ("deck", "max_card_price", "REAL"),

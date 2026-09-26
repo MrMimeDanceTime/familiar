@@ -61,6 +61,9 @@ class Deck(SQLModel, table=True):
     # because they are read and written whole, never queried by element.
     role_targets: dict | None = Field(default=None, sa_column=Column(JSON))
     themes: list | None = Field(default=None, sa_column=Column(JSON))
+    # Standing exclusions: {"exclude_types": [...], "exclude_cards": [...]}.
+    # Enforced by the pipeline and the proposal guard; see deckplan.
+    restrictions: dict | None = Field(default=None, sa_column=Column(JSON))
     plan_notes: str | None = None
     # How far off-consensus to build, 0.0 to 1.0. Trades EDHREC play rate
     # against commander-specific synergy when ranking recommendations: at 0 the

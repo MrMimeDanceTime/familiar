@@ -134,6 +134,10 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
     )
     if ceiling is not None:
         plan_bits.append(f"budget ceiling ${ceiling:.0f}/card")
+    if plan.restrictions.get("exclude_types"):
+        plan_bits.append("excludes: " + ", ".join(plan.restrictions["exclude_types"]))
+    if plan.restrictions.get("exclude_cards"):
+        plan_bits.append("never: " + ", ".join(plan.restrictions["exclude_cards"]))
     if plan.notes:
         plan_bits.append(f"notes: {plan.notes}")
     unmet = plan.unmet
