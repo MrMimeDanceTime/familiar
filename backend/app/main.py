@@ -9,7 +9,7 @@ from starlette.responses import Response
 
 from sqlmodel import Session
 
-from app.api import chat, conversations, decks, knowledge, preferences
+from app.api import chat, conversations, decks, grading, knowledge, preferences
 from app.backup import run_startup_backup, start_periodic_backup
 from app.cards import importer as card_importer
 from app.cards import schema as card_schema
@@ -116,6 +116,7 @@ app.include_router(decks.router)
 app.include_router(conversations.router)
 app.include_router(preferences.router)
 app.include_router(knowledge.router)
+app.include_router(grading.router)
 
 FRONTEND_DIST = settings.frontend_dist
 if FRONTEND_DIST.is_dir():
