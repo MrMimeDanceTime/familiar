@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # batch (where it decides which picks to stand behind); the tool-dispatch
     # sends between them stay fast. Off makes the first send fast too.
     chat_plan_thinking: bool = True
+    # Whether the send after a proposal batch (keep or withdraw picks, write
+    # the reply) thinks. It measured the single slowest send of a turn: 2,195
+    # reasoning tokens and 25s to decide on a batch. See tools/turn_profile.py.
+    chat_review_thinking: bool = True
     # How hard those chat sends may think: low | medium | high | empty for the
     # provider default. The selection stage measured "low" at half the wait
     # for the same picks; the chat sends are a smaller decision still.

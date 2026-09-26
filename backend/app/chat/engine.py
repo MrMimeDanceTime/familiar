@@ -330,7 +330,9 @@ class _TurnState:
         restrict = self.proposals_emitted and not self.pipeline_followup_allowed
         self.pipeline_followup_allowed = False
         first_send = not self.history_has_tool_round
-        thinking = restrict or (first_send and settings.chat_plan_thinking)
+        thinking = (restrict and settings.chat_review_thinking) or (
+            first_send and settings.chat_plan_thinking
+        )
         if self.force_fast:
             thinking = False
             self.force_fast = False

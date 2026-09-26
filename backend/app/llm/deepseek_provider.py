@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Iterator
 
 from openai import OpenAI
@@ -11,6 +12,9 @@ from app.llm.base import AssistantTurn, ToolCallRequest, ToolResult, ToolSpec
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 logger = logging.getLogger("app.llm.deepseek")
+# One record per streamed send: its setup, token counts, and when the first
+# byte, reasoning token, text token, and tool call arrived.
+timing_log = logging.getLogger("app.llm.timing")
 
 
 def _usage_dict(usage: Any) -> dict[str, int]:
@@ -23,6 +27,9 @@ def _usage_dict(usage: Any) -> dict[str, int]:
         "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
         "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         "reasoning_tokens": int(getattr(details, "reasoning_tokens", 0) or 0),
+        # DeepSeek's context cache: tokens of the prompt it did not have to
+        # process again. A prompt whose prefix changes every send gets none.
+        "cache_hit_tokens": int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0),
     }
 
 
@@ -120,7 +127,7 @@ class DeepSeekProvider:
         # pipeline and nuance calls made from inside tools.
         self.usage: dict[str, int] = {
             "llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
-            "reasoning_tokens": 0,
+            "reasoning_tokens": 0, "cache_hit_tokens": 0,
         }
 
     def _record_usage(self, usage: Any) -> None:
@@ -195,6 +202,8 @@ class DeepSeekProvider:
         the same raw message shape send() persists, so replay is unchanged.
         """
         kwargs = self._request_kwargs(system_prompt, history, tools, thinking, model)
+        started = time.perf_counter()
+        marks: dict[str, float] = {}
         try:
             stream = self._client.chat.completions.create(
                 **kwargs, stream=True, stream_options={"include_usage": True},
@@ -218,6 +227,7 @@ class DeepSeekProvider:
         usage: Any = None
         try:
             for chunk in stream:
+                marks.setdefault("first_byte", time.perf_counter() - started)
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 choices = getattr(chunk, "choices", None) or []
@@ -230,11 +240,14 @@ class DeepSeekProvider:
                 if delta is None:
                     continue
                 if getattr(delta, "reasoning_content", None):
+                    marks.setdefault("first_reasoning", time.perf_counter() - started)
                     reasoning_parts.append(delta.reasoning_content)
                 if getattr(delta, "content", None):
+                    marks.setdefault("first_text", time.perf_counter() - started)
                     text_parts.append(delta.content)
                     yield delta.content
                 for tc in getattr(delta, "tool_calls", None) or []:
+                    marks.setdefault("first_tool_call", time.perf_counter() - started)
                     index = getattr(tc, "index", 0) or 0
                     entry = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
                     if getattr(tc, "id", None):
@@ -250,6 +263,16 @@ class DeepSeekProvider:
                 f"DeepSeek stream failed mid-reply. Detail: {exc}"
             ) from exc
         self._record_usage(usage)
+        timing_log.info("send", extra={"send_timing": {
+            "model": kwargs.get("model"), "thinking": thinking,
+            "effort": (kwargs.get("extra_body") or {}).get("reasoning_effort"),
+            "max_tokens": kwargs.get("max_tokens"),
+            "system_chars": len(system_prompt), "history_messages": len(history),
+            "tools": len(tools), "finish": finish_reason,
+            "seconds": round(time.perf_counter() - started, 2),
+            **{k: round(v, 2) for k, v in marks.items()},
+            **_usage_dict(usage),
+        }})
 
         text = "".join(text_parts)
         ordered = [calls[i] for i in sorted(calls)]
@@ -367,6 +390,7 @@ class DeepSeekProvider:
             extra_body["reasoning_effort"] = reasoning_effort
 
         try:
+            started = time.perf_counter()
             response = self._client.chat.completions.create(
                 model=model or self._model,
                 messages=[
@@ -383,6 +407,12 @@ class DeepSeekProvider:
             ) from exc
 
         self._record_usage(getattr(response, "usage", None))
+        timing_log.info("json", extra={"send_timing": {
+            "model": model or self._model, "thinking": thinking, "kind": "json",
+            "effort": extra_body.get("reasoning_effort"), "system_chars": len(system_prompt),
+            "seconds": round(time.perf_counter() - started, 2),
+            **_usage_dict(getattr(response, "usage", None)),
+        }})
         return response.choices[0].message.content or ""
 
     def append_tool_results(

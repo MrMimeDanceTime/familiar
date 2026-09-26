@@ -49,10 +49,34 @@ def _enrich(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def lookup_card(scryfall: Any, name: str) -> dict[str, Any]:
+    """One card by name: the local index first, Scryfall's fuzzy match after.
+
+    Every add, commander change, and proposal used to call Scryfall per card.
+    Behind its rate limit and 10s timeout that measured 55s to validate one
+    10-card pipeline batch, for data the local index (a full offline copy of
+    Scryfall's oracle cards) already holds. Exact names, which is everything
+    the pipeline produces, resolve locally; a hand-typed or misspelled name
+    still gets Scryfall's fuzzy match. Raises ScryfallNotFoundError when
+    neither knows it.
+    """
+    try:
+        from app.cards import schema as card_schema
+        from app.cards import store as card_store
+
+        if card_schema.tag_count() > 0:
+            hit = card_store.by_names([name]).get(name.strip().lower())
+            if hit and hit.get("name"):
+                return hit
+    except Exception:  # noqa: BLE001 - Scryfall below still answers
+        pass
+    return scryfall.named(name, fuzzy=True)
+
+
 def _resolve_card(scryfall: Any, name: str) -> dict[str, Any]:
     """Validate a single card name against Scryfall and return enriched fields."""
     try:
-        card = scryfall.named(name, fuzzy=True)
+        card = lookup_card(scryfall, name)
     except ScryfallNotFoundError:
         raise ValueError(f"No Scryfall card found matching '{name}'")
     return _enrich(card)
@@ -185,7 +209,7 @@ def deck_add_card(
 ) -> dict:
     scryfall = get_scryfall_client()
     try:
-        card = scryfall.named(card_name, fuzzy=True)
+        card = lookup_card(scryfall, card_name)
     except ScryfallNotFoundError:
         raise ValueError(f"No Scryfall card found matching '{card_name}'")
 
@@ -224,7 +248,7 @@ def deck_remove_card(
 def deck_set_commander(session: Session, deck_id: int, commander_name: str) -> dict:
     scryfall = get_scryfall_client()
     try:
-        card = scryfall.named(commander_name, fuzzy=True)
+        card = lookup_card(scryfall, commander_name)
     except ScryfallNotFoundError:
         raise ValueError(f"No Scryfall card found matching '{commander_name}'")
 
