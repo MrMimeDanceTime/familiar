@@ -70,6 +70,25 @@ def main(argv: list[str] | None = None) -> int:
     from app.llm.factory import get_provider
 
     init_db()
+    # Every outbound call besides DeepSeek, per turn: what leaves the machine.
+    network: list[str] = []
+
+    def _count(cls, method_name, label):
+        original = getattr(cls, method_name)
+
+        def wrapper(self, *args, **kwargs):
+            network.append(f"{label} {args[1] if label == 'scryfall' and len(args) > 1 else ''}".strip())
+            return original(self, *args, **kwargs)
+
+        setattr(cls, method_name, wrapper)
+
+    from app.pipeline.jev import JevClient
+    from app.tools.edhrec_client import EdhrecClient
+    from app.tools.scryfall_client import ScryfallClient
+
+    _count(ScryfallClient, "_request", "scryfall")
+    _count(EdhrecClient, "_fetch_commander_page", "edhrec")
+    _count(JevClient, "system_one", "jev")
     sends: list[dict] = []
     grounding: list[dict] = []
     for name, attr, sink in (("app.llm.timing", "send_timing", sends),
@@ -88,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         repo.set_conversation_deck(session, convo.id, deck.id)
         for i, message in enumerate(SCRIPT[: args.turns], 1):
             first_send = len(sends)
+            first_network = len(network)
             started = time.time()
             events: list[str] = []
             first_token = None
@@ -122,7 +142,12 @@ def main(argv: list[str] | None = None) -> int:
             tail = started + total - cursor
             if tail > 0.3:
                 print(f"   {'':>6} {tail:5.1f}s  after the last send")
+            calls = network[first_network:]
+            summary = {k: sum(1 for c in calls if c.startswith(k)) for k in ("scryfall", "edhrec", "jev")}
+            paths = sorted({c for c in calls if c.startswith("scryfall")})
+            print(f"   outbound besides DeepSeek: {summary}" + (f" scryfall paths: {paths}" if paths else ""))
             turns.append({"message": message, "seconds": round(total, 2),
+                          "network": network[first_network:],
                           "first_token": first_token, "sends": turn_sends,
                           "grounding": grounding[-1] if grounding else None})
 

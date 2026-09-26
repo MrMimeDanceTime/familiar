@@ -86,7 +86,11 @@ def _attach_rulings(cards: list[dict]) -> None:
 
 
 def _scryfall_card_by_name(name: str, fuzzy: bool = True) -> dict:
-    result = get_scryfall_client().named(name, fuzzy=fuzzy)
+    # Local index first, like every other card lookup; Scryfall only for a
+    # name the index lacks (a misspelling, or a card newer than the index).
+    from app.tools import deck_tools
+
+    result = dict(deck_tools.lookup_card(get_scryfall_client(), name))
     result["tags"] = get_tags_for_card(result.get("oracle_id"))
     _attach_rulings([result])
     return result
