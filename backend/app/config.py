@@ -93,9 +93,11 @@ class Settings(BaseSettings):
     # sends between them stay fast. Off makes the first send fast too.
     chat_plan_thinking: bool = True
     # Whether the send after a proposal batch (keep or withdraw picks, write
-    # the reply) thinks. It measured the single slowest send of a turn: 2,195
-    # reasoning tokens and 25s to decide on a batch. See tools/turn_profile.py.
-    chat_review_thinking: bool = True
+    # the reply) thinks. Off: it measured the slowest send of a turn (2,195
+    # reasoning tokens, 25s), and replayed on 33 held-out cases its withdrawals
+    # cost 29 of the 100 player cards Jev's batches had recovered while kept
+    # picks were only slightly likelier to be the player's (33% vs 25%).
+    chat_review_thinking: bool = False
     # How hard those chat sends may think: low | medium | high | empty for the
     # provider default. The selection stage measured "low" at half the wait
     # for the same picks; the chat sends are a smaller decision still.

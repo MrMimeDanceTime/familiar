@@ -1146,8 +1146,16 @@ def test_text_alongside_a_tool_call_streams_with_a_break_before_the_reply(sessio
 # ── Thinking on the endorsement send; interim text kept ──────────────────
 
 
+@pytest.mark.parametrize("review_thinking", [True, False])
 @patch("app.tools.deck_tools.get_scryfall_client")
-def test_thinking_turns_on_for_the_send_after_a_batch(mock_get_client, session):
+def test_the_send_after_a_batch_thinks_only_when_configured(
+    mock_get_client, session, monkeypatch, review_thinking,
+):
+    """Off by default: replayed on held-out cases, the review's withdrawals
+    cost more of the player's cards than its judgment saved."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_review_thinking", review_thinking)
     mock_get_client.return_value.named.return_value = {
         "name": "Sol Ring", "cmc": 1.0, "color_identity": [],
     }
@@ -1168,7 +1176,7 @@ def test_thinking_turns_on_for_the_send_after_a_batch(mock_get_client, session):
 
     _collect(run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id))
 
-    assert provider.thinking_flags == [True, True]
+    assert provider.thinking_flags == [True, review_thinking]
 
 
 def test_interim_text_beside_a_tool_call_is_persisted(session):
