@@ -16,6 +16,15 @@ from app.db.session import get_engine
 from app.llm.base import AssistantTurn, ToolCallRequest
 from tests.test_chat_engine import FakeProvider, _collect
 
+
+@pytest.fixture(autouse=True)
+def _rewrite_round_on(monkeypatch):
+    """These tests cover the rewrite round, which is off by default and kept
+    as an option (chat_correct_ungrounded_replies)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_correct_ungrounded_replies", True)
+
 CARDS = [
     {
         "oracle_id": "sol", "name": "Sol Ring", "mana_cost": "{1}", "cmc": 1.0,

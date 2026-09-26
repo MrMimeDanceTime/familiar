@@ -101,7 +101,11 @@ class Settings(BaseSettings):
     # and rewritten. The card facts are injected either way; this is only the
     # repair round, which costs a send and visibly replaces the draft. Off
     # leaves the reply as written and logs the miss.
-    chat_correct_ungrounded_replies: bool = True
+    chat_correct_ungrounded_replies: bool = False
+    # Before the model writes, one short call guesses the cards the reply will
+    # reach for and their real text is loaded, which replaces the rewrite round
+    # above as the way replies get grounded.
+    chat_anticipate_cards: bool = True
 
     # Output cap for the chat sends that think. DeepSeek counts reasoning
     # against max_tokens in thinking mode, so the 1000-token reply cap below

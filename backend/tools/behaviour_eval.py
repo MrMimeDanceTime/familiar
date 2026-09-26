@@ -121,6 +121,7 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
         "plan_set_before_batch": plan_set_before_batch,
         "reply_words": len(final.split()),
         "ungrounded_card_mentions": ungrounded,
+        "grounding": record.get("grounding") or {},
         "unbracketed_card_names": unbracketed,
         "usage": record.get("usage") or {},
     }
@@ -145,6 +146,16 @@ def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
         "ungrounded_mentions_per_turn": round(
             sum(len(s.get("ungrounded_card_mentions") or []) for s in scores) / n, 2
         ),
+        # From the engine itself, which also sees the card facts it injected
+        # into the prompt; the transcript-only count above cannot.
+        "engine_named_per_turn": round(
+            sum((s.get("grounding") or {}).get("named", 0) for s in scores) / n, 2),
+        "engine_ungrounded_per_turn": round(
+            sum((s.get("grounding") or {}).get("ungrounded", 0) for s in scores) / n, 2),
+        "rewrites_per_turn": round(
+            sum(1 for s in scores if (s.get("grounding") or {}).get("rewrote")) / n, 3),
+        "mean_turn_seconds": round(
+            sum((s.get("grounding") or {}).get("seconds", 0.0) for s in scores) / n, 1),
         "prompt_tokens": sum((s.get("usage") or {}).get("prompt_tokens") or 0 for s in scores),
         "completion_tokens": sum((s.get("usage") or {}).get("completion_tokens") or 0 for s in scores),
     }
@@ -247,6 +258,20 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
 
     init_db()
     records: list[dict] = []
+
+    import logging
+
+    grounding: list[dict] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            data = getattr(record, "grounding", None)
+            if isinstance(data, dict):
+                grounding.append(data)
+
+    grounding_logger = logging.getLogger("app.chat.grounding")
+    grounding_logger.setLevel(logging.INFO)
+    grounding_logger.addHandler(_Collect())
     with Session(get_engine()) as session:
         sources = (
             [repo.get_conversation(session, conversation_id)] if conversation_id
@@ -271,6 +296,7 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
                 plan_was_set = deckplan.build_plan(snapshot).has_plan()
                 card_names = [c["name"] for c in snapshot["cards"]]
                 provider = get_provider()
+                seen = len(grounding)
                 for _ in run_chat_turn(session, provider, replay_convo.id, text, source.deck_id):
                     pass
                 record = _collect_record(
@@ -278,6 +304,7 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
                     getattr(provider, "usage", None),
                 )
                 record["source_conversation"] = source.id
+                record["grounding"] = grounding[-1] if len(grounding) > seen else {}
                 records.append(record)
                 print(f"  turn scored: {json.dumps(score_turn(record), default=str)[:160]}")
     return records

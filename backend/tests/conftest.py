@@ -30,6 +30,12 @@ def _disable_card_index_refresh():
     # live, billed Jev call. Tests that exercise Jev pass a fake client.
     settings.select_backend = "llm"
     settings.typesafe_api_key = ""
+    # Pin the chat grounding switches to the code defaults: a developer .env
+    # that turns the rewrite round back on made its tests pass locally and fail
+    # in CI. Anticipation is off here because it would make a model call through
+    # every fake provider; tests/test_ground_ahead.py calls it directly.
+    settings.chat_correct_ungrounded_replies = False
+    settings.chat_anticipate_cards = False
     yield
 
 
