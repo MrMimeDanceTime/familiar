@@ -477,7 +477,7 @@ def test_tool_failure_does_not_crash_loop_and_model_sees_error(session):
             AssistantTurn(
                 text=None,
                 tool_calls=[
-                    ToolCallRequest(id="call_1", name="scryfall_card_by_name", arguments={"name": "x"})
+                    ToolCallRequest(id="call_1", name="scryfall_card_by_name", arguments={"name": "Definitely Not A Real Card"})
                 ],
                 raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
             ),
