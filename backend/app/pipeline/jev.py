@@ -709,6 +709,7 @@ def select_jev(
     min_probability: float | None = None,
     cut_cards: list[dict[str, Any]] | None = None,
     cut_evidence_map: dict[str, dict[str, float | None]] | None = None,
+    min_ask: float | None = None,
     deck_total: int | None = None,
     deck_limit: int = 100,
 ) -> Selection:
@@ -742,6 +743,13 @@ def select_jev(
                                       brainmap_weight)
 
     order = sorted(range(len(legal)), key=lambda i: judgments[i].rank, reverse=True)
+    if min_ask is not None:
+        # A role request's batch must answer the request. The blend weighs
+        # popularity, and in a new deck with no lands the most popular legal
+        # cards are basics and staples: a "card draw" batch came back with
+        # Plains, Swamp, Sol Ring. Those score ~0.03 on "answers the request";
+        # at 0.2 the gate keeps 95% of the player's own cards (held-out eval).
+        order = [i for i in order if (judgments[i].asked or 0.0) >= min_ask]
     chosen = shape_batch(
         order, legal, judgments, max_picks,
         max_similar=max_similar,

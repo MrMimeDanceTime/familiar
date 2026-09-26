@@ -539,6 +539,7 @@ def run_selection(
                 samples=jev_samples or settings.jev_samples or 1,
                 max_similar=settings.jev_max_similar or None,
                 min_probability=settings.jev_min_probability or None,
+                min_ask=settings.jev_min_ask if local_retrieval.intent_roles(user_intent) else None,
                 cut_cards=jev.cut_candidates(prepared.snapshot) if settings.jev_cuts else None,
                 cut_evidence_map=(jev.cut_evidence(prepared.snapshot.get("commander"))
                                   if settings.jev_cuts else None),
