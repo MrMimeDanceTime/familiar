@@ -94,7 +94,7 @@ def test_header_lists_missing_staples(session, monkeypatch):
         lambda snapshot: [{"name": "Sol Ring"}, {"name": "Arcane Signet"}],
     )
     state = context.deck_state(session, deck.id)
-    assert "Missing format staples:" in state.block
+    assert "Format staples not yet in the deck:" in state.block
     assert "Sol Ring" in state.block
 
 

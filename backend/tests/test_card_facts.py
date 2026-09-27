@@ -83,6 +83,14 @@ def session(tmp_path):
 
 # ── extraction and lookup ──────────────────────────────────────────────────
 
+
+def _seen(provider, i):
+    """Everything the model was sent on send *i*: the system prompt and every
+    message, where the turn's context and card facts now travel."""
+    return provider.sent_system_prompts[i] + "\n".join(
+        str(m.get("content")) for m in provider.sent_history_snapshots[i]
+    )
+
 def test_names_come_from_brackets_only():
     text = "Play [[Sol Ring]] then [[Cultivate]]. Sol Ring is great. [[Sol Ring]] again."
     assert card_facts.names_in_text(text) == ["Sol Ring", "Cultivate"]
@@ -137,7 +145,7 @@ def test_cards_the_player_names_are_grounded_before_the_first_send(card_index, s
 
     _collect(run_chat_turn(session, provider, convo.id, "what does [[Cultivate]] do?", deck.id))
 
-    prompt = provider.sent_system_prompts[0]
+    prompt = _seen(provider, 0)
     assert "<card_facts>" in prompt
     assert "Search your library for up to two basic land cards" in prompt
 
@@ -152,10 +160,13 @@ def test_a_reply_about_an_unread_card_is_withdrawn_and_rewritten(card_index, ses
     events = _collect(run_chat_turn(session, provider, convo.id, "what should I add?", deck.id))
 
     # The correction carried the real text and the draft.
-    correction = provider.sent_history_snapshots[-1][-1]["content"]
+    correction = next(
+        m["content"] for m in reversed(provider.sent_history_snapshots[-1])
+        if "HOLD" in str(m.get("content"))
+    )
     assert "HOLD" in correction and "Krosan Grip" in correction
     assert "counters a spell" in correction
-    assert "Split second" in provider.sent_system_prompts[-1]
+    assert "Split second" in _seen(provider, -1)
 
     # Only the corrected reply reaches the player and the transcript.
     messages = repo.list_messages(session, convo.id)
@@ -191,7 +202,7 @@ def test_an_invented_card_is_named_as_such(card_index, session):
 
     _collect(run_chat_turn(session, provider, convo.id, "suggest something", deck.id))
 
-    assert 'NO SUCH CARD: "Mystic Fabrication"' in provider.sent_system_prompts[-1]
+    assert 'NO SUCH CARD: "Mystic Fabrication"' in _seen(provider, -1)
     assert repo.list_messages(session, convo.id)[-1].text_content.startswith("I misremembered")
 
 
@@ -256,7 +267,7 @@ def test_deck_cards_are_grounded_without_a_lookup(card_index, session):
 
     _collect(run_chat_turn(session, provider, convo.id, "how do I handle artifacts?", deck.id))
 
-    prompt = provider.sent_system_prompts[0]
+    prompt = _seen(provider, 0)
     assert "In the deck (1 cards, basics omitted):" in prompt
     assert "Destroy target artifact or enchantment" in prompt
     assert "Forest" not in prompt.split("<card_facts>")[1]
@@ -277,7 +288,7 @@ def test_a_staple_the_app_says_is_missing_is_grounded(card_index, session, monke
 
     _collect(run_chat_turn(session, provider, convo.id, "what am I missing?", deck.id))
 
-    assert "{T}: Add {C}{C}." in provider.sent_system_prompts[0]
+    assert "{T}: Add {C}{C}." in _seen(provider, 0)
     assert len(provider.thinking_flags) == 1
 
 
@@ -291,7 +302,7 @@ def test_a_card_from_the_last_reply_is_still_grounded_next_turn(card_index, sess
 
     _collect(run_chat_turn(session, provider, convo.id, "is that uncounterable?", deck.id))
 
-    assert "Split second" in provider.sent_system_prompts[0]
+    assert "Split second" in _seen(provider, 0)
     assert len(provider.thinking_flags) == 1
 
 

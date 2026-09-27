@@ -365,6 +365,7 @@ class PreparedPool:
     shaped: list[Any]
     deck_context: str
     timings: dict[str, float]
+    ctx: DeckContext | None = None
 
 
 ROLE_LOCAL_POOL_MIN = 10
@@ -510,7 +511,7 @@ def prepare_pool(
     return PreparedPool(
         snapshot=snapshot, spec=spec, gathered=gathered, local_pool=local_pool,
         stage1_skipped=stage1_skipped, pool=pool, shaped=shaped,
-        deck_context=_render_deck_context(snapshot), timings=timings,
+        deck_context=_render_deck_context(snapshot), timings=timings, ctx=ctx,
     )
 
 
@@ -667,6 +668,20 @@ def build_suggestions(
             selection = manabase.fill(
                 selection, prepared.shaped, prepared.snapshot,
                 _commander_identity(prepared.snapshot, scryfall),
+            )
+        elif prepared.ctx is not None and local_retrieval.intent_roles(user_intent):
+            from app import autoincludes
+
+            if edhrec is None:
+                from app.tools.edhrec_client import get_edhrec_client
+
+                edhrec = get_edhrec_client()
+            names = {(c.get("name") or "") for c in prepared.snapshot.get("cards", [])}
+            selection = autoincludes.fold_into(
+                selection,
+                autoincludes.find_missing(prepared.snapshot.get("commander"), names, edhrec=edhrec),
+                local_retrieval.intent_roles(user_intent), prepared.ctx,
+                prepared.snapshot.get("commander"),
             )
 
     debug = {

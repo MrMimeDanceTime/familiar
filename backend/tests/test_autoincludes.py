@@ -135,3 +135,45 @@ def test_deck_read_exposes_missing_staples(tmp_path):
 
     # The key is present even when EDHREC is unreachable in a test environment.
     assert "missing_auto_includes" in snapshot["plan"]
+
+
+# ── Folding staples into a role batch ────────────────────────────────────
+
+
+def _fold(monkeypatch, picks, request_roles, restrictions=None):
+    from app import autoincludes
+    from app.cards import store
+    from app.pipeline.selection import Pick, Selection
+    from app.pipeline.shaping import DeckContext
+
+    cards = {
+        "sol ring": {"name": "Sol Ring", "oracle_id": "sol", "type_line": "Artifact", "color_identity": []},
+        "command tower": {"name": "Command Tower", "oracle_id": "tow", "type_line": "Land", "color_identity": []},
+        "swords to plowshares": {"name": "Swords to Plowshares", "oracle_id": "stp",
+                                 "type_line": "Instant", "color_identity": ["W"]},
+    }
+    monkeypatch.setattr(store, "by_names", lambda names: {n.lower(): cards[n.lower()] for n in names})
+    monkeypatch.setattr(store, "tags_for_many", lambda ids: {
+        "sol": {"mana-rock"}, "tow": {"land"}, "stp": {"removal"},
+    })
+    missing = [{"name": "Sol Ring", "why": "in 90% of X decks"}, {"name": "Command Tower"},
+               {"name": "Swords to Plowshares"}]
+    ctx = DeckContext(identity=frozenset("WB"), card_names_lower=frozenset(), restrictions=restrictions or {})
+    selection = Selection(picks=[Pick(name=n) for n in picks], summary="s")
+    return autoincludes.fold_into(selection, missing, request_roles, ctx, "X")
+
+
+def test_a_ramp_batch_leads_with_the_missing_ramp_staple_and_keeps_its_size(monkeypatch):
+    out = _fold(monkeypatch, ["Rakdos Signet", "Talisman of Indulgence", "Fellwar Stone"], {"ramp"})
+    assert [p.name for p in out.picks] == ["Sol Ring", "Rakdos Signet", "Talisman of Indulgence"]
+    assert "Format staple" in out.picks[0].reason
+
+
+def test_staples_outside_the_requested_role_stay_out(monkeypatch):
+    out = _fold(monkeypatch, ["Mortify", "Anguished Unmaking"], {"card-draw"})
+    assert [p.name for p in out.picks] == ["Mortify", "Anguished Unmaking"]
+
+
+def test_a_staple_the_player_excluded_is_not_folded_in(monkeypatch):
+    out = _fold(monkeypatch, ["Rakdos Signet"], {"ramp"}, restrictions={"exclude_cards": ["Sol Ring"]})
+    assert [p.name for p in out.picks] == ["Rakdos Signet"]

@@ -94,3 +94,53 @@ def find_missing(
 
     out.sort(key=lambda c: c["play_rate"], reverse=True)
     return out[:limit]
+
+
+def fold_into(
+    selection: Any,
+    missing: list[dict[str, Any]],
+    request_roles: set[str],
+    ctx: Any,
+    commander: str | None,
+) -> Any:
+    """Put the missing staples that fill the requested role at the front of
+    a role batch, keeping the batch its size.
+
+    The chat model used to be told to propose staples itself, in their own
+    batch, while the engine allows one batch per turn: a "give me ramp" turn
+    had no legal path, and the model spent up to 5,000 reasoning tokens (65s)
+    trying to find one. Folding them in here removes the decision.
+    """
+    if not missing or not request_roles or not selection.picks:
+        return selection
+    from app.cards import store
+    from app.pipeline import roles, shaping
+    from app.pipeline.selection import Pick, Selection
+
+    wanted = roles.coarse_for_fine(request_roles)
+    taken = {p.name.lower() for p in selection.picks}
+    cards = store.by_names([m["name"] for m in missing])
+    tags = store.tags_for_many([c["oracle_id"] for c in cards.values() if c.get("oracle_id")])
+    staples: list[Pick] = []
+    for m in missing:
+        card = cards.get(m["name"].lower())
+        if card is None or card["name"].lower() in taken:
+            continue
+        fine = roles.fine_roles_for_tags(tags.get(card.get("oracle_id"), set()), card.get("type_line"))
+        if roles.LAND in fine or not roles.coarse_for_fine(fine) & wanted:
+            continue
+        if not shaping.legal_in_deck(card, ctx)[0]:
+            continue
+        staples.append(Pick(
+            name=card["name"],
+            reason=f"Format staple: {m.get('why') or 'played in most ' + (commander or '') + ' decks'}.",
+        ))
+    if not staples:
+        return selection
+    size = len(selection.picks)
+    return Selection(
+        picks=(staples + selection.picks)[:size],
+        cuts=getattr(selection, "cuts", []),
+        summary=selection.summary,
+        raw=selection.raw,
+    )

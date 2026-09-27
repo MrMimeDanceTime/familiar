@@ -115,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
             for event in run_chat_turn(session, get_provider(), convo.id, message, deck.id):
                 kind = getattr(event, "event", "")
                 events.append(kind)
+                if kind == "error":
+                    # A failed send (402 balance, 5xx) otherwise prints as an
+                    # empty, suspiciously fast turn.
+                    sys.exit(f"turn {i} failed: {(getattr(event, 'data', {}) or {}).get('message')}")
                 if kind == "tool_call":
                     data = getattr(event, "data", {}) or {}
                     args = json.dumps(data.get("arguments") or {})[:160]

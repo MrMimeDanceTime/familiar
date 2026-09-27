@@ -185,7 +185,10 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
 
     staples = deckplan_missing_staples(snapshot)
     if staples:
-        lines.append("Missing format staples: " + ", ".join(staples[:6]) + ".")
+        lines.append(
+            "Format staples not yet in the deck: " + ", ".join(staples[:6])
+            + " (suggest_cards adds each to the batch for its role; no separate batch)."
+        )
         named.extend(staples[:6])
 
     pending = snapshot.get("pending_proposals") or {}
