@@ -116,6 +116,14 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
         who = f"{commander} / {partner}" if partner else commander
         identity = _identity_letters(snapshot)
         lines.append(f"Commander: {who}" + (f" (identity {identity})." if identity else "."))
+        if pending_commander and pending_commander.lower() != commander.lower():
+            # A swap in progress. Without this line the model read the old
+            # commander as proof its proposal "did not take" and proposed it
+            # again, turn after turn.
+            lines.append(
+                f"Your proposal to replace it with {pending_commander} is awaiting the "
+                "player's decision; suggest_cards already builds for it."
+            )
     elif pending_commander:
         lines.append(
             f"Commander: not set. Your proposal of {pending_commander} is awaiting "

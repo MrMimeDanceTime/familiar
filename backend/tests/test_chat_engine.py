@@ -294,26 +294,47 @@ def test_deck_mutation_emits_deck_updated_event(mock_get_client, session):
                 tool_calls=[
                     ToolCallRequest(
                         id="call_1",
-                        name="deck_add_card",
-                        arguments={"card_name": "Sol Ring", "category": "ramp"},
+                        name="deck_update_notes",
+                        arguments={"notes": "Grindy attrition."},
                     )
                 ],
                 raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
             ),
-            AssistantTurn(text="Added Sol Ring!", tool_calls=[]),
+            AssistantTurn(text="Noted.", tool_calls=[]),
         ]
     )
     convo = repo.create_conversation(session)
     repo.set_conversation_deck(session, convo.id, deck.id)
 
     events = _collect(
-        run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id)
+        run_chat_turn(session, provider, convo.id, "note that it's grindy", deck_id=deck.id)
     )
 
     deck_updated_events = [e for e in events if e.event == "deck_updated"]
     assert len(deck_updated_events) == 1
-    payload = deck_updated_events[0].data
-    assert payload["cards"][0]["name"] == "Sol Ring"
+    assert deck_updated_events[0].data["notes"] == "Grindy attrition."
+
+
+def test_a_tool_the_model_was_not_offered_is_refused(session):
+    """deck_add_card exists for the app's own use; the model is never offered
+    it and must not be able to reach it by naming it."""
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="call_1", name="deck_add_card",
+                                        arguments={"card_name": "Sol Ring"})],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="ok", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id))
+
+    assert not [e for e in events if e.event == "deck_updated"]
+    assert repo.deck_snapshot(session, deck.id)["cards"] == []
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
@@ -1416,3 +1437,20 @@ def test_an_empty_reply_is_never_persisted_bare(session):
     assert "didn't manage to write a reply" in final.text_content
     assert final.provider_native[0]["content"] == final.text_content
     assert any(e.event == "token" and "didn't manage" in e.data["text"] for e in events)
+
+
+def test_a_second_batch_is_refused_even_within_one_message():
+    from app.chat.engine import _refused_call, _TurnState
+
+    state = _TurnState(
+        session=None, provider=None, conversation_id=1, deck_id=1, user_text="",
+        system_prompt="", history=[], sequence=0, should_stop=None,
+    )
+    assert _refused_call(state, "suggest_cards") is None
+    state.proposals_emitted = True
+    assert "already exists" in _refused_call(state, "suggest_cards")
+    assert "already exists" in _refused_call(state, "propose_deck_changes")
+    assert _refused_call(state, "withdraw_pending_proposals") is None
+    state.pipeline_followup_allowed = True  # a redirect's one allowed follow-up
+    assert _refused_call(state, "suggest_cards") is None
+    assert "no tool called" in _refused_call(state, "deck_state")

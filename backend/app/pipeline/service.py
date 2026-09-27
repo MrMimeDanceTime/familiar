@@ -399,16 +399,16 @@ def prepare_pool(
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
     timings = {} if timings is None else timings
     snapshot = repo.deck_snapshot(session, deck_id)
-    # The prompt has the model batch set_commander with the opening cards, and
-    # the hand-pick guard sends those cards here. At that moment the commander
-    # is a PENDING proposal, not a deck field, so the identity resolved to
-    # colourless and every coloured candidate was marked illegal — the opening
-    # batch came back as Sol Ring and friends. A proposed commander is the best
-    # available statement of what the deck is, so use it until it is decided.
-    if not snapshot.get("commander"):
-        proposed = repo.pending_commander_for_deck(session, deck_id)
-        if proposed:
-            snapshot["commander"] = proposed
+    # The model proposes the commander and asks for the opening batch in the
+    # same turn. At that moment the commander is a PENDING proposal, not a deck
+    # field: on a new deck the identity resolved to colourless and the batch
+    # came back as Sol Ring and friends; on a deck changing commander it
+    # ranked against the old one (a mono-black Sheoldred batch came back
+    # five-colour). A proposed commander is the player's latest statement of
+    # what the deck is, so it wins until it is decided.
+    proposed = repo.pending_commander_for_deck(session, deck_id)
+    if proposed:
+        snapshot["commander"] = proposed
     identity = _commander_identity(snapshot, scryfall)
     # The budget in effect: the deck's own ceiling, else the one the player's
     # standing preference implies. Read here so the plan render and the

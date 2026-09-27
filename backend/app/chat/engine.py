@@ -344,6 +344,11 @@ class _TurnState:
         return history
 
     _frozen_context: str = ""
+    # Tool names offered on the current send. The model has called tools it
+    # was not offered (a second batch after the first, and a tool that does
+    # not exist), and running them undid the one-batch rule: one replayed
+    # turn made four batches in 12 rounds.
+    offered: set[str] = field(default_factory=lambda: {t.name for t in TOOL_SPECS})
 
     def ground_tool_result(self, content: Any) -> None:
         """A tool that returned card text has grounded those cards itself."""
@@ -383,7 +388,9 @@ class _TurnState:
         if self.force_fast:
             thinking = False
             self.force_fast = False
-        return (WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS), thinking
+        tools = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
+        self.offered = {t.name for t in tools}
+        return tools, thinking
 
     @property
     def history_has_tool_round(self) -> bool:
@@ -651,6 +658,10 @@ def _stream_send(
 
 def _run_tool(state: _TurnState, call: Any) -> tuple[ToolResult, ChatEvent | None]:
     """Dispatch one tool call and return its result plus any event to emit."""
+    refusal = _refused_call(state, call.name)
+    if refusal:
+        logger.info("chat: refused %s: %s", call.name, refusal)
+        return ToolResult(call_id=call.id, content=refusal), None
     args = dict(call.arguments)
     # The conversation's deck is authoritative: deck_id is a required tool
     # param, so the model always guesses one, and its guess must not decide
@@ -908,6 +919,23 @@ _RESET_NOTE = "Rewritten after checking the real card text."
 # keep the parts that were right; not so much that a long reply doubles the
 # send it is about to make.
 _DRAFT_ECHO_CHARS = 2000
+
+
+_BATCH_TOOLS = frozenset({"suggest_cards", "propose_deck_changes"})
+
+
+def _refused_call(state: _TurnState, name: str) -> str | None:
+    if name not in {t.name for t in TOOL_SPECS}:
+        return f"There is no tool called {name}. The deck's state is in the app_context message."
+    if name not in state.offered or (
+        name in _BATCH_TOOLS and state.proposals_emitted and not state.pipeline_followup_allowed
+    ):
+        return (
+            "Not run: this turn's card batch already exists, so proposing is over "
+            "for the turn. Trim it with withdraw_pending_proposals if a pick breaks "
+            "something the player asked for; otherwise write your reply."
+        )
+    return None
 
 
 def _app_context(turn_context: str, facts_block: str) -> str:

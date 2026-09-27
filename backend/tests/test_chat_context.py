@@ -62,6 +62,15 @@ def test_pending_commander_is_named_in_the_header(session):
     assert "Your proposal of Korvold, Fae-Cursed King is awaiting" in state.block
 
 
+def test_a_commander_swap_in_progress_is_named_in_the_header(session):
+    deck = repo.create_deck(session, name="Swap", commander="Marina Vendrell")
+    convo = repo.create_conversation(session)
+    _proposal(session, deck.id, convo.id, "Sheoldred, the Apocalypse", action="set_commander")
+    state = context.deck_state(session, deck.id)
+    assert "Commander: Marina Vendrell" in state.block
+    assert "replace it with Sheoldred, the Apocalypse is awaiting" in state.block
+
+
 def test_header_carries_count_plan_roles_scores_and_pending(session):
     deck = repo.create_deck(session, name="Elves")
     repo.update_deck(session, deck.id, commander="Ezuri, Renegade Leader", themes=["elves"], power_level="6")

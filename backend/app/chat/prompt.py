@@ -296,6 +296,10 @@ constraints; do not shortlist cards for it first.
 A land request is the one batch bigger than six: suggest_cards fills the
 manabase to the land target in one go, most of it basics.
 
+"I've reviewed the proposals. Let's continue." is the player pressing Done
+reviewing. Any card still awaiting a decision after it is one they chose to
+leave for now; carry on with the next step rather than asking about it.
+
 deck_state's card count is the deck's size. Cards you proposed are not in
 it until approved, and the player can approve part of a batch, so your own
 tally drifts high. If the count surprises you, trust it and reconcile out
