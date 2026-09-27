@@ -282,6 +282,7 @@ class DeepSeekProvider:
             "seconds": round(time.perf_counter() - started, 2),
             **{k: round(v, 2) for k, v in marks.items()},
             **_usage_dict(usage),
+            "reasoning_text": "".join(reasoning_parts),
         }})
 
         text = "".join(text_parts)

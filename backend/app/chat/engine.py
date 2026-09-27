@@ -150,10 +150,15 @@ def _load_history(session: Session, conversation_id: int) -> list[dict[str, Any]
 # Nothing bounded the context before this. Every call replayed the whole
 # conversation, and a deck read carries up to a hundred cards, so a build done
 # in 3-6 card batches (twenty-odd turns, several tool calls each) grew without
-# limit and the oldest, least relevant results cost the most. Four keeps the
-# current reasoning intact — a turn rarely needs more than the last couple of
-# reads — while the transcript in the database stays complete for replay.
-KEEP_RECENT_TOOL_RESULTS = 4
+# limit and the oldest, least relevant results cost the most. The transcript
+# in the database stays complete for replay.
+#
+# Counted in turns, not results: the window used to slide by result count, so
+# every new tool result changed an earlier message and DeepSeek's prefix cache
+# missed from that point on (13-35% cache hits on 20k-token prompts). By turn,
+# a result is shortened once, when its turn falls out of the window, and never
+# changes again. This turn and the last keep every result in full.
+KEEP_RECENT_TURNS = 2
 # A result shorter than this is kept whatever its age: small results are the
 # ones the model actually refers back to (a proposal batch, a stats summary)
 # and eliding them saves nothing worth the confusion.
@@ -166,7 +171,7 @@ ELIDED_RESULT_HEAD_CHARS = 200
 def bound_history(
     history: list[dict[str, Any]],
     *,
-    keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+    keep_turns: int = KEEP_RECENT_TURNS,
     keep_short: int = KEEP_SHORT_RESULT_CHARS,
 ) -> list[dict[str, Any]]:
     """A copy of the history with old, large tool results cut to a stub.
@@ -176,8 +181,14 @@ def bound_history(
     tells the model the result was elided rather than leaving a hole it might
     read as an empty result.
     """
-    tool_positions = [i for i, m in enumerate(history) if m.get("role") == "tool"]
-    to_elide = set(tool_positions[:-keep_recent]) if keep_recent > 0 else set(tool_positions)
+    turn_starts = [i for i, m in enumerate(history) if m.get("role") == "user"]
+    if keep_turns <= 0:
+        cutoff = len(history)
+    elif len(turn_starts) >= keep_turns:
+        cutoff = turn_starts[-keep_turns]
+    else:
+        cutoff = 0
+    to_elide = {i for i, m in enumerate(history[:cutoff]) if m.get("role") == "tool"}
 
     bounded: list[dict[str, Any]] = []
     for i, message in enumerate(history):
@@ -244,11 +255,20 @@ class _TurnState:
     # single.
     force_fast: bool = False
     retried_empty: bool = False
-    # Card grounding. `base_prompt` is everything but the card facts, so the
-    # facts block can be rebuilt as names appear without disturbing the rest.
+    # What changes turn to turn (deck_state, player_history, card facts) is
+    # sent as a context message, not in the system prompt. DeepSeek caches by
+    # prefix and the system prompt comes first, so a deck_state in it made
+    # every turn a cache miss on the whole conversation (13-35% hits on 20k
+    # tokens). `turn_context` sits just before this turn's user message
+    # (`turn_start`) and is frozen at the first send; facts grounded after it
+    # ride in a small message at the end, where they disturb nothing cached.
+    turn_context: str = ""
+    turn_start: int = 0
+    _frozen: bool = False
+    _frozen_facts: set[str] = field(default_factory=set)
+    _frozen_unknown: int = 0
     # `grounded` is every card name whose real text is in the model's context
-    # right now, from the facts block or from a tool result.
-    base_prompt: str = ""
+    # right now, from the facts or from a tool result.
     grounded: set[str] = field(default_factory=set)
     unknown_names: set[str] = field(default_factory=set)
     corrected_once: bool = False
@@ -299,8 +319,36 @@ class _TurnState:
         self._rebuild_prompt()
 
     def _rebuild_prompt(self) -> None:
-        block = card_facts.render_block(self._facts, self._unknown_display, self._deck_facts)
-        self.system_prompt = f"{self.base_prompt}\n\n{block}" if block else self.base_prompt
+        """Facts found before the first send join the turn's context; later
+        ones wait for `messages_for_send`."""
+
+    def messages_for_send(self) -> list[dict[str, Any]]:
+        """The history as sent: the turn's context message before this turn's
+        user message, and any facts grounded since the first send after the
+        last message."""
+        if not self._frozen:
+            block = card_facts.render_block(self._facts, self._unknown_display, self._deck_facts)
+            self._frozen_context = _app_context(self.turn_context, block)
+            self._frozen_facts = set(self._facts)
+            self._frozen_unknown = len(self._unknown_display)
+            self._frozen = True
+        history = bound_history(self.history)
+        if self._frozen_context:
+            ctx = self.provider.append_user_message([], self._frozen_context)
+            history = [*history[: self.turn_start], *ctx, *history[self.turn_start:]]
+        late = {k: v for k, v in self._facts.items() if k not in self._frozen_facts}
+        late_unknown = self._unknown_display[self._frozen_unknown:]
+        block = card_facts.render_block(late, late_unknown)
+        if block:
+            history = self.provider.append_user_message(history, _app_context("", block))
+        return history
+
+    _frozen_context: str = ""
+    # Tool names offered on the current send. The model has called tools it
+    # was not offered (a second batch after the first, and a tool that does
+    # not exist), and running them undid the one-batch rule: one replayed
+    # turn made four batches in 12 rounds.
+    offered: set[str] = field(default_factory=lambda: {t.name for t in TOOL_SPECS})
 
     def ground_tool_result(self, content: Any) -> None:
         """A tool that returned card text has grounded those cards itself."""
@@ -340,7 +388,9 @@ class _TurnState:
         if self.force_fast:
             thinking = False
             self.force_fast = False
-        return (WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS), thinking
+        tools = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
+        self.offered = {t.name for t in tools}
+        return tools, thinking
 
     @property
     def history_has_tool_round(self) -> bool:
@@ -358,9 +408,14 @@ class _TurnState:
                 self.proposal_ids.append(p["id"])
         if not batch:
             return
+        self.pending_summary = content.get("summary") or self.pending_summary
+        if all(p.get("action") == "set_commander" for p in batch):
+            # Proposing the commander is not the turn's card batch: "lock in
+            # the commander and give me ramp" is one request, and counting the
+            # commander left the ramp batch no legal path.
+            return
         self.proposals_emitted = True
         self.pipeline_followup_allowed = followup_allowed
-        self.pending_summary = content.get("summary") or self.pending_summary
         _supersede_stale_batches(self.session, self.deck_id, self.proposal_ids)
 
     def persist_exchange(
@@ -440,17 +495,15 @@ def _prepare_turn(
         plan_is_set=deck_state.plan_is_set,
         total_cards=deck_state.total_cards,
     )
-    # The variable blocks go last so the stable part of the prompt stays a
-    # cacheable prefix across turns.
-    for block in (context.player_history(session), deck_state.block):
-        if block:
-            system_prompt = f"{system_prompt}\n\n{block}"
+    turn_context = "\n\n".join(
+        b for b in (context.player_history(session), deck_state.block) if b
+    )
 
     state = _TurnState(
         session=session, provider=provider, conversation_id=conversation_id,
         deck_id=deck_id, user_text=user_text, system_prompt=system_prompt,
         history=history, sequence=sequence, should_stop=should_stop,
-        base_prompt=system_prompt,
+        turn_context=turn_context, turn_start=len(history) - 1,
     )
     # Everything already on the table gets its text before the first send.
     # A correction round is for a card the model reached for on its own; it
@@ -575,7 +628,7 @@ def _stream_send(
     first_chunk = True
     chunks = 0
     for item in _send(
-        state.provider, state.system_prompt, bound_history(state.history), tools,
+        state.provider, state.system_prompt, state.messages_for_send(), tools,
         thinking=thinking,
     ):
         if isinstance(item, ThinkingProgress):
@@ -605,6 +658,10 @@ def _stream_send(
 
 def _run_tool(state: _TurnState, call: Any) -> tuple[ToolResult, ChatEvent | None]:
     """Dispatch one tool call and return its result plus any event to emit."""
+    refusal = _refused_call(state, call.name)
+    if refusal:
+        logger.info("chat: refused %s: %s", call.name, refusal)
+        return ToolResult(call_id=call.id, content=refusal), None
     args = dict(call.arguments)
     # The conversation's deck is authoritative: deck_id is a required tool
     # param, so the model always guesses one, and its guess must not decide
@@ -864,6 +921,33 @@ _RESET_NOTE = "Rewritten after checking the real card text."
 _DRAFT_ECHO_CHARS = 2000
 
 
+_BATCH_TOOLS = frozenset({"suggest_cards", "propose_deck_changes"})
+
+
+def _refused_call(state: _TurnState, name: str) -> str | None:
+    if name not in {t.name for t in TOOL_SPECS}:
+        return f"There is no tool called {name}. The deck's state is in the app_context message."
+    if name not in state.offered or (
+        name in _BATCH_TOOLS and state.proposals_emitted and not state.pipeline_followup_allowed
+    ):
+        return (
+            "Not run: this turn's card batch already exists, so proposing is over "
+            "for the turn. Trim it with withdraw_pending_proposals if a pick breaks "
+            "something the player asked for; otherwise write your reply."
+        )
+    return None
+
+
+def _app_context(turn_context: str, facts_block: str) -> str:
+    body = "\n\n".join(b for b in (turn_context, facts_block) if b)
+    if not body:
+        return ""
+    return (
+        "<app_context>\nFrom the app, not the player: current as of this "
+        f"moment, and more accurate than anything earlier in the conversation.\n{body}\n</app_context>"
+    )
+
+
 def _correction_request(draft: str | None, ungrounded: list[str]) -> str:
     """The message that turns a withdrawn draft into a corrected one."""
     named = ", ".join(ungrounded[:12])
@@ -871,7 +955,7 @@ def _correction_request(draft: str | None, ungrounded: list[str]) -> str:
     return (
         "HOLD — that reply was not sent to the player. It described these "
         f"cards without their text in front of you: {named}. Their real text "
-        "is now in the card_facts block of your instructions; a name listed "
+        "is now in the card_facts the app sent you; a name listed "
         "there as NO SUCH CARD does not exist and must not be described.\n\n"
         f"Your draft was:\n---\n{echo}\n---\n\n"
         "Write the reply again from the real text. Keep what was right, fix "

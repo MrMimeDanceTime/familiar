@@ -12,12 +12,15 @@ class _Provider:
         self.calls.append({"system": system, "user": user, **kwargs})
         return self.reply
 
+    def append_user_message(self, history, text):
+        return [*history, {"role": "user", "content": text}]
+
 
 def _state(provider):
     return engine._TurnState(
         session=None, provider=provider, conversation_id=1, deck_id=None,
         user_text="what removal fits?", system_prompt="BASE", history=[],
-        sequence=0, should_stop=None, base_prompt="BASE",
+        sequence=0, should_stop=None,
     )
 
 
@@ -35,7 +38,7 @@ def test_anticipated_cards_are_grounded_before_the_model_writes(monkeypatch):
     state = _state(provider)
     engine._anticipate_cards(state, deck_state_text="Commander: X")
     assert "go for the throat" in state.grounded
-    assert "Go for the Throat text" in state.system_prompt
+    assert "Go for the Throat text" in json.dumps(state.messages_for_send())
     # An invented guess is dropped, not reported to the model as a card it named.
     assert "made up card" not in state.unknown_names
     assert provider.calls[0]["thinking"] is False
@@ -46,7 +49,7 @@ def test_anticipation_failing_never_blocks_the_turn(monkeypatch):
     monkeypatch.setattr(card_facts, "is_available", lambda: True)
     state = _state(_Provider("not json"))
     engine._anticipate_cards(state, deck_state_text="")
-    assert state.system_prompt == "BASE"
+    assert state.messages_for_send() == []
 
 
 def test_suggest_result_grounds_the_alternatives_it_lists():

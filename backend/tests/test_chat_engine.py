@@ -294,26 +294,47 @@ def test_deck_mutation_emits_deck_updated_event(mock_get_client, session):
                 tool_calls=[
                     ToolCallRequest(
                         id="call_1",
-                        name="deck_add_card",
-                        arguments={"card_name": "Sol Ring", "category": "ramp"},
+                        name="deck_update_notes",
+                        arguments={"notes": "Grindy attrition."},
                     )
                 ],
                 raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
             ),
-            AssistantTurn(text="Added Sol Ring!", tool_calls=[]),
+            AssistantTurn(text="Noted.", tool_calls=[]),
         ]
     )
     convo = repo.create_conversation(session)
     repo.set_conversation_deck(session, convo.id, deck.id)
 
     events = _collect(
-        run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id)
+        run_chat_turn(session, provider, convo.id, "note that it's grindy", deck_id=deck.id)
     )
 
     deck_updated_events = [e for e in events if e.event == "deck_updated"]
     assert len(deck_updated_events) == 1
-    payload = deck_updated_events[0].data
-    assert payload["cards"][0]["name"] == "Sol Ring"
+    assert deck_updated_events[0].data["notes"] == "Grindy attrition."
+
+
+def test_a_tool_the_model_was_not_offered_is_refused(session):
+    """deck_add_card exists for the app's own use; the model is never offered
+    it and must not be able to reach it by naming it."""
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="call_1", name="deck_add_card",
+                                        arguments={"card_name": "Sol Ring"})],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="ok", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    events = _collect(run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id))
+
+    assert not [e for e in events if e.event == "deck_updated"]
+    assert repo.deck_snapshot(session, deck.id)["cards"] == []
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
@@ -406,6 +427,37 @@ def test_only_withdraw_tool_offered_after_proposals(mock_get_client, session):
     # only the withdraw tool.
     assert provider.tools_per_send[0] == TOOL_SPECS
     assert [t.name for t in provider.tools_per_send[1]] == ["withdraw_pending_proposals"]
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_proposing_only_the_commander_leaves_the_card_batch_open(mock_get_client, session):
+    """'Lock in the commander and give me ramp' is one request. Counting the
+    commander as the turn's batch left the ramp batch no legal path, and the
+    model spent up to 5,000 reasoning tokens looking for one."""
+    mock_get_client.return_value.named.return_value = {
+        "name": "Prosper, Tome-Bound", "cmc": 4.0, "color_identity": ["B", "R"],
+        "type_line": "Legendary Creature — Tiefling Warlock",
+    }
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(
+                id="call_1", name="propose_deck_changes",
+                arguments={"summary": "Commander", "changes": [
+                    {"action": "set_commander", "card_name": "Prosper, Tome-Bound"},
+                ]},
+            )],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(text="Locked in.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "lock it in, then ramp", deck_id=deck.id))
+
+    assert provider.tools_per_send[1] == TOOL_SPECS
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
@@ -1006,21 +1058,39 @@ def test_bound_history_elides_old_large_tool_results_only():
     history = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "tool_calls": ["a"]},
-        {"role": "tool", "tool_call_id": "a", "content": big},        # old, large: elided
-        {"role": "tool", "tool_call_id": "b", "content": small},      # old, small: kept
-        {"role": "tool", "tool_call_id": "c", "content": big},        # recent: kept
-        {"role": "tool", "tool_call_id": "d", "content": big},        # recent: kept
+        {"role": "tool", "tool_call_id": "a", "content": big},        # old turn, large: elided
+        {"role": "tool", "tool_call_id": "b", "content": small},      # old turn, small: kept
         {"role": "assistant", "content": big},                        # never touched
+        {"role": "user", "content": "more"},
+        {"role": "tool", "tool_call_id": "c", "content": big},        # last turn: kept
+        {"role": "user", "content": "again"},
+        {"role": "tool", "tool_call_id": "d", "content": big},        # this turn: kept
     ]
 
-    bounded = bound_history(history, keep_recent=2)
+    bounded = bound_history(history, keep_turns=2)
 
     assert "elided" in bounded[2]["content"] and len(bounded[2]["content"]) < 500
     assert bounded[3]["content"] == small
-    assert bounded[4]["content"] == big and bounded[5]["content"] == big
-    assert bounded[6]["content"] == big
+    assert bounded[4]["content"] == big
+    assert bounded[6]["content"] == big and bounded[8]["content"] == big
     # The original is untouched: this is a send-time view, not the record.
     assert history[2]["content"] == big
+
+
+def test_bound_history_is_stable_within_a_turn():
+    """A new result must not change how earlier ones are sent: that is what
+    keeps the provider's prefix cache valid from one send to the next."""
+    from app.chat.engine import bound_history
+
+    big = "x" * 5000
+    history = [
+        {"role": "user", "content": "one"}, {"role": "tool", "tool_call_id": "a", "content": big},
+        {"role": "user", "content": "two"}, {"role": "tool", "tool_call_id": "b", "content": big},
+        {"role": "user", "content": "three"}, {"role": "tool", "tool_call_id": "c", "content": big},
+    ]
+    before = bound_history(history)
+    after = bound_history([*history, {"role": "tool", "tool_call_id": "d", "content": big}])
+    assert after[: len(before)] == before
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
@@ -1031,9 +1101,12 @@ def test_provider_sees_bounded_history_but_db_keeps_everything(mock_get_client, 
     deck = repo.create_deck(session, name="Test Deck")
     convo = repo.create_conversation(session)
     repo.set_conversation_deck(session, convo.id, deck.id)
-    # Six earlier tool results, all large.
+    # Six earlier turns, each with one large tool result.
     seq = 0
     for i in range(6):
+        repo.add_message(session, convo.id, role="user", sequence=seq, text_content=f"turn {i}",
+                         provider_native=[{"role": "user", "content": f"turn {i}"}])
+        seq += 1
         repo.add_message(session, convo.id, role="assistant", sequence=seq,
                          provider_native=[{"role": "assistant", "tool_calls": [f"c{i}"]}])
         repo.add_message(session, convo.id, role="tool", sequence=seq + 1,
@@ -1045,8 +1118,10 @@ def test_provider_sees_bounded_history_but_db_keeps_everything(mock_get_client, 
 
     sent = provider.sent_history_snapshots[0]
     tool_msgs = [m for m in sent if m.get("role") == "tool"]
-    assert sum("elided" in m["content"] for m in tool_msgs) == 2
-    assert sum(m["content"] == "y" * 3000 for m in tool_msgs) == 4
+    # This turn and the last keep results in full; the last earlier turn is
+    # the only one inside that window.
+    assert sum("elided" in m["content"] for m in tool_msgs) == 5
+    assert sum(m["content"] == "y" * 3000 for m in tool_msgs) == 1
     stored = [m for m in repo.list_messages(session, convo.id) if m.role == "tool"]
     assert all(m.provider_native[0]["content"] == "y" * 3000 for m in stored)
 
@@ -1218,8 +1293,34 @@ def test_since_last_turn_note_rides_with_the_user_message(session):
     native = user_message.provider_native[0]["content"]
     assert native.startswith("<since_last_turn>") and native.endswith("next batch please")
     assert "approved Sol Ring" in native
-    # The system prompt carried the deck header.
-    assert "<deck_state>" in provider.sent_system_prompts[-1]
+    # The deck header rides in the app's context message, just before the
+    # player's message.
+    sent = provider.sent_history_snapshots[-1]
+    assert "<app_context>" in sent[-2]["content"] and "<deck_state>" in sent[-2]["content"]
+    assert sent[-1]["content"].endswith("next batch please")
+
+
+def test_system_prompt_is_identical_across_turns_so_it_caches(session):
+    """The deck changes between turns; the system prompt must not. DeepSeek
+    caches by prefix, so a deck_state inside the system prompt missed the
+    cache on the whole conversation every turn."""
+    deck = repo.create_deck(session, name="Test Deck")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    provider = FakeProvider([AssistantTurn(text="one", tool_calls=[]),
+                             AssistantTurn(text="two", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "first", deck_id=deck.id))
+    repo.update_deck(session, deck.id, power_level="7")
+    _collect(run_chat_turn(session, provider, convo.id, "second", deck_id=deck.id))
+
+    assert provider.sent_system_prompts[0] == provider.sent_system_prompts[1]
+    first, second = provider.sent_history_snapshots
+    assert first[-2]["content"] != second[-2]["content"]  # the deck did change
+    # Turn one's exchange is sent unchanged at the start of turn two, apart
+    # from its context message, which is not stored.
+    stored_first = [m for m in first if "<app_context>" not in str(m.get("content"))]
+    assert second[: len(stored_first)] == stored_first
 
 
 # ── cancellation ───────────────────────────────────────────────────────────
@@ -1336,3 +1437,20 @@ def test_an_empty_reply_is_never_persisted_bare(session):
     assert "didn't manage to write a reply" in final.text_content
     assert final.provider_native[0]["content"] == final.text_content
     assert any(e.event == "token" and "didn't manage" in e.data["text"] for e in events)
+
+
+def test_a_second_batch_is_refused_even_within_one_message():
+    from app.chat.engine import _refused_call, _TurnState
+
+    state = _TurnState(
+        session=None, provider=None, conversation_id=1, deck_id=1, user_text="",
+        system_prompt="", history=[], sequence=0, should_stop=None,
+    )
+    assert _refused_call(state, "suggest_cards") is None
+    state.proposals_emitted = True
+    assert "already exists" in _refused_call(state, "suggest_cards")
+    assert "already exists" in _refused_call(state, "propose_deck_changes")
+    assert _refused_call(state, "withdraw_pending_proposals") is None
+    state.pipeline_followup_allowed = True  # a redirect's one allowed follow-up
+    assert _refused_call(state, "suggest_cards") is None
+    assert "no tool called" in _refused_call(state, "deck_state")

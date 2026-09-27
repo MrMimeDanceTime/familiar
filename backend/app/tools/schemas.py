@@ -239,17 +239,14 @@ TOOL_SPECS: list[ToolSpec] = [
         name="propose_deck_changes",
         description=(
             "Propose changes to the in-progress deck for the player to approve or "
-            "deny. You cannot modify the deck directly — you must use this tool to "
-            "make proposals. Aim for about 3-6 CARD adds/removes per batch. A "
-            "'set_commander' action does NOT count toward that batch size — when "
-            "you open a deck by batching the commander together with cards, include "
-            "the full set of cards you intend (e.g. commander + 6 cards is one call "
-            "with 7 changes), not 6 changes total with the commander eating a card "
-            "slot. Whatever number of cards you describe in your reply, emit exactly "
-            "that many 'add' changes here — the count in your prose and the count in "
-            "this call must match. For each change, provide clear reasoning the "
-            "player can evaluate. For 'add' actions, the card name will be validated "
-            "against Scryfall."
+            "deny; you cannot modify the deck directly. This is for changes "
+            "already decided: the commander (set_commander), cards the player "
+            "named (player_named: true), and cuts. Cards you would choose "
+            "yourself go through suggest_cards; three or more of them here are "
+            "redirected there. Proposing only the commander does not use up the "
+            "turn's card batch, so 'lock in the commander and give me ramp' is "
+            "this call, then suggest_cards. Give each change reasoning the "
+            "player can evaluate; add names are checked against the card index."
         ),
         parameters={
             "type": "object",
@@ -312,8 +309,8 @@ TOOL_SPECS: list[ToolSpec] = [
             "the rest of the batch stays. Not for fit or strength doubts: say "
             "those in the reply and let the player decide. "
             "(2) CLEAR — omit `card_names` to withdraw the WHOLE pending batch, "
-            "for when the player changes direction or rejects the batch entirely; "
-            "call that BEFORE proposing a replacement batch. "
+            "when the player rejects it and wants nothing in its place. A new "
+            "batch replaces a stale one on its own; no need to clear first. "
             "A pending set_commander proposal is NOT cleared by this — it is "
             "the deck's identity, not a batch, and must never be cancelled as "
             "a side effect of swapping card batches. Only set "
@@ -348,12 +345,15 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name="suggest_cards",
         description=(
-            "Run the deterministic card-suggestion pipeline: it generates focused "
-            "Scryfall queries for the intent, retrieves and filters a legal, "
-            "on-color candidate pool (EDHREC-ranked, already excluding the "
-            "commander, owned cards, and banned/off-identity cards), and returns a "
-            "batch of pending ADD proposals with reasoning — the same kind of "
-            "proposals propose_deck_changes creates. "
+            "Run the card-suggestion pipeline: it builds a candidate pool for "
+            "the intent from the local card index and EDHREC, drops anything "
+            "illegal for this deck (off-colour, banned, already in or awaiting "
+            "a decision, over budget, excluded by the player), ranks the rest "
+            "against this deck and its plan, and returns a batch of pending ADD "
+            "proposals with each card's rules text and reasoning. Missing "
+            "format staples that fill the requested role join the batch. A "
+            "land request fills the manabase to the plan's land target, basics "
+            "included, whatever the count. "
             "THESE ARE LIVE PROPOSALS, NOT A SHORTLIST. They go straight to the "
             "player's approve/deny queue. Read what comes back BEFORE you write "
             "your reply. Withdraw a pick only if it breaks something the player "
@@ -364,9 +364,8 @@ TOOL_SPECS: list[ToolSpec] = [
             "USE THIS whenever the player asks you to suggest, recommend, find, or "
             "add cards to fill a role or gap — e.g. 'suggest some ramp', 'what "
             "removal should I run', 'help me find card draw', 'fill out the "
-            "manabase'. Prefer it over scryfall_search + manual propose_deck_changes "
-            "for open-ended 'what should I add' requests: it does the search, "
-            "filtering, and legality-checking for you. "
+            "manabase'. It is how every batch of cards you would choose reaches "
+            "the player. "
             "Do NOT use it for questions that aren't asking for card suggestions "
             "(rules questions, explaining a card, discussing the deck's power level, "
             "or when the player names a specific card to add — use "
@@ -381,8 +380,8 @@ TOOL_SPECS: list[ToolSpec] = [
                 "intent": {
                     "type": "string",
                     "description": (
-                        "What the player wants, in a focused phrase the query "
-                        "planner can act on, e.g. 'cheap instant-speed removal under "
+                        "What the player wants, in a focused phrase naming the "
+                        "role or theme, e.g. 'cheap instant-speed removal under "
                         "3 mana', 'ramp that fixes colors', 'card draw on a budget'. "
                         "Include constraints the player stated."
                     ),

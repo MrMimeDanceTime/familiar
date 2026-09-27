@@ -32,6 +32,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,25 @@ _ROLE_WORDS = re.compile(
 _BRACKETED = re.compile(r"\[\[([^\][]+)\]\]")
 _PROPOSAL_TOOLS = {"propose_deck_changes", "suggest_cards"}
 _DECK_READ_TOOLS = {"deck_get_current", "deck_get_stats"}
+
+
+# What the UI's Done reviewing button sends (frontend/src/lib/deckPrompts.ts).
+# The player decided on the batch before pressing it; a replay has no player,
+# so without this the model met "let's continue" with the whole batch still
+# pending and spent up to 8,000 reasoning tokens working out what it meant.
+REVIEW_DONE_MESSAGE = "I've reviewed the proposals. Let's continue."
+
+
+def _approve_pending(session, deck_id: int) -> None:
+    from app.db import repository as repo
+
+    snapshot = repo.deck_snapshot(session, deck_id)
+    for p in (snapshot.get("pending_proposals") or {}).get("proposals") or []:
+        if p.get("id") is not None:
+            try:
+                repo.apply_proposal(session, p["id"])
+            except Exception:  # noqa: BLE001 - an unappliable card stays pending, as in the UI
+                pass
 
 
 def score_turn(record: dict[str, Any]) -> dict[str, Any]:
@@ -270,16 +290,25 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
     import logging
 
     grounding: list[dict] = []
+    sends: list[dict] = []
 
     class _Collect(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
             data = getattr(record, "grounding", None)
             if isinstance(data, dict):
                 grounding.append(data)
+            # Each send's timing and reasoning, so a slow turn in the trace
+            # shows what the model spent its thinking on.
+            timing = getattr(record, "send_timing", None)
+            if isinstance(timing, dict):
+                sends.append(timing)
 
     grounding_logger = logging.getLogger("app.chat.grounding")
     grounding_logger.setLevel(logging.INFO)
     grounding_logger.addHandler(_Collect())
+    timing_logger = logging.getLogger("app.llm.timing")
+    timing_logger.setLevel(logging.INFO)
+    timing_logger.addHandler(_Collect())
     with Session(get_engine()) as session:
         sources = (
             [repo.get_conversation(session, conversation_id)] if conversation_id
@@ -300,11 +329,13 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
             repo.set_conversation_deck(session, replay_convo.id, source.deck_id)
             print(f"conversation {source.id} ({source.title!r}): {len(user_turns)} turn(s)")
             for text in user_turns:
+                if text.strip() == REVIEW_DONE_MESSAGE:
+                    _approve_pending(session, source.deck_id)
                 snapshot = repo.deck_snapshot(session, source.deck_id)
                 plan_was_set = deckplan.build_plan(snapshot).has_plan()
                 card_names = [c["name"] for c in snapshot["cards"]]
                 provider = get_provider()
-                seen = len(grounding)
+                seen, sends_seen, started = len(grounding), len(sends), time.time()
                 for _ in run_chat_turn(session, provider, replay_convo.id, text, source.deck_id):
                     pass
                 record = _collect_record(
@@ -313,6 +344,8 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
                 )
                 record["source_conversation"] = source.id
                 record["grounding"] = grounding[-1] if len(grounding) > seen else {}
+                record["seconds"] = round(time.time() - started, 1)
+                record["sends"] = sends[sends_seen:]
                 records.append(record)
                 print(f"  turn scored: {json.dumps(score_turn(record), default=str)[:160]}")
     return records
