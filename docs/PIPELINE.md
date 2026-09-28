@@ -521,6 +521,39 @@ synergy alone gets 42%, so theme requests sit near 43-45% whatever the pool.
 The whole page costs about three times the Jev tokens for a gain inside the
 noise; it stays off.
 
+### Theme requests on public decklists
+
+The theme cases above take ground truth from the player's own decks, mostly
+built with this engine, and define a theme card as "a card with no generic
+role". `tools/theme_eval.py` measures on ground truth the engine never saw:
+for 15 commanders (new releases, off-meta picks, two of the player's), the
+most-viewed Archidekt decks carrying the commander's most common mechanical
+tag, cached in `tools/eval_decks/archidekt/`. Per deck, the cards common in
+that tag's decks and uncommon in the commander's decks overall are held out,
+and the pipeline is asked for "more <tag> cards". A strict reading keeps only
+held-out cards whose own text names the theme; the broad one also catches
+what tuned decks run more of (Lord Windgrace "Lands Matter" decks' board
+wipes).
+
+Measured 2026-09-28, 81 decks:
+
+| Variant | Broad: picked | Broad: reach | Strict: picked | Strict: reach |
+|---|---|---|---|---|
+| Current | 15% | 30% | 31% | 50% |
+| EDHREC theme signal (`theme_fit`) | 14% | 30% | 29% | 49% |
+| Whole EDHREC page, cap 120 | 17% | 59% | 37% | 75% |
+
+Theme requests are weaker than the old theme cases (about 43%) suggested.
+The whole page lifts the strict average by 6 points, but per commander it
+helped 4, hurt 3 and left 7 unchanged, and Zhulodok (8% to 83%) and Prosper
+(12% to 38%) carry the gain; it stays off until a change helps broadly. The
+theme signal stays off.
+
+The run also found theme names routed as roles: "Lands Matter" went to the
+manabase fill and came back basics, "-1/-1 Counters" searched for
+counterspells, "Draw Punisher" for card draw. `local_retrieval.intent_roles`
+now reads those as themes.
+
 ### Archetype-conditioned EDHREC (built, measured, off)
 
 EDHREC publishes each commander's themes with their own pages, computed over

@@ -89,11 +89,24 @@ def intent_roles(intent: str) -> set[str]:
     # "counters" alone is ambiguous (+1/+1 counters); only keep the
     # counterspell reading when nothing about counters-the-noun is present.
     # Checked on the raw intent: the sanitised text has lost its punctuation.
-    if roles.COUNTERSPELL in found and re.search(
-        r"\+1/\+1|charge counters?|loyalty counters?|poison counters?", intent.lower()
-    ):
-        found.discard(roles.COUNTERSPELL)
+    raw = intent.lower()
+    for role, theme in _THEME_NOT_ROLE:
+        if role in found and re.search(theme, raw):
+            found.discard(role)
     return found
+
+
+# Theme names that contain a role's words but ask for the theme. Measured on
+# public theme-tagged decks: "more Lands Matter cards" went to the manabase
+# fill and came back basics, "-1/-1 Counters" searched for counterspells, and
+# "Draw Punisher" for card draw.
+_THEME_NOT_ROLE: tuple[tuple[str, str], ...] = (
+    (roles.COUNTERSPELL, r"[+-]\d+/[+-]\d+|charge counters?|loyalty counters?|poison counters?"
+                         r"|proliferate|counters? matters?|oil counters?|shield counters?"),
+    (roles.LAND, r"lands? matters?|landfall|lands?[- ]sacrifice|lands? (?:from|in) (?:your |the )?graveyard"
+                 r"|lands? recursion"),
+    (roles.CARD_DRAW, r"draw[- ]?punish|punish\w* \w* ?draw|draw matters?|wheels?"),
+)
 
 
 def intent_terms(intent: str) -> list[str]:
