@@ -484,8 +484,8 @@ def find_commanders(
 
     ``words`` must all appear in name, rules text or type line (full text);
     ``identity`` limits colours (within it, or exactly it); ``creature_type``
-    and ``set_name`` are substring matches on the type line and the set of
-    the card's most recent printing; ``popularity`` is "any", "popular" or
+    is a substring of the type line; ``set_name`` matches any set the card
+    was printed in, by name, code or block; ``popularity`` is "any", "popular" or
     "less_popular" against POPULAR_RANK. Most played first.
     """
     clauses = [
@@ -504,15 +504,23 @@ def find_commanders(
         clauses.append("c.type_line LIKE :ctype")
         params["ctype"] = f"%{creature_type.strip()}%"
     if set_name:
-        # Comma-separated: a block spans sets ("Theros, Born of the Gods,
-        # Journey into Nyx"), and "Theros" alone missed the other two.
+        # Comma-separated: several sets, or a block by its name. Matches every
+        # set the card was printed in (card_printings), so a reprinted legend
+        # still counts for its original set; without printings imported, only
+        # the card's own printing is known.
         names = [n.strip() for n in set_name.split(",") if n.strip()]
         ors = []
         for i, name in enumerate(names):
-            ors.append(f"json_extract(c.raw, '$.set_name') LIKE :set{i}")
             params[f"set{i}"] = f"%{name}%"
+            params[f"code{i}"] = name.lower()
+            ors.append(
+                f"json_extract(c.raw, '$.set_name') LIKE :set{i} OR c.oracle_id IN ("
+                "SELECT p.oracle_id FROM card_printings p JOIN card_sets s ON s.code = p.set_code "
+                f"WHERE s.name LIKE :set{i} OR s.block LIKE :set{i} OR s.code = :code{i} "
+                f"OR s.block_code = :code{i})"
+            )
         if ors:
-            clauses.append("(" + " OR ".join(ors) + ")")
+            clauses.append("(" + " OR ".join(f"({o})" for o in ors) + ")")
     if popularity == "popular":
         clauses.append(f"c.edhrec_rank <= {POPULAR_RANK}")
     elif popularity == "less_popular":

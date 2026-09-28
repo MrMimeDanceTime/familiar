@@ -23,7 +23,7 @@ def _card(oracle_id, name, type_line, identity, rank, set_name, text="", release
 
 CARDS = [
     _card("mac", "King Macar, the Gold-Cursed", "Legendary Creature — Human Noble", "B", 10835,
-          "Journey into Nyx", "Inspired — Whenever King Macar becomes untapped, exile target creature."),
+          "Journey into Nyx", "Inspired — Whenever King Macar, the Gold-Cursed becomes untapped, exile target creature."),
     _card("pur", "Purphoros, God of the Forge", "Legendary Enchantment Creature — God", "R", 686,
           "Commander Masters", "Whenever another creature enters, Purphoros deals 2 damage to each opponent."),
     _card("kro", "Kroxa, Titan of Death's Hunger", "Legendary Creature — Elder Giant", "BR", 5000,
@@ -92,3 +92,21 @@ def test_tool_result_labels_popularity_and_set(index):
     assert result["commanders"][0]["popularity"] == "less played"
     rendered = render_commanders(result)
     assert "King Macar, the Gold-Cursed" in rendered and "Journey into Nyx (2014)" in rendered
+
+
+def test_printings_find_a_reprinted_legend_by_its_original_set_and_block(index):
+    with get_engine().begin() as conn:
+        conn.execute(sql_text(
+            "INSERT INTO card_sets (code, name, block_code, block, released_at, set_type) VALUES "
+            "('ths', 'Theros', 'ths', 'Theros', '2013-09-27', 'expansion'), "
+            "('jou', 'Journey into Nyx', 'ths', 'Theros', '2014-05-02', 'expansion'), "
+            "('cmm', 'Commander Masters', NULL, NULL, '2023-08-04', 'masters')"
+        ))
+        conn.execute(sql_text(
+            "INSERT INTO card_printings (oracle_id, set_code) VALUES "
+            "('pur', 'ths'), ('pur', 'cmm'), ('mac', 'jou')"
+        ))
+    # Purphoros's own printing is Commander Masters; its first was Theros.
+    assert _names(set_name="Theros") == [
+        "Purphoros, God of the Forge", "Kroxa, Titan of Death's Hunger", "King Macar, the Gold-Cursed"]
+    assert _names(set_name="jou") == ["King Macar, the Gold-Cursed"]

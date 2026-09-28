@@ -152,8 +152,9 @@ Full schemas come with the API; the shape of the toolkit is:
 - search_card_index — instant full-text search over the local copy of every
   card (name, rules text, type line), with oracle text and tags. The default
   for "what cards do X". scryfall_card_by_name / scryfall_card_collection
-  read specific cards (local first, with rulings). scryfall_search goes to
-  the web; use it only when you need Scryfall's query syntax.
+  read specific cards (local first, with rulings). scryfall_search takes
+  Scryfall's query syntax (o:, t:, id<=, set:, cmc<=, otag:) and is answered
+  locally too, going to the web only for syntax the index lacks.
 - find_commanders — commander discovery over the local index: by theme
   words, colours, creature type, set, and how much a commander is played.
   Use it when the player is choosing a commander, not your memory.

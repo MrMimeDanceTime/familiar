@@ -98,8 +98,9 @@ backend/app/
   deckplan.py        the deck plan: role targets derived from the stated power level, themes, gaps (what the deck still needs)
   autoincludes.py    format staples the deck is missing (high play rate, no commander-specific synergy), surfaced on every deck read
   cards/
-    schema.py / importer.py   local Scryfall card index (oracle cards + oracle tags + FTS5), refreshed in a background thread at startup
-    store.py                  read side: name/oracle_id lookups, tag lookups, text search, tag co-occurrence queries
+    schema.py / importer.py   local Scryfall card index (oracle cards + oracle tags + rulings + set membership + FTS5), refreshed in a background thread at startup
+    store.py                  read side: name/oracle_id lookups, tag lookups, text search, commander search, tag co-occurrence queries
+    query.py                  Scryfall search syntax answered from the index; unsupported syntax falls back to Scryfall
     cooccurrence.py           derives which oracle tags relate (lift) and which describe colour rather than function
   brainmap/
     map.py             score_pool(): runs every layer over a candidate pool and blends the result
@@ -399,7 +400,14 @@ suggested. The mechanical layer reads the local card index, a SQLite copy of
 Scryfall's oracle cards, oracle tags, and rulings with derived tag
 co-occurrence, so it works from what a card *does* rather than a hand-written
 theme list. Card lookups attach the rulings so interaction questions are
-answered from the source rather than from memory. Any change
+answered from the source rather than from memory. Set membership
+(`card_printings`, `card_sets`) comes from three fields of Scryfall's
+`default_cards` plus its set list, so set and block searches find reprinted
+cards under their original sets. `scryfall_search` is answered locally for
+the syntax the model uses (`app/cards/query.py`): measured on its 30
+historical queries, the local answer matched Scryfall's result sets exactly
+apart from two double-faced cards, and one query (`lore:`) fell back to the
+web. Any change
 here must be measured with `tools/coverage_report.py` (see `CLAUDE.md`).
 
 ### Integrations (`app/integrations/`)
