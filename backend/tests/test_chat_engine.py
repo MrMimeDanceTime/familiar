@@ -423,10 +423,10 @@ def test_only_withdraw_tool_offered_after_proposals(mock_get_client, session):
         run_chat_turn(session, provider, convo.id, "suggest ramp", deck_id=deck.id)
     )
 
-    # First send offered the full tool set; the send AFTER proposals offered
-    # only the withdraw tool.
+    # Every send carries the full tool list (it leads the cached prefix);
+    # after the batch only the withdraw tool will run.
     assert provider.tools_per_send[0] == TOOL_SPECS
-    assert [t.name for t in provider.tools_per_send[1]] == ["withdraw_pending_proposals"]
+    assert provider.tools_per_send[1] == TOOL_SPECS
 
 
 @patch("app.tools.deck_tools.get_scryfall_client")
@@ -1042,7 +1042,7 @@ def test_redirect_with_kept_commander_still_offers_suggest_cards(mock_get_client
 
     names_per_send = [[t.name for t in tools] for tools in provider.tools_per_send]
     assert "suggest_cards" in names_per_send[1], "the follow-up send must allow the pipeline"
-    assert names_per_send[2] == ["withdraw_pending_proposals"], "one iteration only"
+    assert names_per_send[2] == [t.name for t in TOOL_SPECS], "the list stays stable"
     assert "call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"] \
         or "may call now" in provider.sent_history_snapshots[1][-1]["fake_tool_result"]
 
@@ -1511,3 +1511,35 @@ def test_a_plain_role_request_on_a_planned_deck_skips_the_first_think(session, m
     _collect(run_chat_turn(session, provider, convo.id, "what should this deck's plan be?", deck_id=deck.id))
 
     assert provider.thinking_flags == [False, True]
+
+
+@patch("app.tools.deck_tools.get_scryfall_client")
+def test_after_a_batch_research_and_a_second_batch_are_refused(mock_get_client, session):
+    mock_get_client.return_value.named.return_value = {"name": "Sol Ring", "cmc": 1.0, "color_identity": []}
+    deck = repo.create_deck(session, name="Test Deck")
+    provider = FakeProvider([
+        AssistantTurn(
+            text=None,
+            tool_calls=[ToolCallRequest(id="call_1", name="propose_deck_changes", arguments={
+                "summary": "one", "changes": [{"action": "add", "card_name": "Sol Ring", "player_named": True}],
+            })],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_1"]},
+        ),
+        AssistantTurn(
+            text=None,
+            tool_calls=[
+                ToolCallRequest(id="call_2", name="search_card_index", arguments={"query": "ramp"}),
+                ToolCallRequest(id="call_3", name="suggest_cards", arguments={"intent": "ramp", "count": 3}),
+            ],
+            raw_assistant_message={"role": "assistant", "tool_calls": ["call_2", "call_3"]},
+        ),
+        AssistantTurn(text="Done.", tool_calls=[]),
+    ])
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+
+    _collect(run_chat_turn(session, provider, convo.id, "add sol ring", deck_id=deck.id))
+
+    results = [m["fake_tool_result"] for m in provider.sent_history_snapshots[2]
+               if m.get("tool_call_id") in ("call_2", "call_3")]
+    assert len(results) == 2 and all("Not run" in r for r in results)

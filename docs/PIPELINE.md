@@ -243,9 +243,11 @@ anchors its batch exactly like a `propose_deck_changes` batch.
 
 Note the engine's **post-proposal rule** (`chat/engine.py`): once any proposal
 batch is emitted in a turn — from `suggest_cards` or `propose_deck_changes` —
-the model is offered **only** `withdraw_pending_proposals` on subsequent
-iterations, so it can trim a card or two but cannot add another batch or run
-more research. The batch is revealed to the UI **once, at turn end**, carrying
+**only** `withdraw_pending_proposals` runs on subsequent iterations; any other
+call is refused with a result saying why. The model can trim a card or two but
+cannot add another batch or run more research. The full tool list is still
+sent on every send, because the tool schemas lead DeepSeek's cached prefix and
+swapping the list after a batch threw the cache away on the reply send. The batch is revealed to the UI **once, at turn end**, carrying
 only the proposals that survived trimming (`_settled_proposal_batch`), so cards
 never flash in and back out. This is what stops the propose→withdraw→propose
 churn that used to burn the 12-iteration budget and drop the turn.
@@ -340,6 +342,28 @@ Jev is the best of these and still weak: a removal happens in the context of a
 specific swap, which a static "weakest card" ranking cannot see. In a replay on
 a full deck, ten cuts a batch (some of them key pieces such as Necropotence)
 were withdrawn by the chat model, which is why cuts are off by default.
+
+Re-measured 2026-09-28 with every deck's gameplan in the state: Jev with EDHREC
+evidence 30%, Jev alone 22%, DeepSeek 19% (24% thinking), EDHREC alone 14%,
+chance 18%.
+
+**Swap-aware cuts were tried and lost.** The idea: a cut is usually paired with
+an add of the same role, so ask "replacing this deck card with the incoming
+card improves the deck" over same-role deck cards only. On the player's
+history, grouped into batches by timestamp (older proposals have no
+`message_id`), only 22 approved removals shared a role with an add in their
+batch and 32 did not, so the premise fails for most cuts. On the 22:
+
+| Method (same-role candidates only) | Removed cards in top k | Mean position |
+|---|---|---|
+| Static Jev + EDHREC (`rank_cuts`) | 23% | 0.23 |
+| Swap question | 18% | 0.37 |
+| EDHREC lowest play rate | 9% | 0.33 |
+| Chance | 10% | |
+
+Nothing beats the static ranking and nothing is strong enough to decide a cut
+unsupervised, so cut turns keep the chat model's thinking (see the intent gate
+in `app/chat/intent.py`) and `JEV_CUTS` stays off.
 
 ### How it was measured
 

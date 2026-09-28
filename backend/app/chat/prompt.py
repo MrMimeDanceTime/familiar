@@ -195,7 +195,8 @@ What the app does on its own, so you need not:
 - A batch of 3+ adds you chose yourself is refused and redirected to
   suggest_cards. Cards the player named, cuts, and the commander go through.
 - One card batch per turn: once it exists, only withdraw_pending_proposals
-  is offered. Proposing the commander alone does not use it up.
+  runs; any other call is refused. Proposing the commander alone does not
+  use it up.
 - A new card batch withdraws any card batch still pending from earlier turns.
   A pending commander proposal is never withdrawn that way.
 - Cards already in the deck or awaiting a decision, banned cards, cards over
