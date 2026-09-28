@@ -58,6 +58,43 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="find_commanders",
+        description=(
+            "Find cards that can lead a Commander deck (legendary creatures and "
+            "cards that say they can be your commander) in the local card index, "
+            "with their rules text. Use it whenever the player is choosing a "
+            "commander (a theme, a set, a creature type, colours, 'something "
+            "less played') instead of listing commanders from memory. Filters "
+            "combine; run a few focused searches rather than one broad one. "
+            "set_name matches the set of each card's most recent printing only, "
+            "so a reprinted legend shows under its reprint set: pair a set "
+            "search with creature_type or text when the player means a plane. "
+            "Any commander you mention that no search returned, look up first."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": (
+                    "Words that must all appear in the name, rules text or type line, "
+                    "e.g. 'sacrifice token', 'exile cast', 'God'."
+                )},
+                "colors": {"type": "string", "description": "Colour identity letters, e.g. 'BR'. Omit for any."},
+                "exact_colors": {"type": "boolean", "description": (
+                    "True: exactly these colours. False (default): within them."
+                )},
+                "creature_type": {"type": "string", "description": "e.g. 'Sphinx', 'Elemental', 'God'."},
+                "set_name": {"type": "string", "description": (
+                    "Part of a set name, or several separated by commas. A block spans "
+                    "sets: 'Theros, Born of the Gods, Journey into Nyx'."
+                )},
+                "popularity": {"type": "string", "enum": ["any", "popular", "less_popular"], "description": (
+                    "less_popular when the player wants something novel or not overplayed."
+                )},
+                "limit": {"type": "integer", "default": 20, "description": "Up to 40."},
+            },
+        },
+    ),
+    ToolSpec(
         name="scryfall_card_by_name",
         description=(
             "Look up a single Magic card by name (fuzzy match by default). Use this "

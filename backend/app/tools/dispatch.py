@@ -258,10 +258,47 @@ def _search_card_index(
     return {"cards": cards, "count": len(cards)}
 
 
+def _find_commanders(
+    text: str | None = None,
+    colors: str | None = None,
+    exact_colors: bool = False,
+    creature_type: str | None = None,
+    set_name: str | None = None,
+    popularity: str = "any",
+    limit: int = 20,
+) -> dict:
+    """Commander discovery over the local index, so candidates arrive with
+    their real text instead of being recalled from memory."""
+    from app.cards import schema as card_schema
+    from app.cards import store as card_store
+
+    if card_schema.card_count() == 0:
+        return {"commanders": [], "note": "The local card index has not been built yet."}
+    limit = max(1, min(int(limit or 20), 40))
+    found = card_store.find_commanders(
+        words=text, identity=colors, exact_identity=bool(exact_colors),
+        creature_type=creature_type, set_name=set_name,
+        popularity=popularity if popularity in ("any", "popular", "less_popular") else "any",
+        limit=limit,
+    )
+    commanders = []
+    for c in found:
+        card = {k: c.get(k) for k in _SEARCH_FIELDS}
+        card["set_name"], card["released"] = c.get("set_name"), c.get("released")
+        rank = c.get("edhrec_rank")
+        card["popularity"] = (
+            "unranked on EDHREC" if rank is None
+            else "popular" if rank <= card_store.POPULAR_RANK else "less played"
+        )
+        commanders.append(card)
+    return {"commanders": commanders, "count": len(commanders)}
+
+
 # Tools that don't need DB access (no `session` arg injected).
 STATELESS_TOOLS: dict[str, Callable[..., Any]] = {
     "scryfall_search": _scryfall_search,
     "search_card_index": _search_card_index,
+    "find_commanders": _find_commanders,
     "scryfall_card_by_name": _scryfall_card_by_name,
     "scryfall_card_collection": _scryfall_card_collection,
     "edhrec_commander_recs": _edhrec_commander_recs,
