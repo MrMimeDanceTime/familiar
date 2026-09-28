@@ -239,9 +239,9 @@ class _TurnState:
     # once, settled, so the player never watches a trimmed card flash in and
     # out.
     pending_summary: str = ""
-    # Once a batch exists the model is offered only withdraw_pending_proposals,
-    # so it can trim but cannot propose again or research further. That is
-    # what stopped the propose -> withdraw -> propose churn.
+    # Once a batch exists only withdraw_pending_proposals runs, so the model
+    # can trim but cannot propose again or research further. That is what
+    # stopped the propose -> withdraw -> propose churn.
     proposals_emitted: bool = False
     # A redirect that still applied part of a call (commander, cuts) tells the
     # model to re-issue the adds through suggest_cards, which must be possible
@@ -392,9 +392,13 @@ class _TurnState:
         if self.force_fast:
             thinking = False
             self.force_fast = False
-        tools = WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS
-        self.offered = {t.name for t in tools}
-        return tools, thinking
+        # The full list is always sent and the restriction is enforced by
+        # refusing calls (_refused_call). Tool schemas lead the provider's
+        # cached prefix: swapping to a withdraw-only list after a batch threw
+        # the cache away on the reply send (7-50% cached, against 75-98% on
+        # the sends before it).
+        self.offered = {t.name for t in (WITHDRAW_ONLY_TOOLS if restrict else TOOL_SPECS)}
+        return TOOL_SPECS, thinking
 
     @property
     def history_has_tool_round(self) -> bool:
@@ -936,9 +940,9 @@ def _refused_call(state: _TurnState, name: str) -> str | None:
         name in _BATCH_TOOLS and state.proposals_emitted and not state.pipeline_followup_allowed
     ):
         return (
-            "Not run: this turn's card batch already exists, so proposing is over "
-            "for the turn. Trim it with withdraw_pending_proposals if a pick breaks "
-            "something the player asked for; otherwise write your reply."
+            "Not run: this turn's card batch already exists, so proposing and "
+            "research are over for the turn. Trim it with withdraw_pending_proposals "
+            "if a pick breaks something the player asked for; otherwise write your reply."
         )
     return None
 
