@@ -501,12 +501,19 @@ TOOL_SPECS: list[ToolSpec] = [
                 "power_level": {
                     "type": "string",
                     "description": (
-                        "Target power level 1-10, as the player stated it (\"7\", "
-                        "\"~7\", \"7-8\"). SET THIS whenever the player names a "
-                        "power level or bracket — the role targets are derived "
-                        "from it using the same formula deck_get_stats scores "
-                        "with, so leaving it unset silently aims the whole build "
-                        "at the default instead of the player's goal."
+                        "Target power level on the 1-10 scale, as the player stated "
+                        "it (\"7\", \"~7\", \"7-8\"). SET THIS whenever the player "
+                        "names a power level: the role targets are derived from it "
+                        "using the same formula deck_get_stats scores with. A "
+                        "bracket is not a power level; put it in bracket instead."
+                    ),
+                },
+                "bracket": {
+                    "type": "integer",
+                    "description": (
+                        "The Commander bracket (1-5) the player named, when they "
+                        "named a bracket rather than a power level. The app turns it "
+                        "into the power target."
                     ),
                 },
                 "max_card_price": {

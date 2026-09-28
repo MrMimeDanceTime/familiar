@@ -1543,3 +1543,17 @@ def test_after_a_batch_research_and_a_second_batch_are_refused(mock_get_client, 
     results = [m["fake_tool_result"] for m in provider.sent_history_snapshots[2]
                if m.get("tool_call_id") in ("call_2", "call_3")]
     assert len(results) == 2 and all("Not run" in r for r in results)
+
+
+def test_cuts_are_allowed_after_the_batch_and_do_not_use_it_up():
+    from app.chat.engine import _refused_call, _TurnState
+
+    state = _TurnState(
+        session=None, provider=None, conversation_id=1, deck_id=1, user_text="",
+        system_prompt="", history=[], sequence=0, should_stop=None,
+    )
+    state.proposals_emitted = True
+    cuts = {"changes": [{"action": "remove", "card_name": "Swamp"}]}
+    mixed = {"changes": [{"action": "remove", "card_name": "Swamp"}, {"action": "add", "card_name": "X"}]}
+    assert _refused_call(state, "propose_deck_changes", cuts) is None
+    assert "already exists" in _refused_call(state, "propose_deck_changes", mixed)

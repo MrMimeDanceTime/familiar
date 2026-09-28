@@ -88,6 +88,9 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
     final = record.get("final_text") or ""
 
     refusals = sum(1 for c in calls if str(c.get("result") or "").startswith("REFUSED"))
+    # Calls the engine would not run: a second batch, research after a batch,
+    # a tool that does not exist. Each is a wasted round.
+    gate_refusals = sum(1 for c in calls if str(c.get("result") or "").startswith(("Not run", "There is no tool")))
     errors = sum(1 for c in calls if c.get("ok") is False)
 
     proposed_adds = any(
@@ -109,7 +112,15 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
 
     plan_set_before_batch: bool | None = None
     if not record.get("plan_was_set"):
-        first_batch = next((i for i, n in enumerate(names) if n in _PROPOSAL_TOOLS), None)
+        # A commander-only proposal is not a card batch (the engine agrees).
+        first_batch = next((
+            i for i, c in enumerate(calls)
+            if c.get("name") in _PROPOSAL_TOOLS and not (
+                c.get("name") == "propose_deck_changes"
+                and all(ch.get("action") == "set_commander"
+                        for ch in (c.get("arguments") or {}).get("changes") or [{}])
+            )
+        ), None)
         if first_batch is not None:
             # The app drafts the plan when a commander is proposed, so a
             # set_commander proposal before the batch counts as setting it.
@@ -137,8 +148,14 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
     stripped = _BRACKETED.sub(" ", final).lower()
     unbracketed = sorted(n for n in known if n and n in stripped and n not in bracketed)
 
+    sends = record.get("sends") or []
     return {
         "hand_pick_refusals": refusals,
+        "gate_refusals": gate_refusals,
+        "reasoning_tokens": sum(s.get("reasoning_tokens") or 0 for s in sends),
+        "think_cap_hits": sum(1 for s in sends if s.get("finish") == "length"),
+        "seconds": record.get("seconds"),
+        "checks": record.get("checks") or [],
         "tool_errors": errors,
         "tool_calls": len(calls),
         # The deck_state header exists so the model need not open every turn
@@ -155,6 +172,12 @@ def score_turn(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _median(values: list[float]) -> float | None:
+    import statistics
+
+    return round(statistics.median(values), 1) if values else None
+
+
 def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
     def rate(key: str) -> float | None:
         vals = [s[key] for s in scores if s.get(key) is not None]
@@ -164,6 +187,14 @@ def aggregate(scores: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "turns": len(scores),
         "refusals_per_turn": round(sum(s["hand_pick_refusals"] for s in scores) / n, 3),
+        "gate_refusals_per_turn": round(sum(s.get("gate_refusals", 0) for s in scores) / n, 3),
+        "checks_passed": (
+            f"{sum(c['passed'] for s in scores for c in s.get('checks') or [])}"
+            f"/{sum(len(s.get('checks') or []) for s in scores)}"
+        ),
+        "think_cap_hits": sum(s.get("think_cap_hits", 0) for s in scores),
+        "median_reasoning_tokens": _median([s.get("reasoning_tokens", 0) for s in scores]),
+        "median_turn_seconds": _median([s["seconds"] for s in scores if s.get("seconds") is not None]),
         "errors_per_turn": round(sum(s["tool_errors"] for s in scores) / n, 3),
         "calls_per_turn": round(sum(s["tool_calls"] for s in scores) / n, 2),
         "deck_reads_per_turn": round(sum(s.get("deck_reads", 0) for s in scores) / n, 2),
@@ -268,48 +299,111 @@ def _collect_record(session, conversation_id: int, user_text: str, plan_was_set:
     }
 
 
-def replay(conversation_id: int | None, limit_turns: int, limit_conversations: int) -> list[dict]:
-    from app.config import settings
-    from app.db.session import get_engine
+class _Harness:
+    """A scratch copy of the live DB with the engine's grounding and per-send
+    timing logs captured, shared by replay and scripted."""
 
-    scratch = _scratch_copy(settings.db_path)
-    settings.familiar_db_path = str(scratch)
-    get_engine.cache_clear()
+    def __init__(self) -> None:
+        from app.config import settings
+        from app.db.session import get_engine, init_db
 
+        settings.familiar_db_path = str(_scratch_copy(settings.db_path))
+        get_engine.cache_clear()
+        init_db()
+        self.engine = get_engine()
+        self.grounding: list[dict] = []
+        self.sends: list[dict] = []
+        import logging
+
+        harness = self
+
+        class _Collect(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                data = getattr(record, "grounding", None)
+                if isinstance(data, dict):
+                    harness.grounding.append(data)
+                # Each send's timing and reasoning, so a slow turn in the
+                # trace shows what the model spent its thinking on.
+                timing = getattr(record, "send_timing", None)
+                if isinstance(timing, dict):
+                    harness.sends.append(timing)
+
+        for name in ("app.chat.grounding", "app.llm.timing"):
+            log = logging.getLogger(name)
+            log.setLevel(logging.INFO)
+            log.addHandler(_Collect())
+
+    def turn(self, session, conversation_id: int, deck_id: int, text: str) -> dict:
+        """Run one turn and return its record."""
+        from app import deckplan
+        from app.chat.engine import run_chat_turn
+        from app.db import repository as repo
+        from app.llm.factory import get_provider
+
+        snapshot = repo.deck_snapshot(session, deck_id)
+        plan_was_set = deckplan.build_plan(snapshot).has_plan()
+        card_names = [c["name"] for c in snapshot["cards"]]
+        provider = get_provider()
+        seen, sends_seen, started = len(self.grounding), len(self.sends), time.time()
+        for _ in run_chat_turn(session, provider, conversation_id, text, deck_id):
+            pass
+        record = _collect_record(session, conversation_id, text, plan_was_set, card_names,
+                                 getattr(provider, "usage", None))
+        record["grounding"] = self.grounding[-1] if len(self.grounding) > seen else {}
+        record["seconds"] = round(time.time() - started, 1)
+        record["sends"] = self.sends[sends_seen:]
+        return record
+
+
+def scripted(repeats: int, only: str | None) -> list[dict]:
+    """Run the scenarios in eval_scenarios.py; the player approves every
+    proposal after each turn. Each record carries its scenario's checks."""
+    harness = _Harness()
     from sqlmodel import Session
 
-    from app import deckplan
-    from app.chat.engine import run_chat_turn
     from app.db import repository as repo
-    from app.db.session import init_db
-    from app.llm.factory import get_provider
+    from tools import eval_scenarios
 
-    init_db()
     records: list[dict] = []
+    with Session(harness.engine) as session:
+        for _ in range(repeats):
+            for scenario in eval_scenarios.SCENARIOS:
+                if only and only.lower() not in scenario["name"].lower():
+                    continue
+                deck_id = eval_scenarios.build_deck(session, scenario.get("deck"))
+                convo = repo.create_conversation(session, title=f"scenario: {scenario['name']}")
+                repo.set_conversation_deck(session, convo.id, deck_id)
+                turns = []
+                for text in scenario["turns"]:
+                    record = harness.turn(session, convo.id, deck_id, text)
+                    record["scenario"] = scenario["name"]
+                    turns.append(record)
+                    _approve_pending(session, deck_id)
+                results = []
+                for check in scenario["checks"]:
+                    try:
+                        passed, detail = check(session, deck_id, turns)
+                    except Exception as exc:  # noqa: BLE001 - a broken check is a failed check
+                        passed, detail = False, f"check raised {exc!r}"
+                    results.append({"check": check.__name__, "passed": passed, "detail": detail})
+                turns[-1]["checks"] = results
+                failed = [r for r in results if not r["passed"]]
+                print(f"{scenario['name']}: {len(results) - len(failed)}/{len(results)} checks, "
+                      f"{sum(t['seconds'] for t in turns):.0f}s")
+                for r in failed:
+                    print(f"   FAILED {r['check']}: {r['detail']}")
+                records.extend(turns)
+    return records
 
-    import logging
 
-    grounding: list[dict] = []
-    sends: list[dict] = []
+def replay(conversation_id: int | None, limit_turns: int, limit_conversations: int) -> list[dict]:
+    harness = _Harness()
+    from sqlmodel import Session
 
-    class _Collect(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            data = getattr(record, "grounding", None)
-            if isinstance(data, dict):
-                grounding.append(data)
-            # Each send's timing and reasoning, so a slow turn in the trace
-            # shows what the model spent its thinking on.
-            timing = getattr(record, "send_timing", None)
-            if isinstance(timing, dict):
-                sends.append(timing)
+    from app.db import repository as repo
 
-    grounding_logger = logging.getLogger("app.chat.grounding")
-    grounding_logger.setLevel(logging.INFO)
-    grounding_logger.addHandler(_Collect())
-    timing_logger = logging.getLogger("app.llm.timing")
-    timing_logger.setLevel(logging.INFO)
-    timing_logger.addHandler(_Collect())
-    with Session(get_engine()) as session:
+    records: list[dict] = []
+    with Session(harness.engine) as session:
         sources = (
             [repo.get_conversation(session, conversation_id)] if conversation_id
             else repo.list_conversations(session)
@@ -331,21 +425,8 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
             for text in user_turns:
                 if text.strip() == REVIEW_DONE_MESSAGE:
                     _approve_pending(session, source.deck_id)
-                snapshot = repo.deck_snapshot(session, source.deck_id)
-                plan_was_set = deckplan.build_plan(snapshot).has_plan()
-                card_names = [c["name"] for c in snapshot["cards"]]
-                provider = get_provider()
-                seen, sends_seen, started = len(grounding), len(sends), time.time()
-                for _ in run_chat_turn(session, provider, replay_convo.id, text, source.deck_id):
-                    pass
-                record = _collect_record(
-                    session, replay_convo.id, text, plan_was_set, card_names,
-                    getattr(provider, "usage", None),
-                )
+                record = harness.turn(session, replay_convo.id, source.deck_id, text)
                 record["source_conversation"] = source.id
-                record["grounding"] = grounding[-1] if len(grounding) > seen else {}
-                record["seconds"] = round(time.time() - started, 1)
-                record["sends"] = sends[sends_seen:]
                 records.append(record)
                 print(f"  turn scored: {json.dumps(score_turn(record), default=str)[:160]}")
     return records
@@ -354,19 +435,22 @@ def replay(conversation_id: int | None, limit_turns: int, limit_conversations: i
 # ── reporting ─────────────────────────────────────────────────────────────
 
 
-def _load_baseline() -> dict:
-    if not BASELINE_PATH.exists():
+SCRIPTED_BASELINE_PATH = Path(__file__).resolve().parent / "scenario_baseline.json"
+
+
+def _load_baseline(path: Path = BASELINE_PATH) -> dict:
+    if not path.exists():
         return {}
     try:
-        return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
 
-def report(records: list[dict], save: bool) -> int:
+def report(records: list[dict], save: bool, baseline_path: Path = BASELINE_PATH) -> int:
     scores = [score_turn(r) for r in records]
     summary = aggregate(scores)
-    baseline = _load_baseline().get("summary", {})
+    baseline = _load_baseline(baseline_path).get("summary", {})
 
     print()
     print(f"{'metric':36} {'now':>10} {'baseline':>10}")
@@ -379,11 +463,11 @@ def report(records: list[dict], save: bool) -> int:
             print(f"unbracketed: {', '.join(s['unbracketed_card_names'][:5])}")
 
     if save:
-        BASELINE_PATH.write_text(json.dumps({
+        baseline_path.write_text(json.dumps({
             "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "summary": summary,
         }, indent=2) + "\n", encoding="utf-8")
-        print(f"\nbaseline saved to {BASELINE_PATH.name}")
+        print(f"\nbaseline saved to {baseline_path.name}")
     return 0
 
 
@@ -395,6 +479,10 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--limit-turns", type=int, default=3, help="user turns per conversation")
     rp.add_argument("--limit-conversations", type=int, default=5)
     rp.add_argument("--save", action="store_true", help="accept this run as the baseline")
+    sp = sub.add_parser("scripted", help="run the fixed scenarios in eval_scenarios.py")
+    sp.add_argument("--repeats", type=int, default=1)
+    sp.add_argument("--only", default=None, help="run scenarios whose name contains this")
+    sp.add_argument("--save", action="store_true", help="accept this run as the scripted baseline")
     sc = sub.add_parser("score", help="score a saved trace without calling the model")
     sc.add_argument("trace", type=Path)
     sc.add_argument("--save", action="store_true")
@@ -404,12 +492,17 @@ def main(argv: list[str] | None = None) -> int:
         records = [json.loads(line) for line in args.trace.read_text(encoding="utf-8").splitlines() if line.strip()]
         return report(records, args.save)
 
-    records = replay(args.conversation, args.limit_turns, args.limit_conversations)
+    if args.command == "scripted":
+        records = scripted(args.repeats, args.only)
+        baseline_path = SCRIPTED_BASELINE_PATH
+    else:
+        records = replay(args.conversation, args.limit_turns, args.limit_conversations)
+        baseline_path = BASELINE_PATH
     TRACE_DIR.mkdir(exist_ok=True)
     trace = TRACE_DIR / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.jsonl"
     trace.write_text("\n".join(json.dumps(r, default=str) for r in records) + "\n", encoding="utf-8")
     print(f"\ntrace written to {trace}")
-    return report(records, args.save)
+    return report(records, args.save, baseline_path)
 
 
 if __name__ == "__main__":

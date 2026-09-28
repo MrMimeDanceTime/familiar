@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.cards.store import _COLUMN_NAMES, _columns, _row_to_card
+from app.cards.store import _COLUMN_NAMES, _columns, _has_printings, _row_to_card
 from app.db.session import get_engine
 
 
@@ -274,15 +274,6 @@ def compile_query(query: str) -> tuple[str, dict[str, Any]]:
     if compiler.uses_printings and not _has_printings():
         raise Unsupported("set membership is not imported yet")
     return where, compiler.params
-
-
-def _has_printings() -> bool:
-    try:
-        from app.cards import schema
-
-        return schema.printing_count() > 0
-    except Exception:  # noqa: BLE001 - no table yet
-        return False
 
 
 def search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
