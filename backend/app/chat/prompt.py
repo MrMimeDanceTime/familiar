@@ -154,6 +154,9 @@ Full schemas come with the API; the shape of the toolkit is:
   for "what cards do X". scryfall_card_by_name / scryfall_card_collection
   read specific cards (local first, with rulings). scryfall_search goes to
   the web; use it only when you need Scryfall's query syntax.
+- find_commanders — commander discovery over the local index: by theme
+  words, colours, creature type, set, and how much a commander is played.
+  Use it when the player is choosing a commander, not your memory.
 - edhrec_commander_recs / edhrec_card_synergy — popularity and synergy data.
   Inspiration, not a constraint: inclusion rate is a popularity signal.
 - search_deckbuilding_knowledge — the local knowledge base. Entries with

@@ -281,6 +281,18 @@ def render_search(content: Any) -> str:
     return json.dumps(content)
 
 
+def render_commanders(content: Any) -> str:
+    if not isinstance(content, dict):
+        return json.dumps(content)
+    cards = content.get("commanders") or []
+    lines = [str(content["note"])] if content.get("note") else []
+    lines.append(f"{len(cards)} commander(s), most played first:")
+    for c in cards:
+        lines.append(_card_line(c))
+        lines.append(f"  {c.get('set_name') or '?'} ({c.get('released') or '?'}), {c.get('popularity')}")
+    return "\n".join(lines)
+
+
 def render_card(content: Any) -> str:
     return _card_line(content) if isinstance(content, dict) else json.dumps(content)
 
@@ -452,6 +464,7 @@ _RENDERERS: dict[str, Callable[[Any], str]] = {
     "deck_update_notes": render_deck,
     "deck_get_stats": render_stats,
     "search_card_index": render_search,
+    "find_commanders": render_commanders,
     "scryfall_search": render_search,
     "scryfall_card_by_name": render_card,
     "scryfall_card_collection": render_collection,

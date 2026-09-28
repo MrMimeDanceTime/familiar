@@ -462,3 +462,83 @@ def search_text(
 
     allowed = set(identity.upper())
     return [c for c in cards if set(c["color_identity"]).issubset(allowed)][:limit]
+
+
+# EDHREC rank at or below this is a card most Commander players have met. The
+# gods players called overplayed rank 686-1,209; the picks they called novel
+# (King Macar, Gallia of the Endless Dance, Korlash) rank above 10,000.
+POPULAR_RANK = 3000
+
+
+def find_commanders(
+    *,
+    words: str | None = None,
+    identity: str | None = None,
+    exact_identity: bool = False,
+    creature_type: str | None = None,
+    set_name: str | None = None,
+    popularity: str = "any",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Cards that can lead a Commander deck, filtered for discovery.
+
+    ``words`` must all appear in name, rules text or type line (full text);
+    ``identity`` limits colours (within it, or exactly it); ``creature_type``
+    and ``set_name`` are substring matches on the type line and the set of
+    the card's most recent printing; ``popularity`` is "any", "popular" or
+    "less_popular" against POPULAR_RANK. Most played first.
+    """
+    clauses = [
+        "c.playable = 1", "c.legal_commander = 1",
+        "(c.type_line LIKE 'Legendary%Creature%' OR c.oracle_text LIKE '%can be your commander%')",
+    ]
+    params: dict[str, Any] = {}
+    source = "cards c"
+    if words:
+        tokens = [t for t in words.replace('"', '""').split() if t]
+        if tokens:
+            source = "cards_fts f JOIN cards c ON c.rowid = f.rowid"
+            clauses.append("cards_fts MATCH :q")
+            params["q"] = " AND ".join(f'"{t}"' for t in tokens)
+    if creature_type:
+        clauses.append("c.type_line LIKE :ctype")
+        params["ctype"] = f"%{creature_type.strip()}%"
+    if set_name:
+        # Comma-separated: a block spans sets ("Theros, Born of the Gods,
+        # Journey into Nyx"), and "Theros" alone missed the other two.
+        names = [n.strip() for n in set_name.split(",") if n.strip()]
+        ors = []
+        for i, name in enumerate(names):
+            ors.append(f"json_extract(c.raw, '$.set_name') LIKE :set{i}")
+            params[f"set{i}"] = f"%{name}%"
+        if ors:
+            clauses.append("(" + " OR ".join(ors) + ")")
+    if popularity == "popular":
+        clauses.append(f"c.edhrec_rank <= {POPULAR_RANK}")
+    elif popularity == "less_popular":
+        clauses.append(f"(c.edhrec_rank IS NULL OR c.edhrec_rank > {POPULAR_RANK})")
+    sql = f"""
+        SELECT {_columns('c')}, json_extract(c.raw, '$.set_name'),
+               json_extract(c.raw, '$.released_at')
+        FROM {source}
+        WHERE {' AND '.join(clauses)}
+        ORDER BY CASE WHEN c.edhrec_rank IS NULL THEN 1 ELSE 0 END, c.edhrec_rank
+        LIMIT :fetch
+    """
+    # Colour filtering happens after the query (SQLite has no set operators),
+    # so over-fetch when it applies.
+    params["fetch"] = limit * 10 if identity else limit
+    with get_engine().begin() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+    allowed = set(identity.upper()) if identity else None
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        card = _row_to_card(row[: len(_COLUMN_NAMES)])
+        colours = set(card["color_identity"])
+        if allowed is not None and (colours != allowed if exact_identity else not colours <= allowed):
+            continue
+        card["set_name"], card["released"] = row[-2], (row[-1] or "")[:4]
+        out.append(card)
+        if len(out) >= limit:
+            break
+    return out

@@ -328,7 +328,9 @@ unless asked for the whole list.
 ### Tools
 The model can't touch the deck directly. Beyond the Scryfall/EDHREC lookups it
 gets: `search_card_index` (instant full-text search over the local card
-index), `search_deckbuilding_knowledge` (local KB), `deck_get_current`,
+index), `find_commanders` (commander discovery over the same index: theme
+words, colours, creature type, set, and an EDHREC-rank popularity split),
+`search_deckbuilding_knowledge` (local KB), `deck_get_current`,
 `deck_get_stats` (computed bracket 1-5, power 1-10, and the factor breakdown),
 `propose_deck_changes` / `withdraw_pending_proposals` (the approval workflow),
 `suggest_cards` (runs the `pipeline/` retrieval flow for open-ended "what should
