@@ -334,6 +334,19 @@ def deck_update_notes(session: Session, deck_id: int, notes: str) -> dict:
 _PLAN_ROLES = ("land", "ramp", "draw", "removal")
 
 
+# A bracket stated as the power target it implies, on the scale role targets
+# derive from (the prompt's power guide: 3-4 casual, 5-6 focused, 7-8
+# optimized, 9-10 cEDH). The model did this mapping itself and not reliably:
+# "bracket 3" was recorded once as power 7 and once as power 3, which aims a
+# deck at precon-minus targets.
+_POWER_BY_BRACKET = {1: "3", 2: "5", 3: "7", 4: "8", 5: "9"}
+
+
+def power_for_bracket(bracket: int | str) -> str | None:
+    digits = [int(ch) for ch in str(bracket) if ch.isdigit()]
+    return _POWER_BY_BRACKET.get(digits[0]) if digits else None
+
+
 def deck_set_plan(
     session: Session,
     deck_id: int,
@@ -345,6 +358,7 @@ def deck_set_plan(
     max_card_price: float | None = None,
     exclude_types: list | None = None,
     exclude_cards: list | None = None,
+    bracket: int | str | None = None,
 ) -> dict:
     """Record what the deck is TRYING to be.
 
@@ -381,6 +395,8 @@ def deck_set_plan(
     if isinstance(max_card_price, (int, float)) and not isinstance(max_card_price, bool):
         clean_price = max(0.0, float(max_card_price))
 
+    if power_level is None and bracket is not None:
+        power_level = power_for_bracket(bracket)
     restrictions = None
     if exclude_types is not None or exclude_cards is not None:
         from app import deckplan

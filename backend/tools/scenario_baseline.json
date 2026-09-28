@@ -1,0 +1,26 @@
+{
+  "saved_at": "2026-09-28T16:45:32+00:00",
+  "summary": {
+    "turns": 28,
+    "refusals_per_turn": 0.0,
+    "gate_refusals_per_turn": 0.071,
+    "checks_passed": "46/46",
+    "think_cap_hits": 0,
+    "median_reasoning_tokens": 132.0,
+    "median_turn_seconds": 14.7,
+    "errors_per_turn": 0.0,
+    "calls_per_turn": 1.61,
+    "deck_reads_per_turn": 0.0,
+    "role_batch_via_pipeline_rate": 1.0,
+    "plan_set_before_batch_rate": 1.0,
+    "mean_reply_words": 226.5,
+    "turns_with_unbracketed_names": 8,
+    "ungrounded_mentions_per_turn": 8.46,
+    "engine_named_per_turn": 9.18,
+    "engine_ungrounded_per_turn": 0.75,
+    "rewrites_per_turn": 0.0,
+    "mean_turn_seconds": 18.0,
+    "prompt_tokens": 767836,
+    "completion_tokens": 37176
+  }
+}

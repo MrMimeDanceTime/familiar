@@ -41,14 +41,19 @@ Claude Code on this repo.
 
 - **Touching the prompt, the per-turn context blocks (`app/chat/context.py`),
   the tool result rendering (`app/tools/render.py`), the tool descriptions,
-  or the engine's turn logic? Run the behaviour eval.** `backend/tools/behaviour_eval.py replay` re-runs
-  stored user turns through the live loop against a scratch copy of the DB and
-  scores each reply on the rules the prompt asks for and the code cannot
-  enforce (role batches through the pipeline, plan set before the first batch,
-  refusals, reply length, unbracketed card names, tokens). It calls the LLM
-  and costs money; `score <trace.jsonl>` re-scores a saved trace for free.
-  Compare against `tools/behaviour_baseline.json` and `--save` only when the
-  change is understood. The prompt used to be edited on the strength of one
+  or the engine's turn logic? Run the behaviour eval.** Start with
+  `backend/tools/behaviour_eval.py scripted --repeats 2`: fixed scenarios
+  (`tools/eval_scenarios.py`, decks in `tools/eval_decks/`) from a fresh or
+  checked-in deck, a scripted player who approves everything, and checks on
+  the outcome (a restriction held, the manabase reached its target, cuts
+  made room, no thinking-cap hits). Compare against
+  `tools/scenario_baseline.json`. `replay` re-runs stored user turns against a
+  scratch copy of the DB instead; it drifts with the live decks (a replayed
+  conversation can land on a deck that has since changed commander), so use
+  it as a second opinion, against `tools/behaviour_baseline.json`. Both score
+  each reply on the rules the prompt asks for and the code cannot enforce, call
+  the LLM and cost money; `score <trace.jsonl>` re-scores a saved trace for
+  free. `--save` only when the change is understood. The prompt used to be edited on the strength of one
   live deck misbehaving; that is how it grew to 540 lines of scar tissue.
 
 - No comments explaining *what* code does; only for non-obvious *why* (see

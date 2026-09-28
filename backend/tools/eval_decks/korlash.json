@@ -1,0 +1,17 @@
+{
+ "name": "Korlash Swamptron",
+ "commander": "Korlash, Heir to Blackblade",
+ "power_level": null,
+ "themes": [
+  "Swamps you control",
+  "search your library for up to two Swamp cards",
+  "put them onto the battlefield tapped",
+  "equipped creature gets +1/+1 for each Swamp you control",
+  "equipped creature has intimidate",
+  "equipped creature has double strike",
+  "equipped creature has infect",
+  "whenever a Swamp enters, you may"
+ ],
+ "plan_notes": "This deck wins by suiting up Korlash, Heir to Blackblade with swamp-scaling Equipment and one-shotting opponents with commander damage, ideally by turns 6-7. The engine is simple: aggressively ramp Swamps and swamp-doublers, then land Korlash and attach Lashwrithe, Blackblade Reforged, and Nightmare Lash to make him enormous. Early turns go to mana rocks, land ramp, and tutors, while the midgame deploys Korlash with evasion and protection. Late game, you close with double strike, infect, or unblockable synergies, plus swamp-matters removal and sweepers to clear the path.",
+ "decklist": "1 Ambition's Cost\n1 Arcane Signet\n1 Bitter Triumph\n1 Bitterthorn, Nissa's Animus\n1 Blackblade Reforged\n1 Cabal Coffers\n1 Cabal Stronghold\n1 Commander's Plate\n1 Consuming Corruption\n1 Crypt Ghast\n1 Damnation\n1 Dark Ritual\n1 Darkness\n1 Dauthi Embrace\n1 Dauthi Voidwalker\n1 Deadly Rollick\n1 Defile\n1 Demonic Tutor\n1 Dread Presence\n1 Essence Harvest\n1 Expedition Map\n1 Feed the Swarm\n1 Filth\n1 Fireshrieker\n1 Go for the Throat\n1 Greed\n1 Grim Tutor\n1 Hatred\n1 Imp's Mischief\n1 Jet Medallion\n1 Lashwrithe\n1 Lightning Greaves\n1 Mind Stone\n1 Mutilate\n1 Necropotence\n1 Night's Whisper\n1 Nightmare\n1 Nightmare Lash\n1 Phyrexian Arena\n1 Phyrexian Tower\n1 Promise of Power\n1 Read the Bones\n1 Reanimate\n1 Rogue's Passage\n1 Shadowspear\n1 Shizo, Death's Storehouse\n1 Sign in Blood\n1 Silent Arbiter\n1 Snuff Out\n1 Sol Ring\n1 Solemn Simulacrum\n1 Soul Shatter\n1 Squelching Leeches\n1 Stinging Study\n1 Strata Scythe\n1 Succumb to Temptation\n1 Sudden Spoiling\n28 Swamp\n1 Swiftfoot Boots\n1 Sword of Hearth and Home\n1 Sword of the Animist\n1 Syphon Mind\n1 Tainted Strike\n1 Takenuma, Abandoned Mire\n1 Torment of Hailfire\n1 Toxic Deluge\n1 Trailblazer's Boots\n1 Urborg, Tomb of Yawgmoth\n1 Vampiric Tutor\n1 Wayfarer's Bauble\n1 Whispersilk Cloak\n1 Withering Torment"
+}

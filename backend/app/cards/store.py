@@ -464,6 +464,18 @@ def search_text(
     return [c for c in cards if set(c["color_identity"]).issubset(allowed)][:limit]
 
 
+def _has_printings() -> bool:
+    """Whether set membership has been imported. Until the first refresh
+    after upgrading there is no table at all, and querying it failed the
+    whole tool call."""
+    try:
+        from app.cards import schema
+
+        return schema.printing_count() > 0
+    except Exception:  # noqa: BLE001 - no table yet
+        return False
+
+
 # EDHREC rank at or below this is a card most Commander players have met. The
 # gods players called overplayed rank 686-1,209; the picks they called novel
 # (King Macar, Gallia of the Endless Dance, Korlash) rank above 10,000.
@@ -509,16 +521,18 @@ def find_commanders(
         # still counts for its original set; without printings imported, only
         # the card's own printing is known.
         names = [n.strip() for n in set_name.split(",") if n.strip()]
+        printings = _has_printings()
         ors = []
         for i, name in enumerate(names):
             params[f"set{i}"] = f"%{name}%"
             params[f"code{i}"] = name.lower()
-            ors.append(
-                f"json_extract(c.raw, '$.set_name') LIKE :set{i} OR c.oracle_id IN ("
+            own = f"json_extract(c.raw, '$.set_name') LIKE :set{i}"
+            ors.append(own if not printings else (
+                f"{own} OR c.oracle_id IN ("
                 "SELECT p.oracle_id FROM card_printings p JOIN card_sets s ON s.code = p.set_code "
                 f"WHERE s.name LIKE :set{i} OR s.block LIKE :set{i} OR s.code = :code{i} "
                 f"OR s.block_code = :code{i})"
-            )
+            ))
         if ors:
             clauses.append("(" + " OR ".join(f"({o})" for o in ors) + ")")
     if popularity == "popular":

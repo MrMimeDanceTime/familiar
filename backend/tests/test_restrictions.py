@@ -80,3 +80,17 @@ def test_proposals_refuse_excluded_cards_unless_the_player_named_them(mock_clien
         session, deck.id, "x", [{**change, "player_named": True}], conversation_id=convo.id,
     )
     assert result["proposals"][0]["card_name"] == "Rune-Scarred Demon"
+
+
+@pytest.mark.parametrize("bracket,power", [(3, "7"), ("B4", "8"), ("bracket 1", "3"), ("x", None)])
+def test_a_bracket_becomes_a_power_target(bracket, power):
+    from app.tools.deck_tools import power_for_bracket
+
+    assert power_for_bracket(bracket) == power
+
+
+def test_set_plan_takes_a_bracket_but_a_stated_power_wins(session, deck):
+    deck_set_plan(session, deck.id, bracket=3)
+    assert repo.deck_snapshot(session, deck.id)["power_level"] == "7"
+    deck_set_plan(session, deck.id, bracket=3, power_level="6")
+    assert repo.deck_snapshot(session, deck.id)["power_level"] == "6"

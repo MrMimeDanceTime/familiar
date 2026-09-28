@@ -110,3 +110,10 @@ def test_printings_find_a_reprinted_legend_by_its_original_set_and_block(index):
     assert _names(set_name="Theros") == [
         "Purphoros, God of the Forge", "Kroxa, Titan of Death's Hunger", "King Macar, the Gold-Cursed"]
     assert _names(set_name="jou") == ["King Macar, the Gold-Cursed"]
+
+
+def test_set_search_works_before_printings_exist(index):
+    """Until the first refresh after upgrading there is no printings table."""
+    with get_engine().begin() as conn:
+        conn.execute(sql_text("DROP TABLE card_printings"))
+    assert _names(set_name="Theros") == ["Kroxa, Titan of Death's Hunger"]

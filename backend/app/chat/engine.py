@@ -417,10 +417,12 @@ class _TurnState:
         if not batch:
             return
         self.pending_summary = content.get("summary") or self.pending_summary
-        if all(p.get("action") == "set_commander" for p in batch):
-            # Proposing the commander is not the turn's card batch: "lock in
-            # the commander and give me ramp" is one request, and counting the
-            # commander left the ramp batch no legal path.
+        if all(p.get("action") in _NOT_A_BATCH for p in batch):
+            # Proposing the commander, or cuts, is not the turn's card batch:
+            # "lock in the commander and give me ramp" and "trim a land, add
+            # draw" are each one request. Counting them left the adds no legal
+            # path; on a 99-card deck the model added four draw cards and no
+            # cut (103 cards).
             return
         self.proposals_emitted = True
         self.pipeline_followup_allowed = followup_allowed
@@ -667,7 +669,7 @@ def _stream_send(
 
 def _run_tool(state: _TurnState, call: Any) -> tuple[ToolResult, ChatEvent | None]:
     """Dispatch one tool call and return its result plus any event to emit."""
-    refusal = _refused_call(state, call.name)
+    refusal = _refused_call(state, call.name, call.arguments)
     if refusal:
         logger.info("chat: refused %s: %s", call.name, refusal)
         return ToolResult(call_id=call.id, content=refusal), None
@@ -933,9 +935,22 @@ _DRAFT_ECHO_CHARS = 2000
 _BATCH_TOOLS = frozenset({"suggest_cards", "propose_deck_changes"})
 
 
-def _refused_call(state: _TurnState, name: str) -> str | None:
+_NOT_A_BATCH = frozenset({"set_commander", "remove"})
+
+
+def _only_commander_or_cuts(arguments: dict[str, Any] | None) -> bool:
+    changes = (arguments or {}).get("changes") or []
+    return bool(changes) and all(
+        isinstance(c, dict) and c.get("action") in _NOT_A_BATCH for c in changes
+    )
+
+
+def _refused_call(state: _TurnState, name: str, arguments: dict[str, Any] | None = None) -> str | None:
     if name not in {t.name for t in TOOL_SPECS}:
         return f"There is no tool called {name}. The deck's state is in the app_context message."
+    if name == "propose_deck_changes" and _only_commander_or_cuts(arguments):
+        # Cuts that make room for the batch are allowed after it, too.
+        return None
     if name not in state.offered or (
         name in _BATCH_TOOLS and state.proposals_emitted and not state.pipeline_followup_allowed
     ):
