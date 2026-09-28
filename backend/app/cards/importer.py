@@ -8,10 +8,11 @@ Streams the gzipped JSONL bulk files straight into SQLite. Three files:
 - ``rulings``      — per-card rulings, attached to card lookups so the model
   answers "does X work with Y" from Scryfall's text rather than its memory.
 
-``default_cards`` is NOT imported. It is one row per *printing* (set codes,
-rarity, prices, finishes, artist), and we play online and with proxies, so the
-entire printing dimension is dead weight. Skipping it also keeps the schema
-one-row-per-card.
+``default_cards`` is read for one thing only: which sets each card was
+printed in (``card_printings``), with Scryfall's set list for names and
+blocks (``card_sets``). The rest of a printing (rarity, prices, finishes,
+artist) is dead weight for a deck played online and with proxies, and the
+cards table stays one row per card.
 
 The whole import runs in a single transaction per file so a crash mid-stream
 leaves the previous index intact rather than a half-replaced one.
@@ -23,6 +24,7 @@ import gzip
 import io
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Iterator
@@ -49,7 +51,7 @@ _CARD_COLUMNS = (
     "color_identity", "colors", "keywords", "power", "toughness", "loyalty",
     "rarity", "edhrec_rank", "penny_rank", "layout", "reserved", "game_changer",
     "legal_commander", "playable", "produced_mana", "price_usd", "image_url",
-    "scryfall_uri", "raw",
+    "scryfall_uri", "raw", "oracle_plain",
 )
 
 _INSERT_CARD = (
@@ -176,6 +178,24 @@ def _oracle_text(raw: dict[str, Any]) -> str | None:
     return "\n//\n".join(parts) if parts else None
 
 
+_REMINDER = re.compile(r"\s*\([^()]*\)")
+
+
+def _oracle_plain(oracle_text: str | None) -> str | None:
+    return _REMINDER.sub("", oracle_text) if oracle_text else oracle_text
+
+
+def _colors(raw: dict[str, Any]) -> str:
+    """A card's colours; a double-faced card's are its front face's. A DFC has
+    no top-level ``colors``, which stored it as colourless and let a blue card
+    through a white-black filter. Front face rather than both, because that
+    is what Scryfall's c: matches (measured on the model's own queries)."""
+    if raw.get("colors") is not None:
+        return "".join(raw["colors"])
+    faces = raw.get("card_faces") or [{}]
+    return "".join((faces[0] or {}).get("colors") or [])
+
+
 def _mana_cost(raw: dict[str, Any]) -> str | None:
     if raw.get("mana_cost"):
         return raw.get("mana_cost")
@@ -219,8 +239,9 @@ def _card_row(raw: dict[str, Any]) -> dict[str, Any] | None:
         "cmc": raw.get("cmc"),
         "type_line": raw.get("type_line"),
         "oracle_text": _oracle_text(raw),
+        "oracle_plain": _oracle_plain(_oracle_text(raw)),
         "color_identity": "".join(raw.get("color_identity") or []),
-        "colors": "".join(raw.get("colors") or []),
+        "colors": _colors(raw),
         "keywords": _as_json_list(raw.get("keywords")),
         "power": raw.get("power"),
         "toughness": raw.get("toughness"),
@@ -363,6 +384,53 @@ def import_rulings(client: httpx.Client, *, batch_size: int = 5000) -> int:
     return written
 
 
+SETS_ENDPOINT = "https://api.scryfall.com/sets"
+
+
+def import_printings(client: httpx.Client, *, batch_size: int = 20000) -> int:
+    """Import set membership from ``default_cards`` and the set list. Returns
+    printings written. Parsed before writing, like the other imports."""
+    resp = client.get(SETS_ENDPOINT)
+    resp.raise_for_status()
+    sets = [
+        {"code": s["code"], "name": s["name"], "block_code": s.get("block_code"),
+         "block": s.get("block"), "released_at": s.get("released_at"), "set_type": s.get("set_type")}
+        for s in resp.json().get("data") or [] if s.get("code") and s.get("name")
+    ]
+    url, updated_at = _resolve_bulk(client, "default_cards")
+    logger.info("card index: importing printings (%s)", updated_at or "unknown")
+    pairs = {
+        (p["oracle_id"], p["set"])
+        for p in _stream_jsonl(client, url)
+        if p.get("oracle_id") and p.get("set")
+    }
+    rows = [{"oracle_id": o, "set_code": s} for o, s in pairs]
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM card_sets"))
+        conn.execute(text(
+            "INSERT INTO card_sets (code, name, block_code, block, released_at, set_type) "
+            "VALUES (:code, :name, :block_code, :block, :released_at, :set_type)"
+        ), sets)
+        conn.execute(text("DELETE FROM card_printings"))
+    insert = text("INSERT INTO card_printings (oracle_id, set_code) VALUES (:oracle_id, :set_code)")
+    for i in range(0, len(rows), batch_size):
+        with engine.begin() as conn:
+            conn.execute(insert, rows[i : i + batch_size])
+    schema.set_meta("printings_updated_at", updated_at)
+    logger.info("card index: wrote %d printings across %d sets", len(rows), len(sets))
+    return len(rows)
+
+
+def _import_printings_guarded(client: httpx.Client) -> None:
+    # Set membership serves set and block searches only; a failure leaves the
+    # finder on each card's own printing and the app serving.
+    try:
+        import_printings(client)
+    except (httpx.HTTPError, CardImportError, OSError, gzip.BadGzipFile, KeyError, ValueError) as exc:
+        logger.warning("card index: printings import failed, continuing without: %s", exc)
+
+
 def is_stale(max_age_seconds: int = MAX_AGE_SECONDS) -> bool:
     """True when the index is missing, empty, or older than the max age."""
     if schema.card_count() == 0:
@@ -391,6 +459,11 @@ def refresh_if_stale(*, force: bool = False, client: httpx.Client | None = None)
     """
     schema.ensure_schema()
     if not force and not is_stale():
+        if schema.card_count() and not schema.printing_count():
+            # An index built before printings existed: add them without
+            # re-importing everything else.
+            with httpx.Client(headers=_UA, timeout=120.0, follow_redirects=True) as c:
+                _import_printings_guarded(c)
         return False
 
     owned = client is None
@@ -409,6 +482,7 @@ def refresh_if_stale(*, force: bool = False, client: httpx.Client | None = None)
             import_rulings(client)
         except (httpx.HTTPError, CardImportError, OSError, gzip.BadGzipFile) as exc:
             logger.warning("card index: rulings import failed, continuing without: %s", exc)
+        _import_printings_guarded(client)
     except (httpx.HTTPError, CardImportError, OSError, gzip.BadGzipFile) as exc:
         logger.warning("card index refresh failed, keeping existing index: %s", exc)
         return False

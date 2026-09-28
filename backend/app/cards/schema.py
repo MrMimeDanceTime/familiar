@@ -77,12 +77,16 @@ CREATE TABLE IF NOT EXISTS cards (
 # PRAGMA check, the same way the app schema handles additive columns.
 _CARDS_ADDITIVE: tuple[tuple[str, str], ...] = (
     ("price_usd", "REAL"),
+    # Rules text without parenthesised reminder text: what Scryfall's o:
+    # matches. Local search on the full text matched Prowess's reminder for
+    # "noncreature spell". See app.cards.query.
+    ("oracle_plain", "TEXT"),
 )
 
 # Bump when the extracted columns change meaning or a new one needs a
 # re-import to populate. `is_stale` treats a mismatch as stale, so the next
 # startup refresh fills the column instead of waiting for the daily cycle.
-INDEX_VERSION = "3"
+INDEX_VERSION = "4"
 
 
 _INDEXES = (
@@ -112,6 +116,29 @@ CREATE TABLE IF NOT EXISTS card_rulings (
     oracle_id    TEXT NOT NULL,
     published_at TEXT,
     comment      TEXT NOT NULL
+)
+"""
+
+# Every set each card was printed in, and the sets themselves (name, block).
+# The cards table holds one printing per card, so "Theros" missed Heliod once
+# it was reprinted in Commander Masters; set and block questions ("Theros-block
+# legends", set:jou) need every printing. Three fields per printing from
+# Scryfall's default_cards, not the printing dimension as a whole.
+_PRINTINGS_DDL = """
+CREATE TABLE IF NOT EXISTS card_printings (
+    oracle_id TEXT NOT NULL,
+    set_code  TEXT NOT NULL,
+    PRIMARY KEY (oracle_id, set_code)
+)
+"""
+_SETS_DDL = """
+CREATE TABLE IF NOT EXISTS card_sets (
+    code        TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    block_code  TEXT,
+    block       TEXT,
+    released_at TEXT,
+    set_type    TEXT
 )
 """
 
@@ -177,6 +204,9 @@ def ensure_schema() -> None:
         conn.execute(text(_TAG_COOC_DDL))
         conn.execute(text(_TAG_TRAITS_DDL))
         conn.execute(text(_RULINGS_DDL))
+        conn.execute(text(_PRINTINGS_DDL))
+        conn.execute(text(_SETS_DDL))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_card_printings_set ON card_printings (set_code)"))
         conn.execute(text(_FTS_DDL))
         for stmt in _INDEXES:
             conn.execute(text(stmt))
@@ -203,6 +233,11 @@ def set_meta(key: str, value: str) -> None:
             ),
             {"k": key, "v": value},
         )
+
+
+def printing_count() -> int:
+    with get_engine().begin() as conn:
+        return conn.execute(text("SELECT count(*) FROM card_printings")).scalar() or 0
 
 
 def card_count() -> int:

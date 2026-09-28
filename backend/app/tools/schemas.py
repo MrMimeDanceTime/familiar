@@ -21,8 +21,11 @@ TOOL_SPECS: list[ToolSpec] = [
             "almost never what you want. If a query returns no results, broaden it "
             "(fewer o: clauses, less specific wording) rather than retrying narrow "
             "variations. Returns up to `limit` matching cards with name, mana cost, "
-            "type, oracle text, and color identity. Use this to explore options, not "
-            "to verify a single known card name."
+            "type, oracle text, and color identity, most played first. Answered "
+            "from the local card index for the common syntax (o:, t:, name, c:, "
+            "id:, legal:commander, cmc/pow/tou, r:, set:, b:, kw:, otag:, "
+            "is:commander, OR, parentheses, -); anything else goes to Scryfall. "
+            "Use this to explore options, not to verify a single known card name."
         ),
         parameters={
             "type": "object",
@@ -66,10 +69,10 @@ TOOL_SPECS: list[ToolSpec] = [
             "commander (a theme, a set, a creature type, colours, 'something "
             "less played') instead of listing commanders from memory. Filters "
             "combine; run a few focused searches rather than one broad one. "
-            "set_name matches the set of each card's most recent printing only, "
-            "so a reprinted legend shows under its reprint set: pair a set "
-            "search with creature_type or text when the player means a plane. "
-            "Any commander you mention that no search returned, look up first."
+            "set_name matches every set a card was printed in, by set name, set "
+            "code, or block ('Theros' finds the whole Theros block, reprints "
+            "included). Any commander you mention that no search returned, look "
+            "up first."
         ),
         parameters={
             "type": "object",
@@ -84,8 +87,8 @@ TOOL_SPECS: list[ToolSpec] = [
                 )},
                 "creature_type": {"type": "string", "description": "e.g. 'Sphinx', 'Elemental', 'God'."},
                 "set_name": {"type": "string", "description": (
-                    "Part of a set name, or several separated by commas. A block spans "
-                    "sets: 'Theros, Born of the Gods, Journey into Nyx'."
+                    "A set or block name or code, or several separated by commas, "
+                    "e.g. 'Theros', 'jou', 'Kaldheim, Theros Beyond Death'."
                 )},
                 "popularity": {"type": "string", "enum": ["any", "popular", "less_popular"], "description": (
                     "less_popular when the player wants something novel or not overplayed."

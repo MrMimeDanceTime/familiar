@@ -336,8 +336,9 @@ def test_withdraw_specific_cards_does_not_touch_commander(session):
     assert result["preserved_commander"] == 1
 
 
+@patch("app.cards.schema.card_count", return_value=0)  # no local index: Scryfall answers
 @patch("app.tools.dispatch.get_scryfall_client")
-def test_scryfall_search_dispatch(mock_get_client, session):
+def test_scryfall_search_dispatch(mock_get_client, _no_index, session):
     mock_get_client.return_value.search.return_value = [{"name": "Sol Ring"}]
     result = dispatch("scryfall_search", {"query": "sol ring", "limit": 5}, session)
     assert result.ok is True
@@ -602,7 +603,7 @@ def test_propose_deck_changes_without_conversation_id_is_error_result(session):
 
 
 def test_simulated_network_failure_does_not_crash_dispatch(session):
-    with patch("app.tools.dispatch.get_scryfall_client") as mock_get_client:
+    with patch("app.tools.dispatch.get_scryfall_client") as mock_get_client,             patch("app.cards.schema.card_count", return_value=0):
         mock_get_client.return_value.search.side_effect = ConnectionError("network is down")
         result = dispatch("scryfall_search", {"query": "anything"}, session)
         assert result.ok is False

@@ -62,6 +62,25 @@ class DispatchResult:
 
 
 def _scryfall_search(query: str, limit: int = 10) -> list[dict]:
+    # The local index answers the syntax the model actually uses (see
+    # app.cards.query; 29 of its 30 historical queries, every card Scryfall
+    # returned for them). Scryfall only for the rest, or with no index.
+    from app.cards import query as card_query
+    from app.cards import schema as card_schema
+
+    if card_schema.card_count():
+        try:
+            hits = card_query.search(query, limit=max(1, min(int(limit or 10), 175)))
+        except card_query.Unsupported as exc:
+            logger.info("scryfall_search: %s; asking Scryfall", exc)
+        else:
+            return [
+                {**{k: c.get(k) for k in ("name", "oracle_id", "mana_cost", "cmc", "type_line",
+                                          "oracle_text", "image_url", "scryfall_uri")},
+                 "color_identity": list(c.get("color_identity") or ""),
+                 "legal_commander": bool(c.get("legal_commander"))}
+                for c in hits
+            ]
     return get_scryfall_client().search(query, limit=limit)
 
 
