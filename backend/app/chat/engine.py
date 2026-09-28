@@ -508,7 +508,7 @@ def _prepare_turn(
         deck_id=deck_id, user_text=user_text, system_prompt=system_prompt,
         history=history, sequence=sequence, should_stop=should_stop,
         turn_context=turn_context, turn_start=len(history) - 1,
-        plain_role_request=deck_state.plan_is_set and is_plain_role_request(user_text),
+        plain_role_request=_skips_first_think(deck_state.plan_is_set, user_text),
     )
     # Everything already on the table gets its text before the first send.
     # A correction round is for a card the model reached for on its own; it
@@ -943,19 +943,14 @@ def _refused_call(state: _TurnState, name: str) -> str | None:
     return None
 
 
-# Longer than this and a message usually carries more than the role: a
-# constraint to weigh, a question, a change of direction.
-_PLAIN_REQUEST_MAX_WORDS = 25
-
-
-def is_plain_role_request(text: str) -> bool:
-    """A short message asking for cards in a role ("give me the ramp
-    package", "more card draw"), with no question in it."""
-    from app.pipeline import local_retrieval
-
-    if "?" in text or len(text.split()) > _PLAIN_REQUEST_MAX_WORDS:
+def _skips_first_think(plan_is_set: bool, user_text: str) -> bool:
+    """Only asked when it could matter: the setting is off and the deck has a
+    plan. See app.chat.intent."""
+    if settings.chat_role_batch_thinking or not settings.chat_plan_thinking or not plan_is_set:
         return False
-    return bool(local_retrieval.intent_roles(text))
+    from app.chat import intent
+
+    return intent.plain_role_request(user_text)
 
 
 def _app_context(turn_context: str, facts_block: str) -> str:

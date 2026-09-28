@@ -105,7 +105,8 @@ class Settings(BaseSettings):
     # package") for a deck with a plan. Off: an audit of 46 thinks found that
     # turn's reasoning was a card shortlist the pipeline never sees plus one
     # intent phrase; Jev does the choosing. Every other turn keeps thinking
-    # (cuts, commander discovery, reading an ambiguous message).
+    # (cuts, commander discovery, reading an ambiguous message). Jev decides
+    # which turns those are; see app.chat.intent.
     chat_role_batch_thinking: bool = False
     # How hard those chat sends may think: low | medium | high | empty for the
     # provider default. The selection stage measured "low" at half the wait

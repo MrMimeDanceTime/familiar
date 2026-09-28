@@ -1456,24 +1456,50 @@ def test_a_second_batch_is_refused_even_within_one_message():
     assert "no tool called" in _refused_call(state, "deck_state")
 
 
-@pytest.mark.parametrize("text,expected", [
-    ("Looks good, lock in the commander. Give me the ramp package.", True),
-    ("more card draw", True),
-    ("what removal should I run?", False),
-    ("I've reviewed the proposals. Let's continue.", False),
-    ("Im prefer to stick mostly with 1 and 3, maybe some proliferate to splash 2, but no "
-     "more than 2-4 of the -X/-X board wipes because board wiping too much is unfun.", False),
-])
-def test_plain_role_request(text, expected):
-    from app.chat.engine import is_plain_role_request
+class _Jev:
+    def __init__(self, plain, asks=0.1, exc=None):
+        self.plain, self.asks, self.exc, self.calls = plain, asks, exc, 0
 
-    assert is_plain_role_request(text) is expected
+    def system_one(self, state, questions):
+        self.calls += 1
+        if self.exc:
+            raise self.exc
+        return {"answers": {"plain": {"noul": self.plain}, "asks": {"noul": self.asks}}}
+
+
+@pytest.mark.parametrize("plain,asks,expected", [
+    (0.9, 0.1, True),
+    (0.59, 0.1, False),   # not plainly a role request
+    (0.96, 0.5, False),   # "give me 6 draw spells under 3 mana" scored asks=0.5: think
+    (0.85, 0.9, False),   # "how many ramp pieces do we have"
+])
+def test_intent_gate_thresholds(plain, asks, expected):
+    from app.chat import intent
+
+    assert intent.plain_role_request("x", client=_Jev(plain, asks)) is expected
+
+
+def test_intent_gate_thinks_when_jev_fails():
+    from app.chat import intent
+
+    assert intent.plain_role_request("more ramp", client=_Jev(0.99, exc=RuntimeError("402"))) is False
+
+
+def test_intent_gate_thinks_without_a_key(monkeypatch):
+    from app.chat import intent
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "typesafe_api_key", "")
+    assert intent.plain_role_request("more ramp") is False
 
 
 def test_a_plain_role_request_on_a_planned_deck_skips_the_first_think(session, monkeypatch):
+    from app.chat import intent
     from app.config import settings
 
     monkeypatch.setattr(settings, "chat_plan_thinking", True)
+    monkeypatch.setattr(intent, "plain_role_request",
+                        lambda text, client=None: text == "give me the ramp package")
     deck = repo.create_deck(session, name="Planned")
     repo.update_deck(session, deck.id, themes=["treasure"], plan_notes="Go wide.")
     convo = repo.create_conversation(session)
