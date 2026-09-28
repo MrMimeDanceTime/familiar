@@ -1454,3 +1454,34 @@ def test_a_second_batch_is_refused_even_within_one_message():
     state.pipeline_followup_allowed = True  # a redirect's one allowed follow-up
     assert _refused_call(state, "suggest_cards") is None
     assert "no tool called" in _refused_call(state, "deck_state")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Looks good, lock in the commander. Give me the ramp package.", True),
+    ("more card draw", True),
+    ("what removal should I run?", False),
+    ("I've reviewed the proposals. Let's continue.", False),
+    ("Im prefer to stick mostly with 1 and 3, maybe some proliferate to splash 2, but no "
+     "more than 2-4 of the -X/-X board wipes because board wiping too much is unfun.", False),
+])
+def test_plain_role_request(text, expected):
+    from app.chat.engine import is_plain_role_request
+
+    assert is_plain_role_request(text) is expected
+
+
+def test_a_plain_role_request_on_a_planned_deck_skips_the_first_think(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "chat_plan_thinking", True)
+    deck = repo.create_deck(session, name="Planned")
+    repo.update_deck(session, deck.id, themes=["treasure"], plan_notes="Go wide.")
+    convo = repo.create_conversation(session)
+    repo.set_conversation_deck(session, convo.id, deck.id)
+    provider = FakeProvider([AssistantTurn(text="ok", tool_calls=[]),
+                             AssistantTurn(text="ok", tool_calls=[])])
+
+    _collect(run_chat_turn(session, provider, convo.id, "give me the ramp package", deck_id=deck.id))
+    _collect(run_chat_turn(session, provider, convo.id, "what should this deck's plan be?", deck_id=deck.id))
+
+    assert provider.thinking_flags == [False, True]

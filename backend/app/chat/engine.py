@@ -264,6 +264,9 @@ class _TurnState:
     # ride in a small message at the end, where they disturb nothing cached.
     turn_context: str = ""
     turn_start: int = 0
+    # A short request for a role batch on a deck that has a plan: the one turn
+    # whose judgment the pipeline already carries (see chat_role_batch_thinking).
+    plain_role_request: bool = False
     _frozen: bool = False
     _frozen_facts: set[str] = field(default_factory=set)
     _frozen_unknown: int = 0
@@ -384,6 +387,7 @@ class _TurnState:
         first_send = not self.history_has_tool_round
         thinking = (restrict and settings.chat_review_thinking) or (
             first_send and settings.chat_plan_thinking
+            and (settings.chat_role_batch_thinking or not self.plain_role_request)
         )
         if self.force_fast:
             thinking = False
@@ -504,6 +508,7 @@ def _prepare_turn(
         deck_id=deck_id, user_text=user_text, system_prompt=system_prompt,
         history=history, sequence=sequence, should_stop=should_stop,
         turn_context=turn_context, turn_start=len(history) - 1,
+        plain_role_request=deck_state.plan_is_set and is_plain_role_request(user_text),
     )
     # Everything already on the table gets its text before the first send.
     # A correction round is for a card the model reached for on its own; it
@@ -936,6 +941,21 @@ def _refused_call(state: _TurnState, name: str) -> str | None:
             "something the player asked for; otherwise write your reply."
         )
     return None
+
+
+# Longer than this and a message usually carries more than the role: a
+# constraint to weigh, a question, a change of direction.
+_PLAIN_REQUEST_MAX_WORDS = 25
+
+
+def is_plain_role_request(text: str) -> bool:
+    """A short message asking for cards in a role ("give me the ramp
+    package", "more card draw"), with no question in it."""
+    from app.pipeline import local_retrieval
+
+    if "?" in text or len(text.split()) > _PLAIN_REQUEST_MAX_WORDS:
+        return False
+    return bool(local_retrieval.intent_roles(text))
 
 
 def _app_context(turn_context: str, facts_block: str) -> str:
