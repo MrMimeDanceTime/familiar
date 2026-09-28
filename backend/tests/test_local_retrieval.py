@@ -1,3 +1,5 @@
+import pytest
+
 from app.pipeline import local_retrieval, roles
 
 
@@ -47,3 +49,19 @@ def test_retrieve_with_no_role_and_no_terms_returns_nothing():
     store = FakeStore()
     assert local_retrieval.retrieve("a", frozenset({"G"}), store=store) == []
     assert store.calls == []
+
+
+@pytest.mark.parametrize("intent,expected", [
+    ("more Lands Matter cards", set()),
+    ("landfall payoffs", set()),
+    ("more -1/-1 Counters cards", set()),
+    ("proliferate and counters matter", set()),
+    ("more Draw Punisher cards", set()),
+    ("add some counterspells", {"counterspell"}),
+    ("more lands", {"land"}),
+    ("more card draw", {"card-draw"}),
+])
+def test_theme_names_are_not_role_requests(intent, expected):
+    """Measured on public theme-tagged decks: "Lands Matter" went to the
+    manabase fill and "-1/-1 Counters" searched for counterspells."""
+    assert local_retrieval.intent_roles(intent) == expected
