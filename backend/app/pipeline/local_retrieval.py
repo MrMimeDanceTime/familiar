@@ -115,6 +115,17 @@ def intent_terms(intent: str) -> list[str]:
     return [w for w in words if len(w) > 2 and w not in _STOPWORDS]
 
 
+def theme_terms(intent: str) -> list[str]:
+    """The words a card's own text would carry for this theme request:
+    content words, singular ("Enchantments" -> "enchantment")."""
+    out = []
+    for word in intent_terms(intent):
+        stem = word[:-1] if len(word) > 4 and word.endswith("s") and not word.endswith("ss") else word
+        if stem not in out:
+            out.append(stem)
+    return out
+
+
 def _within_identity(card: dict[str, Any], identity: frozenset[str]) -> bool:
     return {c for c in (card.get("color_identity") or []) if c}.issubset(identity)
 

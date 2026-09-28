@@ -188,6 +188,7 @@ VARIANTS = {
     "current": {},
     "theme signal": {"theme_signal": True},
     "whole page 120": {"theme_whole_page": True, "theme_pool_cap": 120},
+    "page match": {"theme_page_match": True},
 }
 
 

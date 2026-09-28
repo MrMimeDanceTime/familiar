@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     # (cuts, commander discovery, reading an ambiguous message). Jev decides
     # which turns those are; see app.chat.intent.
     chat_role_batch_thinking: bool = False
+    # Theme requests read the commander's whole EDHREC page for cards whose
+    # own text carries the request's words (candidates._edhrec_recommendations).
+    # Measured on public theme-tagged decks (tools/theme_eval.py): 31% -> 37%
+    # of theme cards picked, from themes cards literally print (Eldrazi 8% ->
+    # 83%, Treasure 12% -> 38%); unchanged for 11 of 15 commanders.
+    theme_page_match: bool = True
     # How hard those chat sends may think: low | medium | high | empty for the
     # provider default. The selection stage measured "low" at half the wait
     # for the same picks; the chat sends are a smaller decision still.

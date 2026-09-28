@@ -305,3 +305,42 @@ def test_edhrec_source_answers_the_requested_role(monkeypatch):
     assert "Deep Ramp" not in [c["name"] for c in blind]
     assert [c["name"] for c in aware][0] == "Deep Ramp"
     assert len({c["oracle_id"] for c in aware}) == len(aware)
+
+
+class TypedCardStore(FakeCardStore):
+    def __init__(self, names, types):
+        super().__init__(names)
+        self._types = types
+
+    def by_names(self, names):
+        out = super().by_names(names)
+        for key, card in out.items():
+            card["type_line"] = self._types.get(card["name"], "Creature")
+        return out
+
+
+def test_edhrec_source_finds_theme_cards_past_the_cut(monkeypatch):
+    """A theme card deep on the page enters the pool when the request's word
+    is in its own text; the top of the page still follows it."""
+    from app.pipeline import candidates as candidates_module
+    from app.pipeline import local_retrieval
+
+    filler = [f"Staple {i}" for i in range(30)]
+    monkeypatch.setattr(candidates_module, "card_store", TypedCardStore(
+        set(filler) | {"Deep Spawn"}, {"Deep Spawn": "Creature — Eldrazi Drone"},
+    ))
+    page = _edhrec_page(highsynergycards=[_view(n, 0.3, 10000 - i) for i, n in enumerate(filler)]
+                        + [_view("Deep Spawn", 0.1, 50)])
+    terms = local_retrieval.theme_terms("more Eldrazi cards")
+    themed = candidates_module._edhrec_recommendations(
+        "Cmd", FakeEdhrec(recs=page), frozenset("B"), off_meta=0.0, cap=20, theme_terms=terms,
+    )
+    names = [c["name"] for c in themed]
+    assert terms == ["eldrazi"] and names[0] == "Deep Spawn" and "Staple 0" in names
+
+
+def test_theme_terms_are_singular_content_words():
+    from app.pipeline import local_retrieval
+
+    assert local_retrieval.theme_terms("more Enchantments cards") == ["enchantment"]
+    assert local_retrieval.theme_terms("what fits my deck") == []
