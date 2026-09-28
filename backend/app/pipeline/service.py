@@ -394,6 +394,7 @@ def prepare_pool(
     # (docs/PIPELINE.md), not worth a second set of page fetches per commander.
     theme_signal: bool = False,
     deck_aware_search: bool = True,
+    theme_page_match: bool | None = None,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -462,6 +463,12 @@ def prepare_pool(
 
     intent_roles = local_retrieval.intent_roles(user_intent)
     whole_page = theme_whole_page and not intent_roles
+    if theme_page_match is None:
+        from app.config import settings
+
+        theme_page_match = settings.theme_page_match
+    page_terms = (local_retrieval.theme_terms(user_intent)
+                  if theme_page_match and not intent_roles and not whole_page else None)
     if theme_pool_cap and not intent_roles:
         pool_cap = theme_pool_cap
     with _timed("stage2_candidates", timings):
@@ -472,6 +479,7 @@ def prepare_pool(
             off_meta=off_meta if off_meta is not None else _deck_off_meta(snapshot),
             edhrec_roles=intent_roles or None if edhrec_by_role else None,
             edhrec_whole_page=whole_page,
+            edhrec_theme_terms=page_terms or None,
             # The raw cap was 120, and most of a page's top cards are already
             # in the deck (so illegal to suggest): a whole page capped at 120
             # left ~50 legal cards, fewer than the top-40 source it replaced.

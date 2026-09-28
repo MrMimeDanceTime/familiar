@@ -39,6 +39,8 @@ def _edhrec_recommendations(
     roles_wanted: set[str] | None = None,
     role_cap: int = 60,
     whole_page: bool = False,
+    theme_terms: list[str] | None = None,
+    theme_cap: int = 40,
 ) -> list[dict[str, Any]]:
     """Pull the commander's EDHREC page in as candidates, hydrated locally.
 
@@ -79,6 +81,19 @@ def _edhrec_recommendations(
                 card_store, identity,
             )
         general = edhrec_source.hydrate(ranked[:cap], card_store, identity)
+        if theme_terms and not roles_wanted:
+            # A theme request reads the whole page for cards whose own text
+            # carries the theme. Measured on public theme-tagged decks, 64 of
+            # 139 theme cards that never reached the pool were on the page
+            # past the top-``cap`` cut with the theme word in their text; the
+            # whole page unfiltered (about 180 cards) diluted the ranking.
+            page = edhrec_source.hydrate(
+                edhrec_source.rank(edhrec_source.collect(recs, per_list_cap=10_000), off_meta=off_meta),
+                card_store, identity,
+            )
+            on_theme = [c for c in page if _mentions(c, theme_terms)][:theme_cap]
+            seen = {c.get("oracle_id") for c in on_theme}
+            return on_theme + [c for c in general if c.get("oracle_id") not in seen]
         if not roles_wanted:
             return general
         whole_page = edhrec_source.rank(
@@ -165,6 +180,11 @@ def gather_candidates(
     ).cards
 
 
+def _mentions(card: dict[str, Any], terms: list[str]) -> bool:
+    text = " ".join(str(card.get(k) or "") for k in ("oracle_text", "type_line", "keywords")).lower()
+    return any(t in text for t in terms)
+
+
 def gather_candidates_detailed(
     spec: QuerySpec,
     commander_name: str | None = None,
@@ -180,6 +200,7 @@ def gather_candidates_detailed(
     edhrec_cap: int = 40,
     edhrec_roles: set[str] | None = None,
     edhrec_whole_page: bool = False,
+    edhrec_theme_terms: list[str] | None = None,
 ) -> CandidateResult:
     """Run the spec's queries, merge/dedupe/annotate/cap into a raw candidate pool.
 
@@ -208,6 +229,7 @@ def gather_candidates_detailed(
     recommendations = _edhrec_recommendations(
         commander_name, edhrec, identity, off_meta=off_meta, cap=edhrec_cap,
         roles_wanted=edhrec_roles, whole_page=edhrec_whole_page,
+        theme_terms=edhrec_theme_terms,
     )
     edhrec_dt = time.monotonic() - edhrec_start
     if edhrec_dt > 5:
