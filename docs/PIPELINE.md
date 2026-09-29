@@ -554,6 +554,25 @@ manabase fill and came back basics, "-1/-1 Counters" searched for
 counterspells, "Draw Punisher" for card draw. `local_retrieval.intent_roles`
 now reads those as themes.
 
+### Theme label retrieval: two routes, both lost
+
+Page match (`THEME_PAGE_MATCH`, on) finds theme cards by their own text, so it
+does nothing for labels no card prints: Spellslinger, Group Hug, Reanimator.
+Two retrieval routes for labels were built and measured with
+`tools/theme_eval.py` on 2026-09-28, then removed:
+
+| Route | Strict: picked | vs page match, per commander |
+|---|---|---|
+| Page match alone | 37-38% | |
+| + the commander's EDHREC theme page for a named theme (top 40) | 37% | 0 better, 2 worse |
+| + the fast model translating the label into searches (117 labels pre-translated, answered locally) | 35% | 0 better, 3 worse |
+
+Both lost on exactly the label themes (Hashaton Reanimator 17% to 0%, Vivi
+Spellslinger 7% to 0%) and neither raised reach. The added cards are generic
+answers to the label (Counterspell and Negate for "Spellslinger"), which Jev
+then ranks above the cards the theme's decks actually run. What those decks
+run is a matter of practice, not of text a search can target.
+
 ### Archetype-conditioned EDHREC (built, measured, off)
 
 EDHREC publishes each commander's themes with their own pages, computed over

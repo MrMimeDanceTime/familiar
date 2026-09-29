@@ -185,9 +185,7 @@ def strict(tag: str, card: dict | None) -> bool:
 
 
 VARIANTS = {
-    "current": {},
-    "theme signal": {"theme_signal": True},
-    "whole page 120": {"theme_whole_page": True, "theme_pool_cap": 120},
+    "current": {"theme_page_match": False},
     "page match": {"theme_page_match": True},
 }
 
@@ -200,6 +198,9 @@ def run(limit_commanders: int | None, only: str | None) -> list[dict]:
     settings.familiar_db_path = str(_scratch_copy(settings.db_path))
     get_engine.cache_clear()
     init_db()
+    from app.cards import schema as card_schema
+
+    card_schema.ensure_schema()  # what the app's startup refresh does first
     from sqlmodel import Session
 
     from app.cards import store
