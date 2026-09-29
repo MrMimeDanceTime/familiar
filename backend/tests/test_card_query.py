@@ -47,6 +47,8 @@ def test_rules_text_ignores_reminder_text(cards):
     ("pow>=5 r:mythic", ["Jadzi, Oracle of Arcavios // Journey to the Oracle"]),
     ("o:~ t:noble", ["King Macar, the Gold-Cursed"]),
     ("t:creature game:paper -st:sticker id:w", ["Jeskai Student"]),
+    ("o:/whenever .* becomes untapped/", ["King Macar, the Gold-Cursed"]),
+    ("t:/elder giant|noble/ -o:/discards/", ["King Macar, the Gold-Cursed"]),
 ])
 def test_syntax(cards, q, expected):
     assert _names(q) == expected
@@ -57,3 +59,10 @@ def test_what_the_index_cannot_answer_is_unsupported(cards, q):
     # set: without card_printings imported is unsupported too: the web knows.
     with pytest.raises(query.Unsupported):
         query.search(q)
+
+
+def test_rules_text_search_works_before_the_reimport(cards, monkeypatch):
+    """An index built before oracle_plain existed has no such column."""
+    monkeypatch.setattr(query, "_has_plain_text", lambda: False)
+    assert _names('o:"noncreature spell"') == [
+        "Jeskai Student", "Jadzi, Oracle of Arcavios // Journey to the Oracle"]

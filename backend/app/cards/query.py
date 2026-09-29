@@ -53,6 +53,14 @@ def _tokens(query: str) -> list[tuple[str, Any]]:
     i, n = 0, len(query)
 
     def value_at(j: int) -> tuple[str, int]:
+        if j < n and query[j] == "/":
+            # A /regex/ value, kept with its slashes so the term knows.
+            end = query.find("/", j + 1)
+            while end != -1 and query[end - 1] == "\\":
+                end = query.find("/", end + 1)
+            if end == -1:
+                raise Unsupported("unclosed regex")
+            return query[j:end + 1], end + 1
         if j < n and query[j] in "\"'":
             end = query.find(query[j], j + 1)
             if end == -1:
@@ -162,13 +170,22 @@ class _Compiler:
     def _term(self, key: str, op: str, value: str):
         if key in _IGNORED:
             return _IGNORE
+        if _is_regex(value) and key in ("o", "oracle", "fo", "fulloracle", "t", "type", "name", "n"):
+            self._only_colon(key, op)
+            column = {"t": "c.type_line", "type": "c.type_line", "name": "c.name", "n": "c.name"}.get(
+                key, _TEXT)
+            try:
+                re.compile(value[1:-1])
+            except re.error as exc:
+                raise Unsupported(f"regex {value}") from exc
+            return f"regexp({self.param(value[1:-1])}, {column})"
         if key in ("o", "oracle", "fo", "fulloracle"):
             self._only_colon(key, op)
             # "~" stands for the card's own name, as on Scryfall.
             p = self.param(value.lower())
             # Reminder text excluded, as on Scryfall; the full text until the
             # index is re-imported with oracle_plain.
-            return (f"lower(COALESCE(c.oracle_plain, c.oracle_text, '')) LIKE "
+            return (f"lower({_TEXT}) LIKE "
                     f"'%' || replace({p}, '~', lower(c.name)) || '%'")
         if key in ("t", "type"):
             self._only_colon(key, op)
@@ -267,6 +284,33 @@ class _Compiler:
         return f"({guard}{target} {sql_op} {self.param(number)})"
 
 
+# Rules text without reminder text once the index is re-imported with it
+# (INDEX_VERSION 4); plain rules text before that. Resolved per query, since
+# the column appears on the first refresh after upgrading.
+_TEXT = "COALESCE(c.oracle_plain, c.oracle_text, '')"
+_TEXT_OLD = "COALESCE(c.oracle_text, '')"
+
+
+def _is_regex(value: str) -> bool:
+    return len(value) >= 2 and value.startswith("/") and value.endswith("/")
+
+
+def _regexp(pattern: str, value: str | None) -> bool:
+    # Case-insensitive, like Scryfall's /regex/ search.
+    return value is not None and re.search(pattern, value, re.IGNORECASE) is not None
+
+
+_PLAIN_TEXT: bool | None = None
+
+
+def _has_plain_text() -> bool:
+    global _PLAIN_TEXT
+    if not _PLAIN_TEXT:
+        with get_engine().begin() as conn:
+            _PLAIN_TEXT = any(r[1] == "oracle_plain" for r in conn.execute(text("PRAGMA table_info(cards)")))
+    return _PLAIN_TEXT
+
+
 def compile_query(query: str) -> tuple[str, dict[str, Any]]:
     """``(where_sql, params)`` for ``query``, or Unsupported."""
     compiler = _Compiler()
@@ -279,6 +323,8 @@ def compile_query(query: str) -> tuple[str, dict[str, Any]]:
 def search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
     """Cards matching a Scryfall-syntax query, most played first, one per name."""
     where, params = compile_query(query)
+    if not _has_plain_text():
+        where = where.replace(_TEXT, _TEXT_OLD)
     sql = f"""
         SELECT {_columns('c')} FROM cards c
         WHERE c.playable = 1 AND ({where})
@@ -287,6 +333,8 @@ def search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
     """
     params["limit"] = limit * 3
     with get_engine().begin() as conn:
+        # SQLite has no REGEXP of its own; registered per connection.
+        conn.connection.driver_connection.create_function("regexp", 2, _regexp, deterministic=True)
         rows = conn.execute(text(sql), params).fetchall()
     out, seen = [], set()
     for row in rows:
