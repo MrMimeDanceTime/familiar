@@ -573,6 +573,31 @@ answers to the label (Counterspell and Negate for "Spellslinger"), which Jev
 then ranks above the cards the theme's decks actually run. What those decks
 run is a matter of practice, not of text a search can target.
 
+### Rewording a theme request loses to the theme word itself
+
+The idea: the chat model, which has the commander's rules text, turns a
+vague theme into what it means for this commander before asking the
+pipeline. Measured on the public-decklist eval, 2026-09-29, with the fast
+model doing the rewrite (strict reading; plain "more <theme> cards" with page
+match scored 37-38% throughout):
+
+| Request sent to the pipeline | Strict: picked | vs plain, per commander |
+|---|---|---|
+| A commander-aware description (25 words) | 26-29% | 4 better, 5 worse |
+| The theme word plus that description | 30% | 3 better, 5 worse |
+| The theme word retrieves, the description ranks | 34% | 2 better, 6 worse |
+| One commander-aware mechanic, five words at most | 29% | 0 better, 5 worse |
+| That, with page match on distinctive words only | 29% | 1 better, 5 worse |
+
+A description helps a few label themes (Isshin, Hashaton) and breaks the
+word themes: "create Treasure tokens" scored 0% where "Treasure" scored 38%,
+and "colorless mana value 7 or greater" 25% where "Eldrazi" scored 83%.
+Extra words make page match unselective and blur what Jev ranks against.
+Matching only a request's distinctive words (fewer than 2,000 cards carry
+them) fixed the retrieval half but not the ranking half, and was neutral on
+plain themes; it was removed. The pipeline does best with the theme in its
+shortest form.
+
 ### Archetype-conditioned EDHREC (built, measured, off)
 
 EDHREC publishes each commander's themes with their own pages, computed over
