@@ -598,6 +598,39 @@ them) fixed the retrieval half but not the ranking half, and was neutral on
 plain themes; it was removed. The pipeline does best with the theme in its
 shortest form.
 
+### A theme field on suggest_cards: the model fills it with descriptions
+
+The prompt rule asking for short theme requests was not followed, so a
+`theme` argument was added to `suggest_cards`, and the code sent
+"more <theme> cards" to the pipeline when cards print the theme's words.
+On the scripted eval, 2026-10-07, the model filled the field with
+descriptions ("whenever you cast a noncreature spell", "exile top card of
+library play this turn") and used it on role requests ("impulsive draw",
+"lifegain") despite the description saying to omit it there. The long
+intents still reached the pipeline in both runs of the new vague-theme
+scenario. Replacing the intent with the theme word would also drop the
+request's own limits ("1-2 mana", "big creatures"), which no check
+measured. It was removed.
+
+### Ranking a named theme by its EDHREC theme page
+
+For a theme the commander's EDHREC page lists, candidates were ranked by
+that theme page's numbers instead of by Jev. Re-scored from the 2026-09-29
+public-decklist trace (64 decks with a matching EDHREC theme), 2026-10-07:
+
+| Ranking | Strict: picked | vs Jev, per commander |
+|---|---|---|
+| Jev | 39% | |
+| Theme page play rate, same pool | 28% | 2 better, 6 worse |
+| Theme page lift over the commander page, same pool | 38% | 3 better, 4 worse |
+| The theme page's own cards, by lift | 20% | 0 better, 7 worse |
+| Jev's picks the theme page backs, topped up by lift | 38% | 1 better, 1 worse |
+
+EDHREC aggregates public decks, likely including the eval's, so this was
+tilted toward the theme page, and it still did not beat Jev. Kess and Vivi
+Spellslinger and Lord Windgrace Lands Matter scored 0% under every ranking:
+which cards those decks hold is not something any of these signals predict.
+
 ### Archetype-conditioned EDHREC (built, measured, off)
 
 EDHREC publishes each commander's themes with their own pages, computed over
