@@ -389,3 +389,30 @@ def test_a_non_land_batch_keeps_only_lands_that_fill_the_role():
     client = FakeJev({n: (3.0, 0.9) for n in ("Mountain", "Command Tower", "Myriad Landscape", "Arcane Signet")})
     selection = jev.select_jev(client, pool, "more ramp", mode="verdict", request_roles={"ramp"})
     assert sorted(p.name for p in selection.picks) == ["Arcane Signet", "Myriad Landscape"]
+
+
+def _mana_card(name, type_line, text):
+    from app.pipeline.shaping import ShapedCard
+
+    return ShapedCard(name=name, oracle_id=None, mana_cost=None, cmc=None, type_line=type_line,
+                      oracle_text=text, color_identity=[], keywords=[], power=None, toughness=None,
+                      loyalty=None, rarity=None, edhrec_rank=None)
+
+
+@pytest.mark.parametrize("name,type_line,text,intent,dropped", [
+    ("Talisman of Hierarchy", "Artifact", "{T}: Add {C}.\n{T}: Add {W} or {B}. Talisman of Hierarchy deals 1 damage to you.",
+     "more Reanimator cards", True),
+    ("Underground River", "Land", "{T}: Add {C}.\n{T}: Add {U} or {B}. Underground River deals 1 damage to you.",
+     "more Reanimator cards", True),
+    ("Pyromancer's Goggles", "Artifact",
+     "{T}: Add {R}. When that mana is spent to cast a red instant or sorcery spell, copy that spell.",
+     "more Storm cards", False),
+    ("Talisman of Hierarchy", "Artifact", "{T}: Add {C}.\n{T}: Add {W} or {B}.", "more Treasure cards", False),
+    ("Myriad Landscape", "Land", "Myriad Landscape enters tapped.\n{T}: Add {C}.", "more Lands Matter cards", False),
+    ("Storm-Kiln Artist", "Creature — Dwarf Shaman", "Magecraft — Whenever you cast or copy an instant or sorcery "
+     "spell, create a Treasure token.", "more Spellslinger cards", False),
+])
+def test_theme_batches_drop_plain_mana(name, type_line, text, intent, dropped):
+    from app.pipeline.jev import is_plain_mana
+
+    assert is_plain_mana(_mana_card(name, type_line, text), intent) is dropped
