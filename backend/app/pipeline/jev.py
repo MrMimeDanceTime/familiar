@@ -38,6 +38,7 @@ or drop each pick, carries the prose.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -694,6 +695,48 @@ def rank_cuts(
     return sorted(ranked, key=lambda kv: kv[1], reverse=True)
 
 
+_MANA_LINE = re.compile(r":\s*add\b", re.IGNORECASE)
+# A mana line that also triggers or copies is the card's point (Pyromancer's
+# Goggles: "{T}: Add {R}. When that mana is spent ... copy that spell").
+_MORE_THAN_MANA = re.compile(r"\b(?:when|whenever|copy|spent to)\b", re.IGNORECASE)
+_REMINDER = re.compile(r"\([^)]*\)")
+
+
+def is_plain_mana(card: ShapedCard, user_intent: str) -> bool:
+    """A land, or an artifact whose whole text is a mana ability (Signets,
+    Talismans, Fellwar Stone), that a theme request did not ask for.
+
+    Theme batches spent three or four slots on these: "more Reanimator cards"
+    for Hashaton came back with Caves of Koilos, Talisman of Hierarchy and
+    Underground River. A role is too blunt a test, since Storm-Kiln Artist and
+    Pyromancer's Goggles carry the ramp tag and are the theme. A request about
+    lands, mana, Treasure or artifacts keeps them, as does a card whose text
+    names the request's own words.
+    """
+    from app.pipeline import local_retrieval
+
+    if local_retrieval.intent_roles(user_intent):
+        return False
+    intent = user_intent.lower()
+    type_line = card.type_line or ""
+    text = _REMINDER.sub("", card.oracle_text or "").strip()
+    if any(t in text.lower() for t in _intent_words(intent)):
+        return False
+    if "Land" in type_line:
+        return not re.search(r"\bland|landfall", intent)
+    if "Artifact" in type_line and "Creature" not in type_line:
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if lines and all(_MANA_LINE.search(ln) and not _MORE_THAN_MANA.search(ln) for ln in lines):
+            return not re.search(r"\bmana\b|treasure|artifact|\bramp", intent)
+    return False
+
+
+def _intent_words(intent: str) -> list[str]:
+    from app.pipeline import local_retrieval
+
+    return local_retrieval.theme_terms(intent)
+
+
 def select_jev(
     client: Any,
     pool: list[ShapedCard],
@@ -753,6 +796,8 @@ def select_jev(
             if "Land" not in (legal[i].type_line or "")
             or ("Basic" not in (legal[i].type_line or "") and legal[i].fine_roles & request_roles)
         ]
+    else:
+        order = [i for i in order if not is_plain_mana(legal[i], user_intent)]
     if min_ask is not None:
         # A role request's batch must answer the request. The blend weighs
         # popularity, and in a new deck with no lands the most popular legal
