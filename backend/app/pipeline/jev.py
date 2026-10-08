@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.typesafe.ai"
 DEFAULT_MODEL = "jev-1.13.0"
-MODES = ("blind", "informed", "verdict", "choice", "ensemble", "blend")
+MODES = ("blind", "informed", "verdict", "choice", "ensemble", "blend", "plan")
 
 FIT_LEVELS = [
     "Does not belong in this deck: off-plan, or actively works against it.",
@@ -83,6 +83,13 @@ _WEIGH = (
     "to this commander, and the brain map's fit scores against the deck. The "
     "signals can disagree, and a popular card is not automatically right for "
     "this build."
+)
+_PLAN_WEIGH = (
+    "Judge the card on what it does for THIS deck: its rules text against the "
+    "commander's text, the gameplan and how the deck wins, the cards already in "
+    "the deck, any combo it completes, and the mechanics it shares with the "
+    "plan. How popular a card is says nothing here; an unusual card that "
+    "advances the plan beats a staple that merely fits the colours."
 )
 _VERDICT_TASK = (
     "Decide whether this candidate should be added to THIS deck for the "
@@ -227,6 +234,17 @@ def _evidence(card: ShapedCard, *, explain: bool = True) -> dict[str, Any]:
     return evidence
 
 
+def _plan_evidence(card: ShapedCard) -> dict[str, Any]:
+    """What the card does for the plan, with no popularity in it."""
+    evidence: dict[str, Any] = {}
+    if card.fine_roles:
+        evidence["role_tags"] = sorted(card.fine_roles)
+    why = (card.brainmap or {}).get("mechanical_via")
+    if why:
+        evidence["shares_a_mechanic_with_the_plan"] = why
+    return evidence
+
+
 def build_questions(
     cards: list[ShapedCard], user_intent: str = "", mode: str = "blind"
 ) -> dict[str, dict]:
@@ -255,6 +273,18 @@ def build_questions(
             questions[f"dup_{i}"] = {
                 "type": "noul",
                 "instructions": {"statement": _DUP_STATEMENT, "candidate": plain},
+            }
+        elif mode == "plan":
+            questions[f"add_{i}"] = {
+                "type": "noul",
+                "instructions": {
+                    "statement": (
+                        "This candidate should be one of the cards added to this "
+                        f"deck in answer to the request: {request}"
+                    ),
+                    "guidance": _PLAN_WEIGH,
+                    "candidate": {**plain, **_plan_evidence(card)},
+                },
             }
         elif mode == "verdict":
             questions[f"add_{i}"] = {
@@ -349,7 +379,7 @@ def _judge_per_card(
             ask = answers.get(f"ask_{local}") or {}
             if "noul" not in ask:
                 raise JevError(f"Jev answer missing for {cards[index].name!r}")
-            if mode == "verdict":
+            if mode in ("verdict", "plan"):
                 add = answers.get(f"add_{local}") or {}
                 if "noul" not in add:
                     raise JevError(f"Jev answer missing for {cards[index].name!r}")
@@ -529,7 +559,7 @@ def blend_score(model: dict[str, Any], row: dict[str, Any]) -> float:
 
 
 def _rank_key(judgment: Judgment, card: ShapedCard, mode: str, brainmap_weight: float) -> float:
-    if mode in ("verdict", "choice", "ensemble"):
+    if mode in ("verdict", "choice", "ensemble", "plan"):
         jev = judgment.score
     else:
         # Score gated by the ask: a core piece that ignores the request still
@@ -545,7 +575,7 @@ def reason_for(judgment: Judgment, card: ShapedCard, mode: str = "blind",
                position: int = 0, pool_size: int = 0) -> str:
     if mode in ("choice", "ensemble"):
         head = f"Jev ranked it #{position} of {pool_size} candidates for this request"
-    elif mode in ("verdict", "blend"):
+    elif mode in ("verdict", "blend", "plan"):
         return _verdict_reason(judgment, card)
     else:
         levels = VERDICT_LEVELS if mode == "informed" else FIT_LEVELS
@@ -763,7 +793,7 @@ def select_jev(
     chosen = shape_batch(
         order, legal, judgments, max_picks,
         max_similar=max_similar,
-        min_probability=min_probability if mode in ("verdict", "blend") else None,
+        min_probability=min_probability if mode in ("verdict", "blend", "plan") else None,
     )
     position_of = {index: position for position, index in enumerate(order)}
     picks = [

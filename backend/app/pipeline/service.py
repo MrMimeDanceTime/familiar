@@ -281,6 +281,7 @@ def _apply_brain_map(
             commander=snapshot.get("commander"),
             identity=identity,
             themes=[t for t in (snapshot.get("themes") or []) if t],
+            plan_tags=list(snapshot.get("plan_tags") or []),
             deck_card_names=frozenset(
                 (c.get("name") or "").lower() for c in snapshot.get("cards", [])
             ),
@@ -395,6 +396,9 @@ def prepare_pool(
     theme_signal: bool = False,
     deck_aware_search: bool = True,
     theme_page_match: bool | None = None,
+    plan_tags: list[str] | None = None,
+    broad: bool = False,
+    broad_cap: int = 2000,
     timings: dict[str, float] | None = None,
 ) -> PreparedPool:
     """Run stages 1-3: retrieve, merge, score, and shape the candidate pool."""
@@ -407,6 +411,8 @@ def prepare_pool(
     # ranked against the old one (a mono-black Sheoldred batch came back
     # five-colour). A proposed commander is the player's latest statement of
     # what the deck is, so it wins until it is decided.
+    if plan_tags is not None:
+        snapshot["plan_tags"] = plan_tags
     proposed = repo.pending_commander_for_deck(session, deck_id)
     if proposed:
         snapshot["commander"] = proposed
@@ -428,11 +434,29 @@ def prepare_pool(
     with _timed("stage1_local", timings):
         local_pool: list[dict[str, Any]] = []
         try:
-            local_pool = local_retrieval.retrieve(
+            from app.pipeline import plan_tags as plan_tags_mod
+
+            store_ = local_store or card_store
+            if broad:
+                # Everything on-colour that could answer: every card in the
+                # requested roles, or every card carrying the plan's tags or
+                # the commander's specific ones. The judge reads them all;
+                # nothing popularity-ordered decides what it gets to see.
+                local_role_limit = 100_000
+                if not local_retrieval.intent_roles(user_intent):
+                    tags = list(snapshot.get("plan_tags") or [])
+                    commander_tags = sorted(_commander_mechanic_tags(snapshot))
+                    breadth = store_.tag_breadth(commander_tags)
+                    tags += [t for t in commander_tags
+                             if t not in tags and 0 < breadth.get(t, 0) < plan_tags_mod.GENERIC_SHARE]
+                    local_pool = plan_tags_mod.retrieve(tags, identity, store_, limit=broad_cap)
+            elif deck_aware_search and snapshot.get("plan_tags") and not local_retrieval.intent_roles(user_intent):
+                local_pool = plan_tags_mod.retrieve(list(snapshot["plan_tags"]), identity, store_)
+            local_pool += local_retrieval.retrieve(
                 user_intent, identity, store=local_store or card_store,
                 per_role_limit=local_role_limit,
                 themes=(snapshot.get("themes") or []) if deck_aware_search else None,
-                commander_tags=_commander_mechanic_tags(snapshot) if deck_aware_search else None,
+                commander_tags=_commander_mechanic_tags(snapshot) if deck_aware_search and not broad else None,
             )
         except Exception as exc:  # noqa: BLE001 - fall back to the model
             logger.warning("local retrieval failed, falling back to query planning: %s", exc)
@@ -471,6 +495,8 @@ def prepare_pool(
                   if theme_page_match and not intent_roles and not whole_page else None)
     if theme_pool_cap and not intent_roles:
         pool_cap = theme_pool_cap
+    if broad:
+        pool_cap = broad_cap
     with _timed("stage2_candidates", timings):
         gathered = candidates_stage.gather_candidates_detailed(
             spec, snapshot.get("commander"),

@@ -185,8 +185,17 @@ def strict(tag: str, card: dict | None) -> bool:
 
 
 VARIANTS = {
-    "current": {"theme_page_match": False},
     "page match": {"theme_page_match": True},
+    # The plan drafted as Tagger slugs from the deck without its held-out
+    # cards (pipeline.plan_tags), retrieved through and scored on.
+    "plan tags": {"theme_page_match": True, "plan_tags": True},
+    # Jev judging on the commander, plan, combos and mechanics, with no
+    # EDHREC numbers in front of it and no fitted blend over them.
+    "plan judge": {"theme_page_match": True, "jev_mode": "plan"},
+    "plan tags + judge": {"theme_page_match": True, "plan_tags": True, "jev_mode": "plan"},
+    # Retrieve everything that could fit, judge it all once on the plan.
+    "stripped": {"theme_page_match": True, "plan_tags": True, "broad": True, "jev_mode": "plan",
+                 "jev_samples": 1},
 }
 
 
@@ -234,15 +243,31 @@ def run(limit_commanders: int | None, only: str | None) -> list[dict]:
                 held_cards = store.by_names(held)
                 row = {"commander": record["commander"], "tag": record["tag"], "deck": deck["id"],
                        "held": held, "variants": {},
-                       "strict": [h for h in held if strict(record["tag"], held_cards.get(h.lower()))]}
+                       "strict": [h for h in held if strict(record["tag"], held_cards.get(h.lower()))],
+                       "off_page": sorted(h.lower() for h in held
+                                          if h.lower() not in _edhrec_page_names(record["commander"]))}
+                tags = None
+                if any(k.get("plan_tags") for k in VARIANTS.values()):
+                    from app.pipeline import plan_tags
+
+                    snap = repo.deck_snapshot(session, built.id)
+                    try:
+                        tags = plan_tags.draft(provider, snap, service._commander_mechanic_tags(snap), store,
+                                               model=model)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  plan tags failed: {exc}")
+                row["plan_tags"] = tags
                 for label, kwargs in VARIANTS.items():
                     t = time.perf_counter()
+                    jev_mode, jev_samples = kwargs.get("jev_mode"), kwargs.get("jev_samples")
+                    kwargs = {k: v for k, v in kwargs.items() if k not in ("jev_mode", "jev_samples")}
+                    kwargs = {**kwargs, "plan_tags": tags if kwargs.get("plan_tags") else None}
                     prepared = service.prepare_pool(session, built.id, intent, provider, model=model, **kwargs)
                     legal = [c for c in prepared.shaped if c.legal_in_deck and c.name]
                     in_pool = held_lower & {c.name.lower() for c in legal}
                     selection, backend = service.run_selection(
                         prepared, intent, provider, backend="jev", model=model, max_picks=10,
-                        jev_client=client,
+                        jev_client=client, jev_mode=jev_mode, jev_samples=jev_samples,
                     )
                     picks = [p.name.lower() for p in selection.picks]
                     by_rate = sorted(legal, key=lambda c: float((c.edhrec or {}).get("inclusion_rate") or 0),
@@ -260,6 +285,12 @@ def run(limit_commanders: int | None, only: str | None) -> list[dict]:
                       + "  ".join(f"{k}: {x['picked']:.0%} (reach {x['reach']:.0%})" for k, x in v.items()),
                       flush=True)
     return records
+
+
+def _edhrec_page_names(commander: str) -> set[str]:
+    from tools.jev_eval import _edhrec_page_names as page
+
+    return page(commander)
 
 
 def summarize(records: list[dict]) -> None:
@@ -281,6 +312,12 @@ def summarize(records: list[dict]) -> None:
         reach = [len({s.lower() for s in r["strict"]} & set(r["variants"][label]["pool"])) / len(r["strict"])
                  for r in scored]
         print(f"  {label:<16} picked {statistics.mean(picked):.0%}   reach {statistics.mean(reach):.0%}")
+    off = [r for r in records if r.get("off_page")]
+    print(f"off the commander's EDHREC page: {sum(len(r['off_page']) for r in off)} held cards in {len(off)} decks")
+    for label in VARIANTS:
+        hits = sum(len(set(r["off_page"]) & set(r["variants"][label]["picks"])) for r in off)
+        pooled = sum(len(set(r["off_page"]) & set(r["variants"][label]["pool"])) for r in off)
+        print(f"  {label:<18} picked {hits}   in pool {pooled}")
 
 
 def main(argv=None) -> int:
@@ -290,10 +327,16 @@ def main(argv=None) -> int:
     rp = sub.add_parser("run")
     rp.add_argument("--limit", type=int, default=None)
     rp.add_argument("--only", default=None)
+    rp.add_argument("--variants", default=None, help="comma-separated variant names to run")
     args = parser.parse_args(argv)
     if args.command == "fetch":
         fetch()
         return 0
+    if args.variants:
+        wanted = [v.strip() for v in args.variants.split(",")]
+        for name in list(VARIANTS):
+            if name not in wanted:
+                del VARIANTS[name]
     records = run(args.limit, args.only)
     out = Path(__file__).resolve().parent / "traces" / f"theme_eval_{time.strftime('%Y%m%dT%H%M%S')}.json"
     out.parent.mkdir(exist_ok=True)

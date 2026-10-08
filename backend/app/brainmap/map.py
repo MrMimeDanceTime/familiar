@@ -88,6 +88,8 @@ def annotate_pool(
                 "personal": round(score.get(PERSONAL), 3),
                 "explain": score.explain(),
             }
+            if MECHANICAL in score.layers:
+                entry["brainmap"]["mechanical_via"] = score.layers[MECHANICAL].reason
         annotated.append(entry)
 
     annotated.sort(

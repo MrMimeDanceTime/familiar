@@ -210,7 +210,8 @@ def _theme_tags(themes: list[str], store: Any) -> set[str]:
 
 
 def build_relationship(
-    commander_tags: set[str], store: Any, themes: list[str] | None = None
+    commander_tags: set[str], store: Any, themes: list[str] | None = None,
+    plan_tags: list[str] | None = None,
 ) -> Relationship:
     """Derive what this deck cares about from the commander's tags plus themes.
 
@@ -224,7 +225,7 @@ def build_relationship(
         logger.info("mechanical: ignoring colour-artifact tag(s) %s", sorted(dropped))
 
     themed = {
-        t for t in _theme_tags(themes or [], store)
+        t for t in _theme_tags(themes or [], store) | set(plan_tags or [])
         if not is_flavour_tag(t) and t not in own
     }
     if not own and not themed:
@@ -262,7 +263,7 @@ class MechanicalLayer:
     ) -> dict[str, LayerScore]:
         commander_tags = self._commander_tags(context)
         relationship = build_relationship(
-            commander_tags, self._store, context.themes
+            commander_tags, self._store, context.themes, plan_tags=context.plan_tags
         )
         if relationship.is_empty():
             return {}

@@ -108,6 +108,9 @@ class ScoringContext:
     commander: str | None = None
     identity: frozenset[str] = frozenset()
     themes: list[str] = field(default_factory=list)
+    # The plan as Tagger slugs (pipeline.plan_tags): matched exactly, no
+    # free-text resolution.
+    plan_tags: list[str] = field(default_factory=list)
     deck_card_names: frozenset[str] = frozenset()
     deck_id: int | None = None
 
