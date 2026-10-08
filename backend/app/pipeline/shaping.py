@@ -214,7 +214,7 @@ def _precompute(raw: dict[str, Any], ctx: DeckContext, tags: set[str]) -> Shaped
 _RANK_LAST = float("inf")
 
 
-def _rank_key(card: ShapedCard) -> tuple[bool, int, float]:
+def _rank_key(card: ShapedCard) -> tuple[bool, bool, int, float]:
     """Sort key: legal first, then scored-by-the-map, then best within each tier.
 
     Three tiers rather than one blended number, because a brain-map fit score
@@ -227,12 +227,15 @@ def _rank_key(card: ShapedCard) -> tuple[bool, int, float]:
     sorting on rank here would discard exactly the cards the map ranked highest.
     """
     illegal = not card.legal_in_deck
+    # A card that completes a combo with the deck survives the cap whatever
+    # its scores: nothing else marks it, and the cap is where it was lost.
+    no_combo = not card.completes_combo_with
     if card.brainmap:
         total = card.brainmap.get("total")
         if isinstance(total, (int, float)):
-            return (illegal, 0, -float(total))
+            return (illegal, no_combo, 0, -float(total))
     rank = card.edhrec_rank if card.edhrec_rank is not None else _RANK_LAST
-    return (illegal, 1, rank)
+    return (illegal, no_combo, 1, rank)
 
 
 def shape(

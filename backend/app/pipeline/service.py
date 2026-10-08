@@ -20,6 +20,7 @@ thinking on at a capped reasoning effort.
 
 from __future__ import annotations
 
+import re
 import logging
 import time
 from contextlib import contextmanager
@@ -248,6 +249,39 @@ def _commander_mechanic_tags(snapshot: dict[str, Any]) -> set[str]:
         return set()
 
 
+# A request for a way to win or a combo is answered first by the cards that
+# complete one with what the deck already holds; nothing else retrieves them,
+# because no role or text search knows what a deck is one card away from.
+COMBO_INTENT = re.compile(r"combo|win ?con|win condition|finisher|close (?:out )?(?:the )?game|ways? to win",
+                          re.IGNORECASE)
+
+
+def _combo_pieces(snapshot: dict[str, Any], identity: frozenset[str]) -> list[dict[str, Any]]:
+    from app.cards import combos
+
+    commanders = [n for n in (snapshot.get("commander"), snapshot.get("partner_commander")) if n]
+    names = [c.get("name") or "" for c in snapshot.get("cards", [])]
+    near = combos.near_combos(names, "".join(sorted(identity)), commanders=commanders, limit=15)
+    found = card_store.by_names([c["missing"] for c in near])
+    return [found[c["missing"].lower()] for c in near if c["missing"].lower() in found]
+
+
+def _combo_lead(prepared: PreparedPool) -> list[set[str]] | None:
+    """For a combo request: the pool cards completing a combo that wins, then
+    the ones completing any combo. The fitted ranker weighs combo completion
+    slightly negative (it was fitted on role and theme requests), so a combo
+    request came back two-thirds rituals and staples."""
+    from app.cards import combos
+
+    completing = {c.name.lower() for c in prepared.shaped if c.completes_combo_with and c.legal_in_deck}
+    if not completing:
+        return None
+    deck_names = [c.get("name") or "" for c in prepared.snapshot.get("cards", [])]
+    one_short = combos.combos_one_short(deck_names, sorted(completing))
+    winning = {name for name, found in one_short.items() if any(combos.wins(c) for c in found)}
+    return [winning, completing - winning]
+
+
 def _deck_off_meta(snapshot: dict[str, Any]) -> float:
     """How far off-consensus this deck wants to be, 0.0 to 1.0.
 
@@ -434,6 +468,8 @@ def prepare_pool(
                 themes=(snapshot.get("themes") or []) if deck_aware_search else None,
                 commander_tags=_commander_mechanic_tags(snapshot) if deck_aware_search else None,
             )
+            if COMBO_INTENT.search(user_intent):
+                local_pool = _combo_pieces(snapshot, identity) + local_pool
         except Exception as exc:  # noqa: BLE001 - fall back to the model
             logger.warning("local retrieval failed, falling back to query planning: %s", exc)
         logger.info("pipeline: local retrieval found %d candidate(s)", len(local_pool))
@@ -568,6 +604,7 @@ def run_selection(
                 cut_evidence_map=(jev.cut_evidence(prepared.snapshot.get("commander"))
                                   if settings.jev_cuts else None),
                 deck_total=prepared.snapshot.get("total_cards"),
+                lead=_combo_lead(prepared) if COMBO_INTENT.search(user_intent) else None,
             )
         except Exception as exc:  # noqa: BLE001 - the LLM path is the fallback
             logger.warning("jev selection failed, falling back to llm: %s", exc)

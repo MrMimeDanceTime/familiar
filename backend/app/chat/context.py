@@ -190,6 +190,20 @@ def _deck_state(session: Session, deck_id: int) -> DeckState:
                 "Combos in the deck: " + "; ".join(" + ".join(c["cards"]) for c in combos[:4]) + "."
             )
             named.extend(n for c in combos[:4] for n in c["cards"])
+        routes = stats.get("win_routes") or []
+        if routes:
+            lines.append("Ways the deck ends a game on its own: " + "; ".join(routes[:4]) + ".")
+        elif total >= 60:
+            lines.append("Ways the deck ends a game on its own: none found (no winning combo or "
+                         "alternate win card); it wins through the board, or not yet.")
+        near = stats.get("near_combos") or []
+        if near:
+            lines.append("One card from a combo: " + "; ".join(
+                f"{c['missing']} with {' + '.join(c['with'])} ({c['produces'][0]}"
+                + (", wins" if c.get("wins") else "") + ")"
+                for c in near[:3]
+            ) + ".")
+            named.extend(n for c in near[:3] for n in [c["missing"], *c["with"]])
 
     staples = deckplan_missing_staples(snapshot)
     if staples:

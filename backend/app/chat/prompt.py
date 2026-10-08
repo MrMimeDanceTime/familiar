@@ -298,6 +298,10 @@ discussed but never proposed leaves the deck unable to proceed.
 suggest_cards does the choosing. Hand it the role and the player's
 constraints; do not shortlist cards for it first.
 
+A request for a combo or a way to win is a suggest_cards request too: it
+returns the cards that complete a known combo with what the deck already
+holds, winning combos first. Do not assemble a combo from memory.
+
 A land request is the one batch bigger than six: suggest_cards fills the
 manabase to the land target in one go, most of it basics.
 
