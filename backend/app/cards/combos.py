@@ -286,3 +286,95 @@ def combos_one_short(
     for combos in out.values():
         combos.sort(key=lambda c: -(c["popularity"] or 0))
     return out
+
+
+# What a combo has to produce to end the game on its own. Infinite mana or
+# infinite ETBs are engines: they win only with an outlet the deck may not run.
+_WIN_WORDS = (
+    "win the game", "loses the game", "damage", "lifeloss", "mill", "combat phases",
+    "infinite turns", "near-infinite turns", "infinitely large", "infinitely powerful",
+    "infinite power", "with haste",
+)
+
+
+def wins(combo: dict[str, Any]) -> bool:
+    """Whether the combo ends the game by itself (damage, drain, mill, extra
+    turns, an outright win), as opposed to producing a resource."""
+    for result in combo.get("produces") or []:
+        text_ = result.lower()
+        if any(x in text_ for x in ("self-mill", "to you", "to creatures", "target opponent's library")):
+            continue
+        if any(w in text_ for w in _WIN_WORDS):
+            return True
+    return False
+
+
+def near_combos(
+    deck_card_names: Iterable[str],
+    identity: str | Iterable[str],
+    *,
+    commanders: Iterable[str] = (),
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Combos the deck is one card short of, with ``missing`` set to that card.
+
+    Only combos inside the commander's colour identity whose missing card is
+    Commander-legal: the raw one-short query offered a mono-black deck
+    Hullbreaker Horror. Ranked combos involving the commander first, then
+    combos that win on their own, then Commander Spellbook popularity.
+    """
+    from app.cards import store
+
+    deck = {n.lower() for n in deck_card_names if n}
+    allowed = set("".join(identity)) if not isinstance(identity, str) else set(identity)
+    commander_set = {n.lower() for n in commanders if n}
+    if not deck:
+        return []
+    try:
+        with get_engine().begin() as conn:
+            names = sorted(deck)
+            ids: set[str] = set()
+            for i in range(0, len(names), 400):
+                chunk = names[i : i + 400]
+                placeholders = ", ".join(f":n{j}" for j in range(len(chunk)))
+                params: dict[str, Any] = {f"n{j}": v for j, v in enumerate(chunk)}
+                ids.update(r[0] for r in conn.execute(text(f"""
+                    SELECT cc.combo_id FROM combo_cards cc JOIN combos c ON c.id = cc.combo_id
+                    WHERE cc.name_lower IN ({placeholders})
+                    GROUP BY cc.combo_id HAVING count(*) = c.card_count - 1
+                """), params))
+            rows = []
+            id_list = sorted(ids)
+            for i in range(0, len(id_list), 400):
+                chunk = id_list[i : i + 400]
+                placeholders = ", ".join(f":i{j}" for j in range(len(chunk)))
+                rows.extend(conn.execute(text(f"{_SELECT} WHERE id IN ({placeholders})"),
+                                         {f"i{j}": v for j, v in enumerate(chunk)}).fetchall())
+    except Exception:  # noqa: BLE001 - the combo table is optional
+        return []
+    combos = [_row_to_combo(r) for r in rows]
+    combos = [c for c in combos if set(c["identity"] or "") <= allowed]
+    missing_names = {n for c in combos for n in c["cards"] if n.lower() not in deck}
+    legal = {k for k, card in store.by_names(sorted(missing_names)).items() if card.get("legal_commander", True)}
+    out = []
+    seen_missing: set[str] = set()
+    for c in combos:
+        missing = [n for n in c["cards"] if n.lower() not in deck]
+        if len(missing) != 1 or missing[0].lower() not in legal:
+            continue
+        c["missing"] = missing[0]
+        c["wins"] = wins(c)
+        c["with_commander"] = bool(commander_set & {n.lower() for n in c["cards"]})
+        out.append(c)
+    out.sort(key=lambda c: (not c["with_commander"], not c["wins"], -(c["popularity"] or 0)))
+    picked = []
+    for c in out:
+        # One entry per missing card: the same piece often completes several
+        # variants, and the list is for choosing a card, not reading variants.
+        if c["missing"].lower() in seen_missing:
+            continue
+        seen_missing.add(c["missing"].lower())
+        picked.append(c)
+        if len(picked) >= limit:
+            break
+    return picked

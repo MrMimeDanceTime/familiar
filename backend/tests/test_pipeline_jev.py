@@ -389,3 +389,11 @@ def test_a_non_land_batch_keeps_only_lands_that_fill_the_role():
     client = FakeJev({n: (3.0, 0.9) for n in ("Mountain", "Command Tower", "Myriad Landscape", "Arcane Signet")})
     selection = jev.select_jev(client, pool, "more ramp", mode="verdict", request_roles={"ramp"})
     assert sorted(p.name for p in selection.picks) == ["Arcane Signet", "Myriad Landscape"]
+
+
+def test_lead_tiers_go_first_in_jev_order():
+    pool = [_card("Staple"), _card("Engine Piece"), _card("Win Piece")]
+    client = FakeJev({"Staple": (4.0, 1), "Engine Piece": (2.0, 1), "Win Piece": (1.0, 1)})
+    selection = jev.select_jev(client, pool, "a combo", mode="verdict",
+                               lead=[{"win piece"}, {"engine piece"}])
+    assert [p.name for p in selection.picks] == ["Win Piece", "Engine Piece", "Staple"]

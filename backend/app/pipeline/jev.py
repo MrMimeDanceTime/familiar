@@ -713,6 +713,7 @@ def select_jev(
     request_roles: set[str] | None = None,
     deck_total: int | None = None,
     deck_limit: int = 100,
+    lead: list[set[str]] | None = None,
 ) -> Selection:
     """Stage 4 on Jev. Same contract as ``selection.select``: picks are legal
     pool cards only. Illegal cards are never sent, so they cannot be picked.
@@ -753,6 +754,14 @@ def select_jev(
             if "Land" not in (legal[i].type_line or "")
             or ("Basic" not in (legal[i].type_line or "") and legal[i].fine_roles & request_roles)
         ]
+    if lead:
+        # Tiers of lowercased names that go first, each in Jev's order: a
+        # combo request leads with the cards that complete a winning combo.
+        def tier(i: int) -> int:
+            name = legal[i].name.lower()
+            return next((t for t, names in enumerate(lead) if name in names), len(lead))
+
+        order = sorted(order, key=tier)
     if min_ask is not None:
         # A role request's batch must answer the request. The blend weighs
         # popularity, and in a new deck with no lands the most popular legal

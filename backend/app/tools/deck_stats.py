@@ -324,6 +324,7 @@ def _deterministic_stats(
     card_names = {c.card_name for c in cards}
 
     combos = _deck_combos(card_names)
+    near_combos = _near_combos(session, deck_id, cards, card_names)
     power_base, power_factors = _estimate_power_level(
         avg_mv, land_count, ramp_count, draw_count, interaction_count, total_cards)
     bracket, bracket_factors = _estimate_bracket(
@@ -372,7 +373,46 @@ def _deterministic_stats(
         "priced_cards": priced,
         "mana_sources": mana_sources,
         "combos": combos,
+        "win_routes": _win_routes(cards, combos),
+        "near_combos": near_combos,
     }
+
+
+def _win_routes(cards: list[Any], combos: list[dict]) -> list[str]:
+    """What in the deck ends a game on its own: combos that win, and cards
+    that say so (alternate win conditions). Empty is the useful answer: a
+    deck with engines and no way to close."""
+    routes = [" + ".join(c["cards"]) + f" ({c['produces'][0]})" for c in combos if c.get("wins")]
+    routes += [f"{c.card_name} (alternate win condition)" for c in cards
+               if "alternate-win-condition" in (c.tags or [])]
+    return routes[:6]
+
+
+def _near_combos(session: Session, deck_id: int, cards: list[Any], card_names: set[str]) -> list[dict]:
+    """Combos one card away, on-colour and legal (cards.combos.near_combos)."""
+    try:
+        from app.cards import combos as combo_db
+        from app.db import repository as repo
+
+        deck = repo.get_deck(session, deck_id)
+        commanders = [n for n in (getattr(deck, "commander", None), getattr(deck, "partner_commander", None)) if n]
+        lowered = {n.lower() for n in commanders}
+        identity = "".join(c.color_identity or "" for c in cards if c.card_name.lower() in lowered)
+        if not commanders:
+            return []
+        found = combo_db.near_combos(card_names, identity, commanders=commanders, limit=5)
+    except Exception:  # noqa: BLE001 - the combo table is optional
+        return []
+    return [
+        {
+            "missing": c["missing"],
+            "with": [n for n in c["cards"] if n != c["missing"]],
+            "produces": c["produces"][:3],
+            "wins": c["wins"],
+            "with_commander": c["with_commander"],
+        }
+        for c in found
+    ]
 
 
 def _deck_combos(card_names: set[str]) -> list[dict]:
@@ -389,6 +429,7 @@ def _deck_combos(card_names: set[str]) -> list[dict]:
             "produces": c["produces"][:4],
             "description": (c["description"] or "")[:400],
             "card_count": c["card_count"],
+            "wins": combo_db.wins(c),
         }
         for c in found
     ]
@@ -758,6 +799,8 @@ def _empty_stats() -> dict:
         "priced_cards": 0,
         "mana_sources": [],
         "combos": [],
+        "win_routes": [],
+        "near_combos": [],
     }
 
 

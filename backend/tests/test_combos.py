@@ -253,3 +253,43 @@ def test_service_annotation_failure_keeps_context(monkeypatch):
     monkeypatch.setattr("app.cards.combos.combos_one_short", boom)
     ctx = DeckContext(identity=frozenset(), card_names_lower=frozenset())
     assert service._with_combo_partners(ctx, {"cards": []}, [{"name": "X"}]) is ctx
+
+
+# ── win routes and near combos ─────────────────────────────────────────────
+
+@pytest.mark.parametrize("produces,expected", [
+    (["Win the game"], True),
+    (["Infinite colorless mana", "Infinite storm count"], False),
+    (["Near-infinite damage"], True),
+    (["Infinite self-mill"], False),
+    (["Near-infinite damage to creatures"], False),
+    (["Infinite creature tokens with haste"], True),
+])
+def test_wins_means_the_combo_ends_the_game(produces, expected):
+    assert combos.wins({"produces": produces}) is expected
+
+
+def _all_legal(monkeypatch):
+    from app.cards import store
+
+    monkeypatch.setattr(store, "by_names", lambda names: {n.lower(): {"name": n, "legal_commander": True}
+                                                          for n in names})
+
+
+def test_near_combos_names_the_missing_card(imported, monkeypatch):
+    _all_legal(monkeypatch)
+    near = combos.near_combos(["Thassa's Oracle", "Island"], "WU")
+    assert [c["missing"] for c in near] == ["Demonic Consultation"]
+
+
+def test_near_combos_stays_inside_the_colour_identity(imported, monkeypatch):
+    _all_legal(monkeypatch)
+    assert combos.near_combos(["Thassa's Oracle"], "B") == []
+
+
+def test_near_combos_puts_the_commanders_combos_first(imported, monkeypatch):
+    _all_legal(monkeypatch)
+    near = combos.near_combos(["Thassa's Oracle", "Kiki-Jiki, Mirror Breaker"], "WU",
+                              commanders=["Kiki-Jiki, Mirror Breaker"])
+    assert near[0]["missing"] == "Zealous Conscripts"
+    assert near[0]["with_commander"]

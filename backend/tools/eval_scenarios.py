@@ -65,6 +65,16 @@ def power_is(level: str) -> Check:
     return check
 
 
+def gains_a_winning_combo(session, deck_id, turns):
+    """The fixture deck holds no combo that wins; after the turns (every
+    proposal approved) it should."""
+    from app.cards import combos
+
+    names = [c["name"] for c in _snapshot(session, deck_id).get("cards", [])]
+    winning = [" + ".join(c["cards"]) for c in combos.combos_in_deck(names) if combos.wins(c)]
+    return bool(winning), f"winning combos in the deck: {winning[:3]}"
+
+
 def at_most_100(session, deck_id, turns):
     total = _snapshot(session, deck_id).get("total_cards") or 0
     return total <= 100, f"{total} cards"
@@ -173,6 +183,12 @@ SCENARIOS: list[dict[str, Any]] = [
         "deck": "korlash.json",
         "turns": ["Lets remove a land or two and add some card draw."],
         "checks": [cuts_are_lands, at_most_100, no_think_cap],
+    },
+    {
+        "name": "a way to win",
+        "deck": "korlash.json",
+        "turns": ["How does this deck actually close out a game? Find me a combo that wins."],
+        "checks": [used("suggest_cards", 0), gains_a_winning_combo, at_most_100, no_think_cap],
     },
     {
         "name": "rules question",

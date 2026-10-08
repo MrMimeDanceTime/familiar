@@ -267,7 +267,12 @@ TOOL_SPECS: list[ToolSpec] = [
             "share of coloured pips and flags a colour that is LOW; "
             "'total_price_usd' is the deck's price at the index's printing; "
             "'combos' lists the combos the deck already contains (from Commander "
-            "Spellbook), which the bracket estimate also uses."
+            "Spellbook), which the bracket estimate also uses. 'win_routes' lists "
+            "what in the deck ends a game on its own (winning combos, alternate "
+            "win cards); empty means the deck has no such route yet. "
+            "'near_combos' lists combos one card away (on-colour, legal), each "
+            "with the 'missing' card and whether it 'wins'; suggest_cards with a "
+            "combo or win-condition request returns those pieces."
         ),
         parameters={
             "type": "object",
